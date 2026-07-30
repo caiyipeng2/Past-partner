@@ -47,6 +47,7 @@ models/finetuned/*
 
 # Local tooling and test artifacts
 .codegraph/
+.worktrees/
 .pytest_cache/
 .coverage
 htmlcov/
