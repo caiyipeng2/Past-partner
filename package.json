@@ -1,0 +1,19 @@
+{
+  "name": "personalized-style-companion-ai",
+  "version": "1.0.0",
+  "description": "个性化风格情感伴侣AI项目",
+  "main": "web/server.js",
+  "scripts": {
+    "start": "node web/server.js",
+    "dev": "node web/server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "AI",
+    "chatbot",
+    "personalized",
+    "companion"
+  ],
+  "author": "Developer",
+  "license": "MIT"
+}

@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/raw/*
+data/processed/*
+data/datasets/*
+data/uploaded/*
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+!data/.gitkeep
+!data/sample_*.db
+!data/test_*.db
+
+# Models
+models/base/*
+models/finetuned/*
+*.gguf
+*.safetensors
+*.pt
+*.pth
+!models/.gitkeep
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local tooling and test artifacts
+.codegraph/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml

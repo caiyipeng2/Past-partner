@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>个性化风格情感伴侣AI</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>个性化风格情感伴侣AI</h1>
+            <p>Personalized Style Companion AI</p>
+        </header>
+        
+        <div class="chat-container">
+            <div class="chat-history" id="chatHistory">
+                <!-- 聊天记录将在这里显示 -->
+                <div class="message ai-message">
+                    <div class="message-content">
+                        你好！我是你的个性化情感伴侣AI。我可以模仿你指定的人物风格与你对话。
+                    </div>
+                    <div class="timestamp">现在</div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="file-upload-section">
+                    <div class="upload-options">
+                        <label for="chatFile" class="file-upload-label">
+                            <span>📁 选择文件</span>
+                        </label>
+                        <input type="file" id="chatFile" accept=".json,.txt,.db" style="display: none;">
+                        
+                        <label for="chatFolder" class="file-upload-label">
+                            <span>📂 选择文件夹</span>
+                        </label>
+                        <input type="file" id="chatFolder" style="display: none;" webkitdirectory directory multiple>
+                    </div>
+                    
+                    <div class="file-info">
+                        <span id="fileInfo" class="file-info-text">未选择文件</span>
+                        <button id="clearSelection" class="clear-button" style="display: none;">清除</button>
+                    </div>
+                    
+                    <div class="upload-instructions">
+                        <small>支持 JSON、TXT 和微信数据库(.db)文件<br>
+                        <a href="/docs/chat_import_guide.md" target="_blank" style="color: #4b6cb7;">查看导入指南</a></small>
+                    </div>
+                    
+                    <button id="uploadButton" class="upload-button" disabled>上传</button>
+                </div>
+                
+                <textarea 
+                    id="messageInput" 
+                    placeholder="输入你的消息..." 
+                    rows="3"
+                ></textarea>
+                <div class="input-actions">
+                    <select id="personalitySelect">
+                        <option value="default">默认风格</option>
+                        <option value="friend">朋友风格</option>
+                        <option value="partner">伴侣风格</option>
+                        <option value="professional">专业风格</option>
+                    </select>
+                    <button id="sendButton">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
