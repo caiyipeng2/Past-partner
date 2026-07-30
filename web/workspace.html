@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title>Past Partner | 陪伴者工作台</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/workspace.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="brand-block">
+                <span class="brand-mark" aria-hidden="true">PP</span>
+                <div>
+                    <h1>Past Partner</h1>
+                    <p>陪伴者工作台</p>
+                </div>
+            </div>
+            <div class="service-state" id="serviceState" role="status">
+                <span class="state-dot" aria-hidden="true"></span>
+                <span id="serviceStateText">连接中</span>
+            </div>
+        </header>
+
+        <ol class="workflow" aria-label="工作流程">
+            <li class="workflow-step is-current" data-step="persona"><span>1</span>人物</li>
+            <li class="workflow-step" data-step="import"><span>2</span>资料</li>
+            <li class="workflow-step" data-step="model"><span>3</span>模型</li>
+            <li class="workflow-step" data-step="chat"><span>4</span>对话</li>
+        </ol>
+
+        <main class="workspace">
+            <aside class="setup-panel" aria-label="陪伴者设置">
+                <section class="setup-section" id="personaSection">
+                    <div class="section-heading"><span class="section-index">01</span><h2>人物身份</h2></div>
+                    <form id="personaForm">
+                        <label class="field-label" for="displayName">称呼</label>
+                        <input id="displayName" name="display_name" type="text" maxlength="80" autocomplete="off" required>
+                        <fieldset class="relationship-fieldset">
+                            <legend>关系</legend>
+                            <div class="relationship-grid">
+                                <label><input type="radio" name="relationship_type" value="father" required><span>父亲</span></label>
+                                <label><input type="radio" name="relationship_type" value="mother"><span>母亲</span></label>
+                                <label><input type="radio" name="relationship_type" value="relative"><span>亲人</span></label>
+                                <label><input type="radio" name="relationship_type" value="friend"><span>朋友</span></label>
+                                <label><input type="radio" name="relationship_type" value="partner"><span>情侣</span></label>
+                                <label><input type="radio" name="relationship_type" value="custom"><span>自定义</span></label>
+                            </div>
+                        </fieldset>
+                        <div id="customRelationshipField" class="conditional-field" hidden>
+                            <label class="field-label" for="customRelationship">关系名称</label>
+                            <input id="customRelationship" name="custom_label" type="text" maxlength="40" autocomplete="off">
+                        </div>
+                        <button class="primary-button" id="createPersonaButton" type="submit">保存人物</button>
+                    </form>
+                    <p class="inline-status" id="personaStatus" aria-live="polite"></p>
+                </section>
+
+                <section class="setup-section" id="importSection">
+                    <div class="section-heading"><span class="section-index">02</span><h2>导入资料</h2></div>
+                    <div class="file-actions">
+                        <label class="file-button" for="chatFile">选择文件</label>
+                        <input id="chatFile" type="file" multiple disabled accept=".json,.txt,.db,.sqlite,.zip,.html,.htm,.csv,.xml,.pdf,.docx,.jpg,.jpeg,.png,.webp,.gif,.mp3,.m4a,.wav,.mp4,.mov">
+                        <label class="file-button secondary" for="chatFolder">选择文件夹</label>
+                        <input id="chatFolder" type="file" multiple webkitdirectory directory disabled>
+                    </div>
+                    <div class="selection-row">
+                        <span id="fileSummary">未选择资料</span>
+                        <button class="text-button" id="clearFilesButton" type="button" hidden>清除</button>
+                    </div>
+                    <ul class="file-list" id="fileList" aria-label="待上传文件"></ul>
+                    <div class="progress-track" id="uploadProgress" hidden><div class="progress-value" id="uploadProgressValue"></div></div>
+                    <button class="primary-button" id="uploadButton" type="button" disabled>开始导入</button>
+                    <p class="inline-status" id="uploadStatus" aria-live="polite"></p>
+                </section>
+
+                <section class="setup-section" id="modelSection">
+                    <div class="section-heading"><span class="section-index">03</span><h2>对话模型</h2></div>
+                    <label class="field-label" for="providerSelect">供应商</label>
+                    <select id="providerSelect" disabled></select>
+                    <label class="field-label" for="modelSelect">模型</label>
+                    <select id="modelSelect" disabled></select>
+                    <div class="model-meta"><span id="modelCapability">尚未选择</span><span id="modelPricing">价格以供应商为准</span></div>
+                    <button class="secondary-button" id="refreshProvidersButton" type="button">刷新目录</button>
+                    <p class="inline-status" id="modelStatus" aria-live="polite"></p>
+                </section>
+            </aside>
+
+            <section class="chat-panel" aria-label="对话">
+                <header class="chat-header">
+                    <div><span class="utility-label">当前人物</span><h2 id="activePersonaName">尚未创建</h2></div>
+                    <div class="active-model"><span class="utility-label">当前模型</span><strong id="activeModelName">未选择</strong></div>
+                </header>
+                <div class="chat-history" id="chatHistory" aria-live="polite">
+                    <div class="empty-chat" id="emptyChat"><span class="empty-monogram" aria-hidden="true">PP</span><p>完成人物、资料与模型设置后开始对话</p></div>
+                </div>
+                <form class="composer" id="messageForm">
+                    <label class="visually-hidden" for="messageInput">消息</label>
+                    <textarea id="messageInput" rows="3" maxlength="12000" placeholder="输入消息" disabled></textarea>
+                    <div class="composer-footer"><span id="chatStatus" class="inline-status" aria-live="polite"></span><button class="send-button" id="sendButton" type="submit" disabled>发送</button></div>
+                </form>
+            </section>
+        </main>
+    </div>
+    <script src="/workspace.js"></script>
+</body>
+</html>

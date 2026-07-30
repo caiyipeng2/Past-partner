@@ -2,11 +2,12 @@
   "name": "personalized-style-companion-ai",
   "version": "1.0.0",
   "description": "个性化风格情感伴侣AI项目",
-  "main": "web/server.js",
+  "main": "src/server/__main__.py",
   "scripts": {
-    "start": "node web/server.js",
-    "dev": "node web/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "python -m src.server",
+    "dev": "python -m src.server",
+    "start:node": "node web/server.js",
+    "test": "python -m unittest discover -s tests -p \"test*.py\" -v"
   },
   "keywords": [
     "AI",
@@ -14,6 +15,6 @@
     "personalized",
     "companion"
   ],
-  "author": "Developer",
+  "author": "caiyipeng2",
   "license": "MIT"
 }

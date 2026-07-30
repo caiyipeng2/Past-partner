@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+# Compatibility entry point. Keeping this filename avoids breaking old local
+# shortcuts while ensuring they cannot start the retired upload implementation.
+if __name__ == "__main__":
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+    from src.server.__main__ import main as _run_unified_server
+
+    _run_unified_server()
+    raise SystemExit(0)
+
 import http.server
 import socketserver
 import json

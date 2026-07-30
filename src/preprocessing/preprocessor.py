@@ -34,7 +34,7 @@ class ChatPreprocessor:
         self.chinese_punctuation = '，。！？；：""''（）【】《》'
         
         # 英文标点符号
-        self.english_punctuation = ',.!?;:"\'\"()\[\]<>'
+        self.english_punctuation = ',.!?;:"\'()[]<>'
         
     def clean_message(self, message: str) -> str:
         """

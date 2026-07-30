@@ -1,0 +1,244 @@
+"""Small development HTTP adapter with strict routing and body limits."""
+
+from __future__ import annotations
+
+import json
+import logging
+import mimetypes
+import re
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from src.domain.personas import PersonaValidationError
+from src.providers.gateway import ProviderError
+from src.server.application import Application, RequestValidationError
+from src.server.config import ServerConfig
+from src.services.import_service import ImportNotFoundError, ImportValidationError
+from src.services.persona_service import PersonaNotFoundError
+from src.services.upload_service import UploadError
+
+
+logger = logging.getLogger(__name__)
+_IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
+_CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
+_COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
+_STATIC_FILES = {
+    "/": "workspace.html",
+    "/index.html": "workspace.html",
+    "/workspace.js": "workspace.js",
+    "/workspace.css": "workspace.css",
+}
+
+
+class ApplicationServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, handler, config: ServerConfig, application: Application):
+        super().__init__(address, handler)
+        self.config = config
+        self.application = application
+
+
+def create_server(config: ServerConfig, application: Application | None = None) -> ApplicationServer:
+    validated = config.validated()
+    return ApplicationServer(
+        (validated.host, validated.port),
+        ApiRequestHandler,
+        validated,
+        application or Application.from_config(validated),
+    )
+
+
+class ApiRequestHandler(BaseHTTPRequestHandler):
+    server: ApplicationServer
+    protocol_version = "HTTP/1.1"
+    server_version = "PastPartner"
+    sys_version = ""
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Chunk-Sha256")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        self._dispatch(self._handle_get)
+
+    def do_POST(self) -> None:
+        self._dispatch(self._handle_post)
+
+    def do_PUT(self) -> None:
+        self._dispatch(self._handle_put)
+
+    def _dispatch(self, operation) -> None:
+        try:
+            operation()
+        except RequestValidationError as exc:
+            self._error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
+        except (PersonaValidationError, ImportValidationError) as exc:
+            self._error(HTTPStatus.BAD_REQUEST, getattr(exc, "code", "validation_error"), str(exc))
+        except (PersonaNotFoundError, ImportNotFoundError):
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+        except UploadError as exc:
+            # Some upload failures are detected from metadata or the manifest
+            # before the request body is consumed. A persistent HTTP/1.1
+            # connection cannot be reused safely when unread bytes may remain.
+            if self.command == "PUT":
+                self.close_connection = True
+            status = {
+                "import_size_exceeded": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "chunk_too_large": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "chunk_conflict": HTTPStatus.CONFLICT,
+                "upload_incomplete": HTTPStatus.CONFLICT,
+                "upload_closed": HTTPStatus.CONFLICT,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
+        except ProviderError as exc:
+            status = {
+                "unknown_provider": HTTPStatus.NOT_FOUND,
+                "unknown_model": HTTPStatus.NOT_FOUND,
+                "provider_not_configured": HTTPStatus.SERVICE_UNAVAILABLE,
+                "provider_unavailable": HTTPStatus.BAD_GATEWAY,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
+        except Exception:
+            logger.exception("Unhandled request failure")
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error", "request could not be completed")
+
+    def _handle_get(self) -> None:
+        path, query = self._request_target()
+        if path == "/api/v1/health":
+            self._json(HTTPStatus.OK, {"status": "healthy", "service": "past-partner-api", "version": "v1"})
+        elif path == "/api/v1/personas":
+            self._json(HTTPStatus.OK, self.server.application.list_personas())
+        elif path == "/api/v1/providers":
+            self._json(HTTPStatus.OK, self.server.application.providers_catalog())
+        elif path == "/api/v1/models":
+            provider_id = query.get("provider_id", [None])[0]
+            self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
+        elif match := _IMPORT_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_import(match.group(1)))
+        elif path.startswith("/api/"):
+            self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
+        else:
+            self._static(path)
+
+    def _handle_post(self) -> None:
+        path, _ = self._request_target()
+        if path == "/api/v1/personas":
+            self._json(HTTPStatus.CREATED, self.server.application.create_persona(self._json_body()))
+        elif path == "/api/v1/imports":
+            self._json(HTTPStatus.CREATED, self.server.application.create_import(self._json_body()))
+        elif path == "/api/v1/chat":
+            self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif match := _COMPLETE_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.complete_import(match.group(1), self._json_body()))
+        else:
+            self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
+
+    def _handle_put(self) -> None:
+        path, _ = self._request_target()
+        match = _CHUNK_PATH.fullmatch(path)
+        if match is None:
+            self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
+            return
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self.close_connection = True
+            self._error(HTTPStatus.LENGTH_REQUIRED, "content_length_required", "Content-Length is required")
+            return
+        try:
+            content_length = int(raw_length)
+        except ValueError as exc:
+            raise RequestValidationError("invalid_content_length", "Content-Length must be an integer") from exc
+        if content_length > self.server.config.max_chunk_bytes:
+            self.close_connection = True
+            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "chunk_too_large", "chunk exceeds the configured limit")
+            return
+        digest = self.headers.get("X-Chunk-Sha256")
+        if digest is None:
+            self.close_connection = True
+            raise RequestValidationError("digest_required", "X-Chunk-Sha256 is required")
+        result = self.server.application.put_chunk(
+            match.group(1),
+            int(match.group(2)),
+            content_length,
+            digest,
+            self.rfile,
+        )
+        self._json(HTTPStatus.OK, result)
+
+    def _json_body(self) -> dict[str, Any]:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise RequestValidationError("content_length_required", "Content-Length is required")
+        try:
+            content_length = int(raw_length)
+        except ValueError as exc:
+            raise RequestValidationError("invalid_content_length", "Content-Length must be an integer") from exc
+        if content_length < 0 or content_length > self.server.config.max_json_bytes:
+            self.close_connection = True
+            raise RequestValidationError("json_body_too_large", "JSON body exceeds the configured limit")
+        try:
+            value = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RequestValidationError("invalid_json", "request body must be valid UTF-8 JSON") from exc
+        if not isinstance(value, dict):
+            raise RequestValidationError("invalid_json", "request body must be a JSON object")
+        return value
+
+    def _static(self, path: str) -> None:
+        filename = _STATIC_FILES.get(path)
+        if filename is None:
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+            return
+        source = (self.server.config.web_dir / filename).resolve()
+        if source.parent != self.server.config.web_dir or not source.is_file():
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+            return
+        content = source.read_bytes()
+        content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8" if content_type.startswith("text/") else content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _request_target(self) -> tuple[str, dict[str, list[str]]]:
+        parsed = urlsplit(self.path)
+        decoded = unquote(parsed.path)
+        # Reject traversal before route matching even though static serving uses
+        # a whitelist; this keeps future asset additions inside the same guard.
+        if any(segment == ".." for segment in decoded.replace("\\", "/").split("/")):
+            return "/__rejected__", {}
+        return decoded, parse_qs(parsed.query)
+
+    def _json(self, status: HTTPStatus, value: Any) -> None:
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _error(self, status: HTTPStatus, code: str, message: str) -> None:
+        self._json(status, {"error": {"code": code, "message": message}})
+
+    def end_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and origin in self.server.config.cors_origins:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        logger.info("%s - %s", self.address_string(), format % args)

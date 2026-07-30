@@ -21,6 +21,7 @@ data/raw/*
 data/processed/*
 data/datasets/*
 data/uploaded/*
+data/runtime/*
 data/*.db
 data/*.sqlite
 data/*.sqlite3
@@ -48,6 +49,7 @@ models/finetuned/*
 # Local tooling and test artifacts
 .codegraph/
 .worktrees/
+.test-runtime/
 .pytest_cache/
 .coverage
 htmlcov/

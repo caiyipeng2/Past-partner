@@ -4,6 +4,8 @@
 
 开发一个能够高度模仿特定人物性格、语气、说话风格、惯用词汇的聊天机器人。
 
+当前里程碑提供安全的本地开发闭环：先创建人物身份，再通过可恢复分片上传导入资料，并从统一供应商目录选择模型。架构与后续移动端、混合学习和生产化路线见 `docs/superpowers/specs/2026-07-30-personalized-companion-platform-design.md`。
+
 ## 核心功能
 
 1. **风格模仿**：AI必须学习和复现聊天记录中目标人物的语气、情绪起伏、常用口头禅、回复长度以及标点符号和表情符号的使用习惯。
@@ -38,3 +40,23 @@ personalized-companion-ai/
 ├── requirements.txt       # Python依赖
 └── README.md             # 项目说明
 ```
+
+## 本地启动
+
+Python 是服务的正式入口，npm 和 PowerShell 只是 PC 调试包装：
+
+```powershell
+python -m src.server
+npm start
+.\scripts\run_server.ps1
+```
+
+默认地址为 `http://127.0.0.1:8080`。运行测试：
+
+```powershell
+python -m unittest discover -s tests -p "test*.py" -v
+```
+
+模型供应商需要在服务端显式配置凭据和允许的模型。未配置时接口返回 `provider_not_configured`，不会生成模拟回复。微调能力同样遵循真实能力检查，不会返回伪造训练指标。
+
+DeepSeek、小米 MiMo、阿里千问、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。

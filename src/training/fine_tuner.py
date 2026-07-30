@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 # pip install transformers torch peft bitsandbytes
 
 
+class TrainingCapabilityError(RuntimeError):
+    """Raised instead of reporting success when no real trainer is configured."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class ChatDataset:
     """聊天数据集类（概念性实现）"""
     
@@ -94,6 +102,10 @@ class FineTuner:
     
     def prepare_model_and_tokenizer(self):
         """准备模型和分词器（概念性实现）"""
+        raise TrainingCapabilityError(
+            "capability_not_configured",
+            "A real local or provider training backend must be configured first",
+        )
         logger.info(f"正在加载模型: {self.config.model_path}")
         logger.warning("FineTuner是概念性实现，实际使用需要安装transformers和torch库")
         
@@ -242,6 +254,10 @@ class FineTuner:
     
     def setup_trainer(self):
         """设置训练器（概念性实现）"""
+        raise TrainingCapabilityError(
+            "capability_not_configured",
+            "A real trainer must be configured before setup",
+        )
         logger.info("正在设置训练器（概念性实现）")
         logger.warning("实际使用需要安装transformers库")
         
@@ -298,44 +314,22 @@ class FineTuner:
         # )
     
     def train(self):
-        """开始训练（概念性实现）"""
-        # if not self.trainer:
-        #     raise RuntimeError("训练器未初始化，请先调用setup_trainer方法")
-            
-        logger.info("开始训练（概念性实现）")
-        logger.warning("实际训练需要完整的模型和训练器实现")
-        
-        # 概念性实现
-        train_result = {
-            "train_loss": 0.5,
-            "training_time": "00:10:30"
-        }
-        
-        # 保存模型（概念性实现）
-        logger.info("正在保存模型（概念性实现）")
-        os.makedirs(self.config.output_dir, exist_ok=True)
-        
-        # 保存训练结果
-        metrics = train_result
-        logger.info(f"训练完成（概念性实现），最终损失: {metrics['train_loss']}")
-        
-        return metrics
+        """Run a configured trainer or fail without creating fake artifacts."""
+        if self.trainer is None:
+            raise TrainingCapabilityError(
+                "capability_not_configured",
+                "No real fine-tuning backend is configured",
+            )
+        return self.trainer.train()
     
     def evaluate(self):
-        """评估模型（概念性实现）"""
-        # if not self.trainer or not self.val_dataset:
-        #     raise RuntimeError("训练器或验证数据集未初始化")
-            
-        logger.info("正在评估模型（概念性实现）")
-        
-        # 概念性实现
-        eval_result = {
-            "eval_loss": 0.6,
-            "eval_runtime": "00:02:15"
-        }
-        
-        logger.info(f"评估结果: {eval_result}")
-        return eval_result
+        """Evaluate only when a real trainer and validation dataset exist."""
+        if self.trainer is None or getattr(self, "val_dataset", None) is None:
+            raise TrainingCapabilityError(
+                "capability_not_configured",
+                "No real evaluator and validation dataset are configured",
+            )
+        return self.trainer.evaluate()
     
     def save_config(self):
         """保存训练配置"""

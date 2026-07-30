@@ -1,4 +1,15 @@
 // 简单的Web服务器，用于托管前端界面
+// Compatibility launcher only: the Python service owns every API and asset.
+const childProcess = require('child_process');
+if (require.main === module) {
+    const result = childProcess.spawnSync(
+        process.env.PYTHON || 'python',
+        ['-m', 'src.server', ...process.argv.slice(2)],
+        {cwd: require('path').resolve(__dirname, '..'), stdio: 'inherit'}
+    );
+    process.exit(result.status === null ? 1 : result.status);
+}
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
