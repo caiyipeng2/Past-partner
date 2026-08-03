@@ -1,6 +1,22 @@
 import unittest
 from pathlib import Path
 
+from src.providers import configuration
+from src.providers.catalog import ProviderCatalog
+
+
+_PROVIDER_LABELS = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "deepseek": "DeepSeek",
+    "xiaomi_mimo": "小米 MiMo",
+    "qwen": "阿里通义千问",
+    "ollama": "Ollama",
+    "custom_openai": "自定义 OpenAI-compatible",
+    "custom_http": "自定义 HTTP",
+}
+
 
 class PrivacyPolicyContractTests(unittest.TestCase):
     @classmethod
@@ -39,19 +55,31 @@ class PrivacyPolicyContractTests(unittest.TestCase):
                 self.assertIn(disclosure, self.policy)
 
     def test_policy_separates_runtime_adapters_from_catalog_placeholders(self) -> None:
-        self.assertIn(
-            "当前运行时适配器已覆盖 OpenAI、DeepSeek、小米 MiMo、阿里通义千问、Ollama 和自定义 OpenAI-compatible 服务",
-            self.policy,
+        runtime_disclosure = next(
+            line for line in self.policy.splitlines() if line.startswith("当前运行时适配器已覆盖")
         )
-        self.assertIn(
-            "Anthropic、Google Gemini 和自定义 HTTP 目前仅存在于供应商目录中，尚未实现可用的运行时适配器",
-            self.policy,
+        catalog_only_disclosure = next(
+            line for line in self.policy.splitlines() if "目前仅存在于供应商目录中" in line
         )
+        catalog_ids = {provider.id for provider in ProviderCatalog.default().providers()}
+        runtime_ids = {definition.provider_id for definition in configuration._PROVIDERS}
+
+        self.assertEqual(catalog_ids, set(_PROVIDER_LABELS))
+        self.assertLessEqual(runtime_ids, catalog_ids)
+        for provider_id, label in _PROVIDER_LABELS.items():
+            with self.subTest(provider_id=provider_id):
+                if provider_id in runtime_ids:
+                    self.assertIn(label, runtime_disclosure)
+                    self.assertNotIn(label, catalog_only_disclosure)
+                else:
+                    self.assertIn(label, catalog_only_disclosure)
+                    self.assertNotIn(label, runtime_disclosure)
 
     def test_policy_preserves_wechat_database_secret_boundaries(self) -> None:
         required_boundaries = (
             "微信数据库直接解析和模型学习尚未在当前项目中实现",
             "数据库、WAL 和 SHM 文件应先形成一致的只读快照",
+            "用户明确授权的本地步骤",
             "密钥只允许短暂存在于进程内存中",
             "不得写入日志、配置或持久化文件",
         )
