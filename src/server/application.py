@@ -12,6 +12,7 @@ from src.providers.configuration import build_openai_compatible_adapters
 from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter
 from src.server.config import ServerConfig
+from src.services.database import SQLiteMigrator
 from src.services.import_service import ImportService
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
@@ -43,6 +44,7 @@ class Application:
     def from_config(cls, config: ServerConfig) -> "Application":
         config = config.validated()
         storage = StorageLayout(config.data_dir)
+        SQLiteMigrator(storage.database_path()).migrate()
         personas = PersonaService(storage)
         imports = ImportService(storage, personas, max_import_bytes=config.max_import_bytes)
         uploads = UploadService(storage, imports, max_chunk_bytes=config.max_chunk_bytes)

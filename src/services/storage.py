@@ -48,6 +48,9 @@ class StorageLayout:
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         return sentinel.parent
 
+    def database_path(self) -> Path:
+        return self.object_path("database", "past-partner", ".sqlite3")
+
     def write_json(self, collection: str, object_id: str, value: Any) -> Path:
         destination = self.object_path(collection, object_id, ".json")
         destination.parent.mkdir(parents=True, exist_ok=True)
