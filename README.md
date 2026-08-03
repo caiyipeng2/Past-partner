@@ -37,9 +37,36 @@ personalized-companion-ai/
 ├── tests/                 # 测试相关
 ├── utils/                 # 工具函数
 ├── docs/                  # 文档
-├── requirements.txt       # Python依赖
+├── requirements.txt       # 默认核心依赖入口
+├── requirements-core.txt  # 核心服务依赖
+├── requirements-parsers.txt # 解析与文本处理依赖
+├── requirements-models.txt  # 模型与训练依赖
+├── requirements-dev.txt     # 开发测试依赖
 └── README.md             # 项目说明
 ```
+
+## 依赖安装
+
+默认安装只包含轻量核心服务，不会安装 `torch`、`transformers` 或 `datasets`：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+按实际用途选择一个扩展清单。解析组自动包含核心组，模型组自动包含解析组和核心组：
+
+```powershell
+# 聊天文件解析、数值和文本处理
+python -m pip install -r requirements-parsers.txt
+
+# 模型与训练，同时包含解析和核心依赖
+python -m pip install -r requirements-models.txt
+
+# 核心服务的开发测试工具
+python -m pip install -r requirements-dev.txt
+```
+
+当前正式入口 `python -m src.server` 只使用 Python 标准库。训练模块仍会在真实训练器和数据集缺失时明确返回不可用，不会因为安装模型依赖而生成模拟成功结果。
 
 ## 本地启动
 

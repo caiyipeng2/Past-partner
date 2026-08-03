@@ -1,0 +1,6 @@
+# 完整解析能力和可选的模型、训练依赖。
+-r requirements-parsers.txt
+
+torch>=1.9.0
+transformers>=4.21.0
+datasets>=2.4.0

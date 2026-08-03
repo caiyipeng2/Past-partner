@@ -1,0 +1,7 @@
+# 轻量服务、API、日志和配置依赖。
+# 当前 src.server 只使用标准库，但保留这些既有声明供相关模块演进使用。
+fastapi>=0.78.0
+uvicorn>=0.18.0
+pydantic>=1.9.0
+loguru>=0.6.0
+python-dotenv>=0.20.0
