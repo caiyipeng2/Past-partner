@@ -14,6 +14,7 @@ from src.providers.testing import DeterministicTestAdapter
 from src.server.config import ServerConfig
 from src.services.database import SQLiteMigrator
 from src.services.import_service import ImportService
+from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadService
@@ -31,12 +32,14 @@ class Application:
         personas: PersonaService,
         imports: ImportService,
         uploads: UploadService,
+        master_keys: MasterKeyProvider,
         catalog: ProviderCatalog,
         gateway: ProviderGateway,
     ):
         self.personas = personas
         self.imports = imports
         self.uploads = uploads
+        self.master_keys = master_keys
         self.catalog = catalog
         self.gateway = gateway
 
@@ -45,6 +48,7 @@ class Application:
         config = config.validated()
         storage = StorageLayout(config.data_dir)
         SQLiteMigrator(storage.database_path()).migrate()
+        master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         personas = PersonaService(storage)
         imports = ImportService(storage, personas, max_import_bytes=config.max_import_bytes)
         uploads = UploadService(storage, imports, max_chunk_bytes=config.max_chunk_bytes)
@@ -59,7 +63,7 @@ class Application:
         }
         catalog = catalog.with_configured(set(adapters) - {"test"}, runtime_models)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
-        return cls(personas, imports, uploads, catalog, gateway)
+        return cls(personas, imports, uploads, master_keys, catalog, gateway)
 
     def create_persona(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
