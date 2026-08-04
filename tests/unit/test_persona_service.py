@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.local_auth import LocalAuthService
 from src.services.persona_repository import PersonaRepository
 from src.services.persona_service import PersonaNotFoundError, PersonaService
 from src.services.storage import StorageLayout
@@ -21,6 +22,7 @@ class PersonaServiceTests(unittest.TestCase):
         )
         self.service = PersonaService(PersonaRepository(layout.database_path(), encryption))
         self.encryption = encryption
+        self.auth = LocalAuthService(layout.database_path(), encryption, mode="test")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
@@ -54,6 +56,30 @@ class PersonaServiceTests(unittest.TestCase):
         self.assertEqual("大学同学", loaded.relationship_description)
         self.assertEqual(("温和",), loaded.tone_boundaries)
         self.assertEqual(("隐私",), loaded.forbidden_topics)
+
+    def test_updates_and_persists_a_persona(self) -> None:
+        created = self.service.create("小雨", "friend", preferred_address="你")
+
+        updated = self.service.update(
+            created.id,
+            {
+                "display_name": "小雨同学",
+                "preferred_address": None,
+                "relationship_description": "大学同学",
+            },
+        )
+
+        loaded = self.service.get(created.id)
+        self.assertEqual("小雨同学", updated.display_name)
+        self.assertIsNone(loaded.preferred_address)
+        self.assertEqual("大学同学", loaded.relationship_description)
+        self.assertEqual(created.id, loaded.id)
+
+    def test_update_is_scoped_to_the_requested_owner(self) -> None:
+        created = self.service.create(self.auth.owner_id, "小雨", "friend")
+
+        with self.assertRaises(PersonaNotFoundError):
+            self.service.update("owner-b", created.id, {"display_name": "越权"})
 
     def test_missing_persona_has_a_domain_error(self) -> None:
         with self.assertRaises(PersonaNotFoundError):

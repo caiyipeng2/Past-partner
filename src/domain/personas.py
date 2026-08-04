@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Mapping
@@ -30,6 +30,19 @@ MAX_RELATIONSHIP_DESCRIPTION_CHARACTERS = 2_000
 MAX_BOUNDARY_ITEMS = 32
 MAX_BOUNDARY_ITEM_CHARACTERS = 120
 CURRENT_PERSONA_SCHEMA_VERSION = 1
+_PERSONA_UPDATE_FIELDS = frozenset(
+    {
+        "display_name",
+        "relationship_type",
+        "custom_label",
+        "relationship_label",
+        "preferred_address",
+        "user_address",
+        "relationship_description",
+        "tone_boundaries",
+        "forbidden_topics",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +123,92 @@ class Persona:
             tone_boundaries=_text_list(tone_boundaries, "tone_boundaries"),
             forbidden_topics=_text_list(forbidden_topics, "forbidden_topics"),
             updated_at=created_at,
+            schema_version=CURRENT_PERSONA_SCHEMA_VERSION,
+        )
+
+    def update(self, changes: Mapping[str, Any]) -> "Persona":
+        if not isinstance(changes, Mapping) or not changes:
+            raise PersonaValidationError("persona update must be a non-empty object")
+        unknown = set(changes) - _PERSONA_UPDATE_FIELDS
+        if unknown:
+            raise PersonaValidationError("unsupported persona update field")
+
+        display_name = (
+            _required_text(changes["display_name"], "display_name", MAX_DISPLAY_NAME_CHARACTERS)
+            if "display_name" in changes
+            else self.display_name
+        )
+        if "relationship_type" in changes:
+            try:
+                relationship = RelationshipType(changes["relationship_type"])
+            except (TypeError, ValueError) as exc:
+                raise PersonaValidationError("unsupported relationship_type") from exc
+        else:
+            relationship = self.relationship_type
+
+        label_present = "custom_label" in changes or "relationship_label" in changes
+        custom_label = self.custom_label
+        if label_present:
+            if "custom_label" in changes and "relationship_label" in changes:
+                left = _required_text(
+                    changes["custom_label"],
+                    "custom_label",
+                    MAX_CUSTOM_LABEL_CHARACTERS,
+                )
+                right = _required_text(
+                    changes["relationship_label"],
+                    "relationship_label",
+                    MAX_CUSTOM_LABEL_CHARACTERS,
+                )
+                if left != right:
+                    raise PersonaValidationError("custom_label and relationship_label conflict")
+                custom_label = left
+            else:
+                custom_label = changes.get("relationship_label", changes.get("custom_label"))
+        if relationship is RelationshipType.CUSTOM:
+            custom_label = _required_text(
+                custom_label,
+                "custom_label",
+                MAX_CUSTOM_LABEL_CHARACTERS,
+            )
+        else:
+            custom_label = None
+
+        return replace(
+            self,
+            display_name=display_name,
+            relationship_type=relationship,
+            custom_label=custom_label,
+            preferred_address=(
+                _optional_text(changes["preferred_address"], "preferred_address", MAX_ADDRESS_CHARACTERS)
+                if "preferred_address" in changes
+                else self.preferred_address
+            ),
+            user_address=(
+                _optional_text(changes["user_address"], "user_address", MAX_ADDRESS_CHARACTERS)
+                if "user_address" in changes
+                else self.user_address
+            ),
+            relationship_description=(
+                _optional_text(
+                    changes["relationship_description"],
+                    "relationship_description",
+                    MAX_RELATIONSHIP_DESCRIPTION_CHARACTERS,
+                )
+                if "relationship_description" in changes
+                else self.relationship_description
+            ),
+            tone_boundaries=(
+                _text_list(changes["tone_boundaries"], "tone_boundaries")
+                if "tone_boundaries" in changes
+                else self.tone_boundaries
+            ),
+            forbidden_topics=(
+                _text_list(changes["forbidden_topics"], "forbidden_topics")
+                if "forbidden_topics" in changes
+                else self.forbidden_topics
+            ),
+            updated_at=datetime.now(UTC).isoformat(),
             schema_version=CURRENT_PERSONA_SCHEMA_VERSION,
         )
 

@@ -119,6 +119,21 @@ class Application:
     def list_personas(self, owner_id: str) -> dict[str, Any]:
         return {"personas": [persona.to_dict() for persona in self.personas.list(owner_id)]}
 
+    def get_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
+        return self.personas.get(owner_id, persona_id).to_dict()
+
+    def update_persona(
+        self,
+        owner_id: str,
+        persona_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            persona = self.personas.update(owner_id, persona_id, payload)
+        except PersonaValidationError as exc:
+            raise RequestValidationError("invalid_persona", str(exc)) from exc
+        return persona.to_dict()
+
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             job = self.imports.create(

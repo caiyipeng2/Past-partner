@@ -99,6 +99,56 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(["温和", "不说教"], persona["tone_boundaries"])
         self.assertEqual(["家庭隐私"], persona["forbidden_topics"])
 
+    def test_persona_can_be_read_and_partially_updated(self) -> None:
+        _, _, created = self.request(
+            "POST",
+            "/api/v1/personas",
+            {
+                "display_name": "小雨",
+                "relationship_type": "friend",
+                "preferred_address": "你",
+                "forbidden_topics": ["家庭隐私"],
+            },
+        )
+
+        status, _, loaded = self.request("GET", f"/api/v1/personas/{created['id']}")
+        self.assertEqual(200, status)
+        self.assertEqual("你", loaded["preferred_address"])
+
+        status, _, updated = self.request(
+            "PATCH",
+            f"/api/v1/personas/{created['id']}",
+            {
+                "display_name": "小雨同学",
+                "preferred_address": None,
+                "relationship_description": "大学同学",
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("小雨同学", updated["display_name"])
+        self.assertIsNone(updated["preferred_address"])
+        self.assertEqual(["家庭隐私"], updated["forbidden_topics"])
+
+        status, _, missing = self.request("GET", "/api/v1/personas/not-found")
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", missing["error"]["code"])
+
+    def test_persona_update_rejects_unknown_fields(self) -> None:
+        _, _, created = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+
+        status, _, payload = self.request(
+            "PATCH",
+            f"/api/v1/personas/{created['id']}",
+            {"owner_id": "attacker"},
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_persona", payload["error"]["code"])
+
     def test_data_routes_require_a_valid_owner_session(self) -> None:
         status, _, payload = self.request(
             "GET", "/api/v1/personas", headers={"Authorization": "Bearer invalid"}
@@ -238,6 +288,8 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(204, status)
         self.assertEqual("http://127.0.0.1:3000", headers["Access-Control-Allow-Origin"])
+
+        self.assertIn("PATCH", headers["Access-Control-Allow-Methods"])
 
 
 if __name__ == "__main__":

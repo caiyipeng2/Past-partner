@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any, Mapping
 
 from src.domain.personas import Persona
 from src.services.persona_repository import PersonaRepository
@@ -61,6 +62,23 @@ class PersonaService:
             persona_id = owner_id
             owner_id = None
         persona = self.repository.get(owner_id, persona_id)
+        if persona is None:
+            raise PersonaNotFoundError("persona not found")
+        return persona
+
+    def update(
+        self,
+        owner_id: str,
+        persona_id: str | Mapping[str, Any],
+        changes: Mapping[str, Any] | None = None,
+    ) -> Persona:
+        if changes is None:
+            changes = persona_id
+            persona_id = owner_id
+            owner_id = None
+        if not isinstance(persona_id, str) or not isinstance(changes, Mapping):
+            raise TypeError("persona_id and changes are required")
+        persona = self.repository.update(owner_id, persona_id, changes)
         if persona is None:
             raise PersonaNotFoundError("persona not found")
         return persona

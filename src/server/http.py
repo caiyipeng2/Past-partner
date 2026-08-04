@@ -24,6 +24,7 @@ from src.services.upload_service import UploadError
 
 logger = logging.getLogger(__name__)
 _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
+_PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _STATIC_FILES = {
@@ -61,7 +62,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, X-Chunk-Sha256, Authorization, X-Local-Owner-Token",
@@ -77,6 +78,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         self._dispatch(self._handle_put)
+
+    def do_PATCH(self) -> None:
+        self._dispatch(self._handle_patch)
 
     def _dispatch(self, operation) -> None:
         try:
@@ -129,6 +133,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"status": "healthy", "service": "past-partner-api", "version": "v1"})
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
+        elif match := _PERSONA_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_persona(self.owner_id, match.group(1)))
         elif path == "/api/v1/providers":
             self._json(HTTPStatus.OK, self.server.application.providers_catalog())
         elif path == "/api/v1/models":
@@ -193,6 +199,21 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self.rfile,
         )
         self._json(HTTPStatus.OK, result)
+
+    def _handle_patch(self) -> None:
+        path, _ = self._request_target()
+        match = _PERSONA_PATH.fullmatch(path)
+        if match is None:
+            self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
+            return
+        self._json(
+            HTTPStatus.OK,
+            self.server.application.update_persona(
+                self.owner_id,
+                match.group(1),
+                self._json_body(),
+            ),
+        )
 
     def _json_body(self) -> dict[str, Any]:
         raw_length = self.headers.get("Content-Length")

@@ -85,6 +85,38 @@ class PersonaTests(unittest.TestCase):
         self.assertIsNone(persona.preferred_address)
         self.assertEqual((), persona.forbidden_topics)
 
+    def test_updates_partial_relationship_context_without_changing_identity(self) -> None:
+        persona = Persona.create(
+            "小雨",
+            RelationshipType.FRIEND.value,
+            preferred_address="你",
+            relationship_description="大学同学",
+        )
+
+        updated = persona.update(
+            {
+                "display_name": "小雨同学",
+                "user_address": "小雨",
+                "forbidden_topics": ["家庭隐私"],
+            }
+        )
+
+        self.assertEqual(persona.id, updated.id)
+        self.assertEqual(persona.created_at, updated.created_at)
+        self.assertEqual("小雨同学", updated.display_name)
+        self.assertEqual("你", updated.preferred_address)
+        self.assertEqual("小雨", updated.user_address)
+        self.assertEqual(("家庭隐私",), updated.forbidden_topics)
+        self.assertEqual(1, updated.schema_version)
+
+    def test_rejects_unknown_or_immutable_persona_update_fields(self) -> None:
+        persona = Persona.create("小雨", RelationshipType.FRIEND.value)
+
+        with self.assertRaises(PersonaValidationError):
+            persona.update({"unknown": "value"})
+        with self.assertRaises(PersonaValidationError):
+            persona.update({"id": "replacement"})
+
     def test_rejects_unknown_relationship(self) -> None:
         with self.assertRaises(PersonaValidationError):
             Persona.create("重要的人", "coworker")

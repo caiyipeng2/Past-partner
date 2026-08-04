@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Any, Mapping
 
 from src.domain.personas import Persona, PersonaValidationError
 from src.services.authenticated_encryption import (
@@ -80,6 +81,51 @@ class PersonaRepository:
         if row is None:
             return None
         return self._decode(persona_id, row[0], row[1])
+
+    def update(
+        self,
+        owner_id: str,
+        persona_id: str,
+        changes: Mapping[str, Any],
+    ) -> Persona | None:
+        owner_id = self._owner_id(owner_id)
+        if not isinstance(persona_id, str) or not persona_id:
+            return None
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"SELECT record_version, encrypted_payload FROM personas WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (persona_id, *self._owner_params(owner_id)),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                return None
+
+            current = self._decode(persona_id, row[0], row[1])
+            updated = current.update(changes)
+            connection.execute(
+                f"""
+                UPDATE personas
+                SET record_version = ?, encrypted_payload = ?
+                WHERE id = ? AND {self._owner_clause(owner_id)}
+                """,
+                (
+                    self._RECORD_VERSION,
+                    self._encode(updated),
+                    persona_id,
+                    *self._owner_params(owner_id),
+                ),
+            )
+            connection.commit()
+            return updated
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def list(self, owner_id: str | None = None) -> list[Persona]:
         owner_id = self._owner_id(owner_id)
