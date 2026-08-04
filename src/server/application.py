@@ -17,6 +17,7 @@ from src.services.database import SQLiteMigrator
 from src.services.import_service import ImportService
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.persona_service import PersonaService
+from src.services.persona_repository import PersonaRepository
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadService
 
@@ -53,7 +54,9 @@ class Application:
         SQLiteMigrator(storage.database_path()).migrate()
         master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         encryption = AuthenticatedEncryptionService(master_keys)
-        personas = PersonaService(storage)
+        persona_repository = PersonaRepository(storage.database_path(), encryption)
+        persona_repository.migrate_legacy_json(storage.root / "personas")
+        personas = PersonaService(persona_repository)
         imports = ImportService(storage, personas, max_import_bytes=config.max_import_bytes)
         uploads = UploadService(
             storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes

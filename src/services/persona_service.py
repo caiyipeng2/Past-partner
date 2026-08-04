@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.domain.personas import Persona
-from src.services.storage import InvalidStorageIdentifier, StorageLayout
+from src.services.persona_repository import PersonaRepository
 
 
 class PersonaNotFoundError(LookupError):
@@ -11,8 +11,8 @@ class PersonaNotFoundError(LookupError):
 
 
 class PersonaService:
-    def __init__(self, storage: StorageLayout):
-        self.storage = storage
+    def __init__(self, repository: PersonaRepository):
+        self.repository = repository
 
     def create(
         self,
@@ -21,19 +21,14 @@ class PersonaService:
         custom_label: str | None = None,
     ) -> Persona:
         persona = Persona.create(display_name, relationship_type, custom_label)
-        self.storage.write_json("personas", persona.id, persona.to_dict())
+        self.repository.save(persona)
         return persona
 
     def get(self, persona_id: str) -> Persona:
-        try:
-            value = self.storage.read_json("personas", persona_id)
-        except (FileNotFoundError, InvalidStorageIdentifier) as exc:
-            raise PersonaNotFoundError("persona not found") from exc
-        return Persona.from_dict(value)
+        persona = self.repository.get(persona_id)
+        if persona is None:
+            raise PersonaNotFoundError("persona not found")
+        return persona
 
     def list(self) -> list[Persona]:
-        directory = self.storage.ensure_collection("personas")
-        personas: list[Persona] = []
-        for path in sorted(directory.glob("*.json")):
-            personas.append(Persona.from_dict(self.storage.read_json("personas", path.stem)))
-        return personas
+        return self.repository.list()

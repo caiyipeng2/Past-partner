@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_service import DEFAULT_MAX_IMPORT_BYTES, ImportService, ImportState
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.persona_repository import PersonaRepository
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadService
@@ -23,12 +24,12 @@ class LargeUploadContractTests(unittest.TestCase):
 
     def test_three_gib_job_does_not_preallocate_the_payload(self) -> None:
         layout = StorageLayout(self.root)
-        personas = PersonaService(layout)
-        imports = ImportService(layout, personas)
         key = base64.b64encode(b"l" * MASTER_KEY_BYTES).decode("ascii")
         encryption = AuthenticatedEncryptionService(
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
+        personas = PersonaService(PersonaRepository(layout.database_path(), encryption))
+        imports = ImportService(layout, personas)
         uploads = UploadService(layout, imports, encryption)
         persona = personas.create("妈妈", "mother")
 

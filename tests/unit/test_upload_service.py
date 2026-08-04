@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_service import ImportService, ImportState
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.persona_repository import PersonaRepository
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadError, UploadService
@@ -28,15 +29,17 @@ class UploadServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path.cwd() / ".test-runtime" / str(uuid4())
         layout = StorageLayout(self.root)
-        personas = PersonaService(layout)
-        imports = ImportService(layout, personas)
-        persona = personas.create("小雨", "friend")
-        self.job = imports.create(persona.id, "chat.txt", 11, "text/plain")
-        self.imports = imports
         key = base64.b64encode(b"u" * MASTER_KEY_BYTES).decode("ascii")
         self.encryption = AuthenticatedEncryptionService(
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
+        personas = PersonaService(
+            PersonaRepository(layout.database_path(), self.encryption)
+        )
+        imports = ImportService(layout, personas)
+        persona = personas.create("小雨", "friend")
+        self.job = imports.create(persona.id, "chat.txt", 11, "text/plain")
+        self.imports = imports
         self.uploads = UploadService(layout, imports, self.encryption, read_block_bytes=4)
 
     def tearDown(self) -> None:

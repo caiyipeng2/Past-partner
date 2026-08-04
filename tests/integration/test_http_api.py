@@ -63,6 +63,9 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(201, status)
         self.assertEqual("mother", persona["relationship_type"])
+        self.assertFalse((self.data_root / "personas").exists())
+        database_bytes = (self.data_root / "database" / "past-partner.sqlite3").read_bytes()
+        self.assertNotIn("妈妈".encode("utf-8"), database_bytes)
 
         status, _, providers = self.request("GET", "/api/v1/providers")
         self.assertEqual(200, status)

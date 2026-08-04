@@ -35,9 +35,25 @@ class Migration:
         return digest.hexdigest()
 
 
-# Version 1 establishes the durable migration ledger. Business tables are added
-# by their owning repository tasks so this foundation does not pre-empt them.
-DEFAULT_MIGRATIONS = (Migration(version=1, name="bootstrap_schema", statements=()),)
+# Version 1 establishes the durable migration ledger. Version 2 owns the
+# encrypted persona record table; business repositories add their own tables in
+# later migrations so startup remains transactional and history is auditable.
+DEFAULT_MIGRATIONS = (
+    Migration(version=1, name="bootstrap_schema", statements=()),
+    Migration(
+        version=2,
+        name="persona_repository",
+        statements=(
+            """
+            CREATE TABLE personas (
+                id TEXT PRIMARY KEY,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+        ),
+    ),
+)
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
 

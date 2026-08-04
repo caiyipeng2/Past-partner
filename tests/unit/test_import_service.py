@@ -1,8 +1,10 @@
+import base64
 import shutil
 import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_service import (
     DEFAULT_MAX_IMPORT_BYTES,
     ImportNotFoundError,
@@ -10,6 +12,8 @@ from src.services.import_service import (
     ImportState,
     ImportValidationError,
 )
+from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.persona_repository import PersonaRepository
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
 
@@ -18,7 +22,11 @@ class ImportServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path.cwd() / ".test-runtime" / str(uuid4())
         layout = StorageLayout(self.root)
-        self.personas = PersonaService(layout)
+        key = base64.b64encode(b"i" * MASTER_KEY_BYTES).decode("ascii")
+        encryption = AuthenticatedEncryptionService(
+            EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
+        )
+        self.personas = PersonaService(PersonaRepository(layout.database_path(), encryption))
         self.imports = ImportService(layout, self.personas)
         self.persona = self.personas.create("小雨", "friend")
 

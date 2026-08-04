@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import sqlite3
 import unittest
@@ -33,7 +34,15 @@ class SQLiteMigrationTests(unittest.TestCase):
             rows = connection.execute(
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
-        self.assertEqual([(1, "bootstrap_schema")], rows)
+        self.assertEqual(
+            [(1, "bootstrap_schema"), (2, "persona_repository")],
+            rows,
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'personas'"
+            ).fetchone()
+        self.assertEqual(("personas",), table)
 
     def test_repeated_migration_is_idempotent(self) -> None:
         migrator = SQLiteMigrator(self.database_path)
@@ -44,13 +53,63 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertEqual(first_version, second_version)
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(1, count)
+        self.assertEqual(2, count)
+
+    def test_upgrades_a_version_one_database_to_persona_repository(self) -> None:
+        SQLiteMigrator(
+            self.database_path,
+            (Migration(version=1, name="bootstrap_schema", statements=()),),
+        ).migrate()
+
+        self.assertEqual(2, SQLiteMigrator(self.database_path).migrate())
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'personas'"
+            ).fetchone()
+        self.assertEqual(("personas",), table)
+
+    def test_failed_persona_migration_rolls_back_table_and_version(self) -> None:
+        version_one = Migration(version=1, name="bootstrap_schema", statements=())
+        SQLiteMigrator(self.database_path, (version_one,)).migrate()
+        broken_persona_migration = Migration(
+            version=2,
+            name="persona_repository",
+            statements=(
+                "CREATE TABLE personas (id TEXT PRIMARY KEY)",
+                "THIS IS NOT VALID SQL",
+            ),
+        )
+
+        with self.assertRaises(sqlite3.DatabaseError):
+            SQLiteMigrator(self.database_path, (version_one, broken_persona_migration)).migrate()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            applied_versions = connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'personas'"
+            ).fetchone()
+        self.assertEqual([(1,)], applied_versions)
+        self.assertIsNone(table)
+
+    def test_concurrent_migration_is_idempotent(self) -> None:
+        def migrate() -> int:
+            return SQLiteMigrator(self.database_path).migrate()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            versions = sorted(executor.map(lambda _: migrate(), range(2)))
+
+        self.assertEqual([2, 2], versions)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+        self.assertEqual(2, count)
 
     def test_failed_pending_migration_rolls_back_its_schema_and_version(self) -> None:
         SQLiteMigrator(self.database_path).migrate()
         broken_plan = DEFAULT_MIGRATIONS + (
             Migration(
-                version=2,
+                version=3,
                 name="broken_migration",
                 statements=(
                     "CREATE TABLE should_be_rolled_back (id INTEGER PRIMARY KEY)",
@@ -69,7 +128,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             leaked_table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'should_be_rolled_back'"
             ).fetchone()
-        self.assertEqual([(1,)], applied_versions)
+            self.assertEqual([(1,), (2,)], applied_versions)
         self.assertIsNone(leaked_table)
 
     def test_rejects_changed_history_for_an_applied_version(self) -> None:
@@ -105,7 +164,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertTrue(self.database_path.is_file())
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(1, count)
+        self.assertEqual(2, count)
 
 
 if __name__ == "__main__":
