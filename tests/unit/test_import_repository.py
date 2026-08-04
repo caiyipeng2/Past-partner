@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_repository import ImportRepository, ImportRepositoryError
-from src.services.import_service import ImportJob, ImportState
+from src.services.import_service import ImportFile, ImportJob, ImportState
 from src.services.local_auth import LocalAuthService
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.storage import StorageLayout
@@ -71,6 +71,31 @@ class ImportRepositoryTests(unittest.TestCase):
         reopened = ImportRepository(self.layout.database_path(), self.encryption)
         self.assertEqual(self.job, reopened.get(self.job.id))
         self.assertEqual(self.manifest, reopened.get_manifest(self.job.id))
+
+    def test_multi_file_manifest_is_persisted_and_encrypted(self) -> None:
+        multi_file_job = replace(
+            self.job,
+            total_bytes=12,
+            source_name="wechat.txt",
+            media_type="text/plain",
+            files=(
+                ImportFile("file-a", "wechat.txt", "text/plain", 5, "a" * 64),
+                ImportFile("file-b", "photo.jpg", "image/jpeg", 7, None),
+            ),
+        )
+
+        self.repository.create(multi_file_job)
+
+        stored = self.repository.get_manifest(multi_file_job.id)
+        self.assertIsNotNone(stored)
+        self.assertEqual(
+            ["file-a", "file-b"],
+            [item["file_id"] for item in stored["files"]],
+        )
+        self.assertEqual(multi_file_job, self.repository.get(multi_file_job.id))
+        database_bytes = self.layout.database_path().read_bytes()
+        self.assertNotIn(b"wechat.txt", database_bytes)
+        self.assertNotIn(b"photo.jpg", database_bytes)
 
     def test_tampered_job_and_manifest_fail_closed(self) -> None:
         self.repository.create(self.job, self.manifest)

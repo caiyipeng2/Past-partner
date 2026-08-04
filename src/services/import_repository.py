@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -50,7 +51,7 @@ class ImportRepository:
             owner_id = None
         owner_id = self._owner_id(owner_id)
         payload = self._encode_job(job)
-        manifest_value = self._normalize_manifest(job.id, manifest)
+        manifest_value = self._normalize_manifest(job.id, manifest, getattr(job, "files", ()))
         manifest_payload = self._encode_manifest(job.id, manifest_value)
         connection = self._connect()
         try:
@@ -157,7 +158,7 @@ class ImportRepository:
             owner_id = None
         owner_id = self._owner_id(owner_id)
         job_payload = self._encode_job(job)
-        manifest_value = self._normalize_manifest(job.id, manifest)
+        manifest_value = self._normalize_manifest(job.id, manifest, getattr(job, "files", ()))
         manifest_payload = self._encode_manifest(job.id, manifest_value)
         connection = self._connect()
         try:
@@ -237,7 +238,10 @@ class ImportRepository:
 
         records: list[tuple[str, Any, dict[str, Any]]] = []
         for import_id, job in import_records.items():
-            manifest = manifest_records.get(import_id, self._default_manifest(import_id))
+            manifest = manifest_records.get(
+                import_id,
+                self._default_manifest(import_id, getattr(job, "files", ())),
+            )
             records.append((import_id, job, manifest))
 
         connection = self._connect()
@@ -419,14 +423,28 @@ class ImportRepository:
         return f"{cls._MANIFEST_AAD_PREFIX}{import_id}".encode("utf-8")
 
     @staticmethod
-    def _default_manifest(import_id: str) -> dict[str, Any]:
-        return {"version": 2, "import_id": import_id, "chunks": {}}
+    def _default_manifest(import_id: str, files: Sequence[Any] = ()) -> dict[str, Any]:
+        manifest: dict[str, Any] = {"version": 2, "import_id": import_id, "chunks": {}}
+        if files:
+            manifest["files"] = [
+                {
+                    **item.to_dict(),
+                    "received_bytes": 0,
+                    "chunk_count": 0,
+                    "chunks": {},
+                }
+                for item in files
+            ]
+        return manifest
 
     def _normalize_manifest(
-        self, import_id: str, value: Mapping[str, Any] | None
+        self,
+        import_id: str,
+        value: Mapping[str, Any] | None,
+        files: Sequence[Any] = (),
     ) -> dict[str, Any]:
         if value is None:
-            manifest = self._default_manifest(import_id)
+            manifest = self._default_manifest(import_id, files)
         elif isinstance(value, Mapping):
             manifest = dict(value)
         else:
@@ -437,7 +455,54 @@ class ImportRepository:
             or not isinstance(manifest.get("chunks"), dict)
         ):
             raise ImportRepositoryError("manifest_record_corrupt", "manifest record is invalid")
+
+        raw_files = manifest.get("files")
+        if raw_files is None:
+            if files:
+                manifest["files"] = self._default_manifest(import_id, files)["files"]
+            return manifest
+
+        normalized_files = self._normalize_file_manifest(raw_files)
+        if files:
+            expected = [item.to_dict() for item in files]
+            actual = [
+                {key: item[key] for key in expected[0]}
+                for item in normalized_files
+            ] if expected else []
+            if actual != expected:
+                raise ImportRepositoryError(
+                    "manifest_file_mismatch",
+                    "manifest files do not match the import job",
+                )
+        manifest["files"] = normalized_files
         return manifest
+
+    @staticmethod
+    def _normalize_file_manifest(value: object) -> list[dict[str, Any]]:
+        from src.services.import_service import ImportFile, ImportValidationError
+
+        if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence) or not value:
+            raise ImportRepositoryError("manifest_record_corrupt", "manifest files are invalid")
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in value:
+            try:
+                parsed = ImportFile.from_mapping(item)
+            except (ImportValidationError, TypeError) as exc:
+                raise ImportRepositoryError("manifest_record_corrupt", "manifest files are invalid") from exc
+            if parsed.file_id in seen:
+                raise ImportRepositoryError("manifest_record_corrupt", "manifest contains duplicate file IDs")
+            seen.add(parsed.file_id)
+            entry = dict(item)
+            entry.update(parsed.to_dict())
+            chunks = entry.get("chunks", {})
+            if not isinstance(chunks, dict):
+                raise ImportRepositoryError("manifest_record_corrupt", "file chunks are invalid")
+            entry["received_bytes"] = entry.get("received_bytes", 0)
+            entry["chunk_count"] = entry.get("chunk_count", len(chunks))
+            entry["chunks"] = chunks
+            normalized.append(entry)
+        return normalized
 
     def _connect(self) -> sqlite3.Connection:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

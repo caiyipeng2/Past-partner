@@ -213,6 +213,34 @@ class HttpApiTests(unittest.TestCase):
             b"".join(self.server.application.uploads.iter_payload(self.owner_id, job["id"])),
         )
 
+    def test_import_creation_accepts_multiple_files_and_returns_file_ids(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+
+        status, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "files": [
+                    {"source_name": "chat.txt", "media_type": "text/plain", "total_bytes": 5},
+                    {"source_name": "photo.jpg", "media_type": "image/jpeg", "total_bytes": 7},
+                ],
+            },
+        )
+
+        self.assertEqual(201, status)
+        self.assertEqual(12, job["total_bytes"])
+        self.assertEqual(2, len(job["files"]))
+        self.assertTrue(all(item["file_id"] for item in job["files"]))
+
+        status, _, loaded = self.request("GET", f"/api/v1/imports/{job['id']}")
+        self.assertEqual(200, status)
+        self.assertEqual(job["files"], loaded["files"])
+
     def test_rejected_chunk_closes_connection_when_body_may_be_unread(self) -> None:
         _, _, persona = self.request(
             "POST",

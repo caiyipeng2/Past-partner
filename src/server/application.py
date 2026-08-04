@@ -136,13 +136,22 @@ class Application:
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
-            job = self.imports.create(
-                owner_id=owner_id,
-                persona_id=payload["persona_id"],
-                source_name=payload["source_name"],
-                total_bytes=payload["total_bytes"],
-                media_type=payload["media_type"],
-            )
+            arguments: dict[str, Any] = {
+                "owner_id": owner_id,
+                "persona_id": payload["persona_id"],
+            }
+            if "files" in payload:
+                arguments["files"] = payload["files"]
+                arguments["source_name"] = payload.get("source_name")
+                arguments["total_bytes"] = payload.get("total_bytes")
+                arguments["media_type"] = payload.get("media_type")
+            else:
+                arguments.update(
+                    source_name=payload["source_name"],
+                    total_bytes=payload["total_bytes"],
+                    media_type=payload["media_type"],
+                )
+            job = self.imports.create(**arguments)
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
         return job.to_dict()
