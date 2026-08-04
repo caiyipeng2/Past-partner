@@ -66,7 +66,7 @@ python -m pip install -r requirements-models.txt
 python -m pip install -r requirements-dev.txt
 ```
 
-当前正式入口 `python -m src.server` 只使用 Python 标准库。训练模块仍会在真实训练器和数据集缺失时明确返回不可用，不会因为安装模型依赖而生成模拟成功结果。
+当前正式入口 `python -m src.server` 使用轻量核心依赖，并通过 `cryptography` 提供 AES-GCM 认证加密。训练模块仍会在真实训练器和数据集缺失时明确返回不可用，不会因为安装模型依赖而生成模拟成功结果。
 
 ## 本地启动
 
@@ -88,7 +88,7 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 应用已装配统一主密钥提供器。所有模式都优先读取 `PAST_PARTNER_MASTER_KEY`，其值必须是严格 Base64 编码的 32 字节随机密钥；生产模式缺失或配置错误时，后续敏感写入取钥会直接失败。Windows 本地开发模式未配置环境密钥时，会在首次取钥时生成随机密钥，并通过当前 Windows 用户的 DPAPI 保护后写入 `<data-dir>/secrets/master-key.dpapi`。DPAPI 文件不能跨 Windows 用户直接解保护，不应作为备份密钥使用。
 
-P0-04 只建立主密钥来源和缺钥失败边界。当前 JSON、上传分片与合并文件仍是未加密格式；将敏感写入切换到 AES-GCM 认证加密和加密对象存储分别属于后续 P0-05、P0-06，在完成前仍以 `docs/privacy_policy.md` 的限制为准。
+P0-05 已提供版本化 AES-256-GCM 信封加密服务：每个对象使用独立随机数据密钥和 nonce，数据密钥再由 P0-04 的主密钥认证加密；信封携带已认证的非秘密主密钥标识，部署方可注入按标识解析历史密钥的函数以支持密钥轮换。调用方必须提供关联数据（AAD）绑定对象身份。单次加密默认限制为 64 MiB，不能把完整的 3 GiB 导入一次性读入内存；P0-06 必须按有界分段加密，并将对象 ID、分段序号和结束标记纳入 AAD。当前 JSON、上传分片与合并文件仍是未加密格式；将这些敏感写入切换到加密对象存储属于后续 P0-06，在完成前仍以 `docs/privacy_policy.md` 的限制为准。
 
 模型供应商需要在服务端显式配置凭据和允许的模型。未配置时接口返回 `provider_not_configured`，不会生成模拟回复。微调能力同样遵循真实能力检查，不会返回伪造训练指标。
 

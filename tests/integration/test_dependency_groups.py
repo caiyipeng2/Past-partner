@@ -26,6 +26,7 @@ class DependencyGroupContractTests(unittest.TestCase):
                 "pydantic>=1.9.0",
                 "loguru>=0.6.0",
                 "python-dotenv>=0.20.0",
+                "cryptography>=49.0.0",
             ],
             self._entries("requirements-core.txt"),
         )
@@ -57,9 +58,9 @@ class DependencyGroupContractTests(unittest.TestCase):
             self._entries("requirements-dev.txt"),
         )
 
-    def test_core_service_imports_without_site_packages(self) -> None:
+    def test_core_service_imports_with_core_dependencies(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-S", "-m", "src.server", "--help"],
+            [sys.executable, "-m", "src.server", "--help"],
             cwd=self.root,
             capture_output=True,
             text=True,

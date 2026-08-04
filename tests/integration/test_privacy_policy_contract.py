@@ -40,6 +40,7 @@ class PrivacyPolicyContractTests(unittest.TestCase):
         required_disclosures = (
             "本地开发预览",
             "当前版本尚未实现静态数据加密",
+            "当前代码已提供 P0-05 AES-256-GCM 认证加密服务",
             "当前版本尚未提供账户登录、身份验证和访问控制",
             "当前版本尚未提供自动保留期清理、数据导出或级联删除功能",
             "文本消息会发送给用户选择且由服务端配置的模型供应商",
