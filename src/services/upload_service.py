@@ -89,7 +89,12 @@ class UploadService:
 
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state in {ImportState.UPLOADED, ImportState.PROCESSING, ImportState.COMPLETED}:
+            if job.state in {
+                ImportState.UPLOADED,
+                ImportState.PROCESSING,
+                ImportState.COMPLETED,
+                ImportState.CANCELLED,
+            }:
                 raise UploadError("upload_closed", "the import no longer accepts chunks")
 
             manifest = self._load_manifest(owner_id, import_id)
@@ -165,7 +170,7 @@ class UploadService:
             job = self.imports.get(owner_id, import_id)
             if job.state is ImportState.UPLOADED and self.payload_path(import_id).is_file():
                 return job
-            if job.state in {ImportState.PROCESSING, ImportState.COMPLETED}:
+            if job.state in {ImportState.PROCESSING, ImportState.COMPLETED, ImportState.CANCELLED}:
                 raise UploadError("upload_closed", "the import is already being processed")
 
             manifest = self._load_manifest(owner_id, import_id)
@@ -233,6 +238,41 @@ class UploadService:
                     "metadata_persistence_failed", "import metadata could not be committed"
                 ) from exc
             return completed
+
+    def cancel(self, owner_id: str, import_id: str | None = None) -> ImportJob:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is ImportState.CANCELLED:
+                return job
+            if job.state in {
+                ImportState.UPLOADED,
+                ImportState.PROCESSING,
+                ImportState.COMPLETED,
+            }:
+                raise UploadError("upload_closed", "the import can no longer be cancelled")
+
+            manifest = self._load_manifest(owner_id, import_id)
+            indexes = self._manifest_indexes(manifest)
+            cancelled = replace(
+                job,
+                received_bytes=0,
+                chunk_count=0,
+                state=ImportState.CANCELLED,
+                updated_at=datetime.now(UTC).isoformat(),
+            )
+            cancelled_manifest = dict(manifest)
+            cancelled_manifest["version"] = 2
+            cancelled_manifest["chunks"] = {}
+            cancelled_manifest.pop("final_encrypted_length", None)
+            self.imports.save_state(owner_id, cancelled, cancelled_manifest)
+
+            for index in indexes:
+                self._chunk_path(import_id, index).unlink(missing_ok=True)
+            self.payload_path(import_id).unlink(missing_ok=True)
+            return cancelled
 
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")

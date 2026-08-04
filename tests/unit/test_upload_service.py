@@ -165,6 +165,36 @@ class UploadServiceTests(unittest.TestCase):
         self.assertEqual([0, 2], status["received_chunks"])
         self.assertEqual([1], status["missing_chunks"])
 
+    def test_cancel_clears_stored_parts_and_closes_the_import(self) -> None:
+        value = b"secret"
+        self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
+        chunk_path = self.uploads._chunk_path(self.job.id, 0)
+        self.assertTrue(chunk_path.exists())
+
+        cancelled = self.uploads.cancel(self.job.id)
+
+        self.assertEqual(ImportState.CANCELLED, cancelled.state)
+        self.assertFalse(chunk_path.exists())
+        self.assertEqual(0, cancelled.received_bytes)
+        self.assertEqual(0, cancelled.chunk_count)
+        self.assertEqual({}, self.imports.get_manifest(self.job.id)["chunks"])
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.put_chunk(
+                self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
+            )
+        self.assertEqual("upload_closed", captured.exception.code)
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.complete(self.job.id)
+        self.assertEqual("upload_closed", captured.exception.code)
+
+    def test_cancel_is_idempotent_for_an_already_cancelled_import(self) -> None:
+        first = self.uploads.cancel(self.job.id)
+
+        second = self.uploads.cancel(self.job.id)
+
+        self.assertEqual(ImportState.CANCELLED, first.state)
+        self.assertEqual(first, second)
+
     def test_missing_chunk_status_rejects_expected_count_below_stored_index(self) -> None:
         value = b"hello"
         self.uploads.put_chunk(self.job.id, 2, len(value), self.digest(value), io.BytesIO(value))

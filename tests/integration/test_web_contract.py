@@ -38,6 +38,11 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("AbortController", self.javascript)
         self.assertIn("toggleUploadPause", self.javascript)
 
+    def test_browser_exposes_import_cancellation(self) -> None:
+        self.assertIn('id="cancelUploadButton"', self.html)
+        self.assertIn("cancelUpload", self.javascript)
+        self.assertIn("/cancel", self.javascript)
+
     def test_untrusted_text_is_never_rendered_with_inner_html(self) -> None:
         self.assertNotIn("innerHTML", self.javascript)
         self.assertIn("textContent", self.javascript)

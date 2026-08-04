@@ -284,6 +284,59 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_expected_chunk_count", payload["error"]["code"])
 
+    def test_import_can_be_cancelled_and_rejects_follow_up_uploads(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 5,
+                "media_type": "text/plain",
+            },
+        )
+        content = b"hello"
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": hashlib.sha256(content).hexdigest()},
+        )
+        self.assertEqual(200, status)
+
+        status, _, cancelled = self.request(
+            "POST", f"/api/v1/imports/{job['id']}/cancel", {}
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("cancelled", cancelled["state"])
+        self.assertFalse(self.server.application.uploads._chunk_path(job["id"], 0).exists())
+
+        status, _, repeated = self.request(
+            "POST", f"/api/v1/imports/{job['id']}/cancel", {}
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("cancelled", repeated["state"])
+
+        status, _, payload = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": hashlib.sha256(content).hexdigest()},
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("upload_closed", payload["error"]["code"])
+
+        status, _, payload = self.request(
+            "POST", f"/api/v1/imports/{job['id']}/complete", {}
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("upload_closed", payload["error"]["code"])
+
     def test_import_creation_accepts_multiple_files_and_returns_file_ids(self) -> None:
         _, _, persona = self.request(
             "POST",

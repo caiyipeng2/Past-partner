@@ -71,6 +71,7 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
         missingQueries: [],
         chunkRequests: [],
         completions: 0,
+        cancellations: [],
         pauseStarted: null,
     };
 
@@ -112,6 +113,14 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
                 missing_chunks: Array.from({length: expected}, (_, index) => index)
                     .filter(index => !chunks.has(index)),
             });
+        }
+        if (path === `/api/v1/imports/${job.id}/cancel` && options.method === 'POST') {
+            metrics.cancellations.push(job.id);
+            job.state = 'cancelled';
+            job.received_bytes = 0;
+            job.chunk_count = 0;
+            chunks.clear();
+            return jsonResponse({...job});
         }
         const chunkMatch = path.match(new RegExp(`/api/v1/imports/${job.id}/chunks/(\\d+)$`));
         if (chunkMatch && options.method === 'PUT') {
@@ -164,7 +173,7 @@ function createContext(backend, localStorage) {
         'serviceState', 'serviceStateText', 'personaForm', 'displayName',
         'customRelationshipField', 'customRelationship', 'createPersonaButton',
         'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
-        'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'uploadStatus', 'uploadProgress',
+        'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'cancelUploadButton', 'uploadStatus', 'uploadProgress',
         'uploadProgressValue', 'providerSelect', 'modelSelect', 'modelCapability',
         'modelPricing', 'modelStatus', 'refreshProvidersButton', 'activePersonaName',
         'activeModelName', 'chatHistory', 'emptyChat', 'messageForm', 'messageInput',
@@ -200,6 +209,7 @@ function createContext(backend, localStorage) {
         state: vm.runInContext('state', context),
         upload: vm.runInContext('uploadSelectedFiles', context),
         togglePause: vm.runInContext('toggleUploadPause', context),
+        cancel: vm.runInContext('cancelUpload', context),
     };
 }
 
@@ -252,4 +262,23 @@ test('a new page context resumes a persisted job from its missing chunk list', a
     assert.deepEqual(backend.metrics.chunkRequests, [1]);
     assert.equal(backend.metrics.completions, 1);
     assert.equal(browser.state.imported, true);
+});
+
+test('cancelling a paused upload closes the server job and clears local resume state', async () => {
+    const backend = createBackend({pauseFirstUpload: true});
+    const storage = makeStorage();
+    const browser = createContext(backend, storage);
+    browser.state.personaId = 'persona-1';
+    browser.state.selectedFiles = [makeFile(backend.fileSize)];
+
+    const firstRun = browser.upload();
+    await waitFor(() => Boolean(backend.metrics.pauseStarted));
+    browser.togglePause();
+    await firstRun;
+    await browser.cancel();
+
+    assert.equal(browser.state.upload.paused, false);
+    assert.deepEqual(backend.metrics.cancellations, ['job-1']);
+    assert.equal(backend.metrics.completions, 0);
+    assert.equal(storage.getItem('past-partner:import:persona-1:sample.bin:' + backend.fileSize + ':123'), null);
 });

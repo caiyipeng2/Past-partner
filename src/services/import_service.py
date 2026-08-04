@@ -27,6 +27,7 @@ class ImportState(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ImportNotFoundError(LookupError):

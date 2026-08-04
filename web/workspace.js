@@ -28,6 +28,8 @@ const state = {
         controller: null,
         uploadedBytes: 0,
         totalBytes: 0,
+        jobs: new Map(),
+        cancelRequested: false,
     },
 };
 
@@ -35,7 +37,7 @@ const elementIds = [
     'serviceState', 'serviceStateText', 'personaForm', 'displayName',
     'customRelationshipField', 'customRelationship', 'createPersonaButton',
     'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
-    'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'uploadStatus', 'uploadProgress',
+    'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'cancelUploadButton', 'uploadStatus', 'uploadProgress',
     'uploadProgressValue', 'providerSelect', 'modelSelect', 'modelCapability',
     'modelPricing', 'modelStatus', 'refreshProvidersButton', 'activePersonaName',
     'activeModelName', 'chatHistory', 'emptyChat', 'messageForm', 'messageInput',
@@ -242,6 +244,7 @@ async function uploadSelectedFiles() {
     if (state.upload.running || !state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES) return;
     state.upload.running = true;
     state.upload.paused = false;
+    state.upload.cancelRequested = false;
     state.upload.controller = new AbortController();
     state.upload.uploadedBytes = 0;
     state.upload.totalBytes = totalBytes;
@@ -251,24 +254,35 @@ async function uploadSelectedFiles() {
 
     try {
         for (const file of state.selectedFiles) {
-            if (state.upload.paused) return;
+            if (state.upload.paused || state.upload.cancelRequested) return;
             setStatus(elements.uploadStatus, `正在导入 ${file.name}`);
             const {job, key, completed} = await resolveImportJob(file);
+            state.upload.jobs.set(key, job.id);
+            if (state.upload.cancelRequested) {
+                await postJson(`/imports/${encodeURIComponent(job.id)}/cancel`, {});
+                try {
+                    localStorage.removeItem(key);
+                } catch (_error) {
+                    // Persistent storage is an optimization, not an upload dependency.
+                }
+                return;
+            }
             if (completed) {
                 uploadedBytes += file.size;
                 state.upload.uploadedBytes = uploadedBytes;
                 updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
+                state.upload.jobs.delete(key);
                 continue;
             }
 
             const uploadStatus = await missingChunksForFile(job, file);
-            if (state.upload.paused) return;
+            if (state.upload.paused || state.upload.cancelRequested) return;
             uploadedBytes += uploadStatus.received_bytes || 0;
             state.upload.uploadedBytes = uploadedBytes;
             updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
 
             for (const index of uploadStatus.missing_chunks || []) {
-                if (state.upload.paused) return;
+                if (state.upload.paused || state.upload.cancelRequested) return;
                 const offset = index * CHUNK_BYTES;
                 if (offset >= file.size) continue;
                 const chunk = file.slice(offset, Math.min(offset + CHUNK_BYTES, file.size));
@@ -278,20 +292,24 @@ async function uploadSelectedFiles() {
                 state.upload.uploadedBytes = uploadedBytes;
                 updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
             }
-            if (state.upload.paused) return;
+            if (state.upload.paused || state.upload.cancelRequested) return;
             await postJson(`/imports/${job.id}/complete`, {});
             try {
                 localStorage.removeItem(key);
             } catch (_error) {
                 // A completed upload does not depend on local cleanup succeeding.
             }
+            state.upload.jobs.delete(key);
         }
         state.imported = true;
         updateProgress(1);
         setStatus(elements.uploadStatus, `已导入 ${state.selectedFiles.length} 个文件`, 'success');
         completeStep('import', 'model');
     } catch (error) {
-        if (state.upload.paused || error?.name === 'AbortError') {
+        if (state.upload.cancelRequested) {
+            state.upload.paused = false;
+            setStatus(elements.uploadStatus, '导入已取消');
+        } else if (state.upload.paused || error?.name === 'AbortError') {
             state.upload.paused = true;
             setStatus(elements.uploadStatus, '上传已暂停，可继续导入');
         } else {
@@ -300,6 +318,10 @@ async function uploadSelectedFiles() {
     } finally {
         state.upload.running = false;
         state.upload.controller = null;
+        if (state.upload.cancelRequested) {
+            state.upload.paused = false;
+            setStatus(elements.uploadStatus, '导入已取消');
+        }
         updateControls();
     }
 }
@@ -318,7 +340,7 @@ async function uploadChunkWithRetry(importId, index, chunk, digest, signal) {
                 signal,
             });
         } catch (error) {
-            if (error?.name === 'AbortError' || state.upload.paused) throw error;
+            if (error?.name === 'AbortError' || state.upload.paused || state.upload.cancelRequested) throw error;
             lastError = error;
             if (attempt < MAX_CHUNK_ATTEMPTS) {
                 await new Promise(resolve => window.setTimeout(resolve, 300 * attempt));
@@ -340,6 +362,36 @@ function toggleUploadPause() {
         state.upload.paused = false;
         setStatus(elements.uploadStatus, '正在恢复上传');
         void uploadSelectedFiles();
+    }
+}
+
+async function cancelUpload() {
+    if (!state.upload.running && !state.upload.paused) return;
+    const wasRunning = state.upload.running;
+    state.upload.cancelRequested = true;
+    state.upload.controller?.abort();
+    setStatus(elements.uploadStatus, '正在取消导入');
+    const jobEntries = [...state.upload.jobs.entries()];
+    const failures = [];
+    for (const [key, jobId] of jobEntries) {
+        try {
+            await postJson(`/imports/${encodeURIComponent(jobId)}/cancel`, {});
+            try {
+                localStorage.removeItem(key);
+            } catch (_error) {
+                // Persistent storage is an optimization, not an upload dependency.
+            }
+            state.upload.jobs.delete(key);
+        } catch (error) {
+            failures.push(error);
+        }
+    }
+    if (!wasRunning) {
+        state.upload.cancelRequested = false;
+        state.upload.paused = false;
+        state.imported = false;
+        setStatus(elements.uploadStatus, failures.length ? failures[0].message : '导入已取消', failures.length ? 'error' : '');
+        updateControls();
     }
 }
 
@@ -466,6 +518,8 @@ function updateControls() {
     elements.pauseUploadButton.hidden = !uploadActive && !state.upload.paused;
     elements.pauseUploadButton.disabled = uploadActive ? state.upload.paused : !state.upload.paused;
     elements.pauseUploadButton.textContent = state.upload.paused ? '继续导入' : '暂停导入';
+    elements.cancelUploadButton.hidden = !uploadActive && !state.upload.paused;
+    elements.cancelUploadButton.disabled = !uploadActive && !state.upload.paused;
     const canChat = Boolean(state.personaId && state.providerId && state.modelId);
     elements.messageInput.disabled = !canChat;
     elements.sendButton.disabled = !canChat || !elements.messageInput.value.trim();
@@ -500,6 +554,7 @@ elements.chatFolder.addEventListener('change', event => selectFiles(event.target
 elements.clearFilesButton.addEventListener('click', clearFiles);
 elements.uploadButton.addEventListener('click', uploadSelectedFiles);
 elements.pauseUploadButton.addEventListener('click', toggleUploadPause);
+elements.cancelUploadButton.addEventListener('click', cancelUpload);
 elements.providerSelect.addEventListener('change', renderModels);
 elements.modelSelect.addEventListener('change', renderModelMetadata);
 elements.refreshProvidersButton.addEventListener('click', loadProviders);

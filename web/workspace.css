@@ -74,7 +74,7 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .file-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .file-actions input[type="file"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .file-button, .secondary-button { display: grid; place-items: center; padding: 8px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 0.78rem; }
-.upload-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+.upload-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
 .upload-controls .primary-button { width: auto; margin-top: 0; }
 .selection-row, .model-meta, .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .selection-row { margin-top: 12px; color: var(--muted); font-size: 0.76rem; }

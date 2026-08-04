@@ -181,6 +181,9 @@ class Application:
     def complete_import(self, owner_id: str, import_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self.uploads.complete(owner_id, import_id, payload.get("sha256")).to_dict()
 
+    def cancel_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.uploads.cancel(owner_id, import_id).to_dict()
+
     def providers_catalog(self) -> dict[str, Any]:
         return {"providers": self.catalog.to_dict()}
 
