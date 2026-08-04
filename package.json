@@ -7,7 +7,8 @@
     "start": "python -m src.server",
     "dev": "python -m src.server",
     "start:node": "node web/server.js",
-    "test": "python -m unittest discover -s tests -p \"test*.py\" -v"
+    "test": "python -m unittest discover -s tests -p \"test*.py\" -v && node --test tests/web_workspace_test.mjs",
+    "test:web": "node --test tests/web_workspace_test.mjs"
   },
   "keywords": [
     "AI",

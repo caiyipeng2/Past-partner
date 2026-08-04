@@ -31,6 +31,12 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("localStorage.setItem", self.javascript)
         self.assertIn("localStorage.removeItem", self.javascript)
         self.assertIn("resolveImportJob", self.javascript)
+        self.assertIn("missing-chunks", self.javascript)
+
+    def test_browser_exposes_pause_and_resume_controls(self) -> None:
+        self.assertIn('id="pauseUploadButton"', self.html)
+        self.assertIn("AbortController", self.javascript)
+        self.assertIn("toggleUploadPause", self.javascript)
 
     def test_untrusted_text_is_never_rendered_with_inner_html(self) -> None:
         self.assertNotIn("innerHTML", self.javascript)

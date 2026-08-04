@@ -22,13 +22,20 @@ const state = {
     modelId: null,
     messages: [],
     imported: false,
+    upload: {
+        running: false,
+        paused: false,
+        controller: null,
+        uploadedBytes: 0,
+        totalBytes: 0,
+    },
 };
 
 const elementIds = [
     'serviceState', 'serviceStateText', 'personaForm', 'displayName',
     'customRelationshipField', 'customRelationship', 'createPersonaButton',
     'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
-    'clearFilesButton', 'uploadButton', 'uploadStatus', 'uploadProgress',
+    'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'uploadStatus', 'uploadProgress',
     'uploadProgressValue', 'providerSelect', 'modelSelect', 'modelCapability',
     'modelPricing', 'modelStatus', 'refreshProvidersButton', 'activePersonaName',
     'activeModelName', 'chatHistory', 'emptyChat', 'messageForm', 'messageInput',
@@ -128,7 +135,9 @@ function onRelationshipChange() {
 }
 
 function selectFiles(files, otherInput) {
+    if (state.upload.running) return;
     state.selectedFiles = Array.from(files);
+    state.upload.paused = false;
     otherInput.value = '';
     renderSelectedFiles();
 }
@@ -163,7 +172,9 @@ function renderSelectedFiles() {
 }
 
 function clearFiles() {
+    if (state.upload.running) return;
     state.selectedFiles = [];
+    state.upload.paused = false;
     elements.chatFile.value = '';
     elements.chatFolder.value = '';
     renderSelectedFiles();
@@ -221,30 +232,53 @@ async function resolveImportJob(file) {
     return {job, key, completed: false};
 }
 
+async function missingChunksForFile(job, file) {
+    const expectedChunks = Math.ceil(file.size / CHUNK_BYTES);
+    return api(`/imports/${encodeURIComponent(job.id)}/missing-chunks?expected_chunks=${expectedChunks}`);
+}
+
 async function uploadSelectedFiles() {
     const totalBytes = selectedBytes();
-    if (!state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES) return;
-    elements.uploadButton.disabled = true;
+    if (state.upload.running || !state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES) return;
+    state.upload.running = true;
+    state.upload.paused = false;
+    state.upload.controller = new AbortController();
+    state.upload.uploadedBytes = 0;
+    state.upload.totalBytes = totalBytes;
+    state.imported = false;
     elements.uploadProgress.hidden = false;
     let uploadedBytes = 0;
 
     try {
         for (const file of state.selectedFiles) {
+            if (state.upload.paused) return;
             setStatus(elements.uploadStatus, `正在导入 ${file.name}`);
             const {job, key, completed} = await resolveImportJob(file);
             if (completed) {
                 uploadedBytes += file.size;
+                state.upload.uploadedBytes = uploadedBytes;
                 updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
                 continue;
             }
 
-            for (let offset = 0, index = 0; offset < file.size; offset += CHUNK_BYTES, index += 1) {
+            const uploadStatus = await missingChunksForFile(job, file);
+            if (state.upload.paused) return;
+            uploadedBytes += uploadStatus.received_bytes || 0;
+            state.upload.uploadedBytes = uploadedBytes;
+            updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
+
+            for (const index of uploadStatus.missing_chunks || []) {
+                if (state.upload.paused) return;
+                const offset = index * CHUNK_BYTES;
+                if (offset >= file.size) continue;
                 const chunk = file.slice(offset, Math.min(offset + CHUNK_BYTES, file.size));
                 const digest = await sha256Hex(await chunk.arrayBuffer());
-                await uploadChunkWithRetry(job.id, index, chunk, digest);
+                await uploadChunkWithRetry(job.id, index, chunk, digest, state.upload.controller.signal);
                 uploadedBytes += chunk.size;
+                state.upload.uploadedBytes = uploadedBytes;
                 updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
             }
+            if (state.upload.paused) return;
             await postJson(`/imports/${job.id}/complete`, {});
             try {
                 localStorage.removeItem(key);
@@ -257,13 +291,20 @@ async function uploadSelectedFiles() {
         setStatus(elements.uploadStatus, `已导入 ${state.selectedFiles.length} 个文件`, 'success');
         completeStep('import', 'model');
     } catch (error) {
-        setStatus(elements.uploadStatus, error.message, 'error');
+        if (state.upload.paused || error?.name === 'AbortError') {
+            state.upload.paused = true;
+            setStatus(elements.uploadStatus, '上传已暂停，可继续导入');
+        } else {
+            setStatus(elements.uploadStatus, error.message, 'error');
+        }
     } finally {
+        state.upload.running = false;
+        state.upload.controller = null;
         updateControls();
     }
 }
 
-async function uploadChunkWithRetry(importId, index, chunk, digest) {
+async function uploadChunkWithRetry(importId, index, chunk, digest, signal) {
     let lastError;
     for (let attempt = 1; attempt <= MAX_CHUNK_ATTEMPTS; attempt += 1) {
         try {
@@ -274,8 +315,10 @@ async function uploadChunkWithRetry(importId, index, chunk, digest) {
                     'X-Chunk-Sha256': digest,
                 },
                 body: chunk,
+                signal,
             });
         } catch (error) {
+            if (error?.name === 'AbortError' || state.upload.paused) throw error;
             lastError = error;
             if (attempt < MAX_CHUNK_ATTEMPTS) {
                 await new Promise(resolve => window.setTimeout(resolve, 300 * attempt));
@@ -283,6 +326,21 @@ async function uploadChunkWithRetry(importId, index, chunk, digest) {
         }
     }
     throw lastError;
+}
+
+function toggleUploadPause() {
+    if (state.upload.running) {
+        state.upload.paused = true;
+        state.upload.controller?.abort();
+        setStatus(elements.uploadStatus, '上传已暂停，可继续导入');
+        updateControls();
+        return;
+    }
+    if (state.upload.paused) {
+        state.upload.paused = false;
+        setStatus(elements.uploadStatus, '正在恢复上传');
+        void uploadSelectedFiles();
+    }
 }
 
 async function sha256Hex(buffer) {
@@ -400,7 +458,14 @@ function appendMessage(message) {
 
 function updateControls() {
     const totalBytes = selectedBytes();
-    elements.uploadButton.disabled = !state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES;
+    const uploadActive = state.upload.running;
+    elements.chatFile.disabled = !state.personaId || uploadActive;
+    elements.chatFolder.disabled = !state.personaId || uploadActive;
+    elements.clearFilesButton.disabled = uploadActive;
+    elements.uploadButton.disabled = uploadActive || state.upload.paused || !state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES;
+    elements.pauseUploadButton.hidden = !uploadActive && !state.upload.paused;
+    elements.pauseUploadButton.disabled = uploadActive ? state.upload.paused : !state.upload.paused;
+    elements.pauseUploadButton.textContent = state.upload.paused ? '继续导入' : '暂停导入';
     const canChat = Boolean(state.personaId && state.providerId && state.modelId);
     elements.messageInput.disabled = !canChat;
     elements.sendButton.disabled = !canChat || !elements.messageInput.value.trim();
@@ -434,6 +499,7 @@ elements.chatFile.addEventListener('change', event => selectFiles(event.target.f
 elements.chatFolder.addEventListener('change', event => selectFiles(event.target.files, elements.chatFile));
 elements.clearFilesButton.addEventListener('click', clearFiles);
 elements.uploadButton.addEventListener('click', uploadSelectedFiles);
+elements.pauseUploadButton.addEventListener('click', toggleUploadPause);
 elements.providerSelect.addEventListener('change', renderModels);
 elements.modelSelect.addEventListener('change', renderModelMetadata);
 elements.refreshProvidersButton.addEventListener('click', loadProviders);
