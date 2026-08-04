@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from src.domain.personas import Persona
 from src.services.persona_repository import PersonaRepository
 
@@ -20,6 +22,13 @@ class PersonaService:
         display_name: str | None = None,
         relationship_type: str | None = None,
         custom_label: str | None = None,
+        *,
+        relationship_label: str | None = None,
+        preferred_address: str | None = None,
+        user_address: str | None = None,
+        relationship_description: str | None = None,
+        tone_boundaries: Sequence[str] | None = None,
+        forbidden_topics: Sequence[str] | None = None,
     ) -> Persona:
         relationship_values = {"father", "mother", "relative", "friend", "partner", "custom"}
         if relationship_type is not None and display_name in relationship_values and relationship_type not in relationship_values:
@@ -33,7 +42,17 @@ class PersonaService:
             owner_id = None
         if display_name is None or relationship_type is None:
             raise TypeError("display_name and relationship_type are required")
-        persona = Persona.create(display_name, relationship_type, custom_label)
+        persona = Persona.create(
+            display_name,
+            relationship_type,
+            custom_label,
+            relationship_label=relationship_label,
+            preferred_address=preferred_address,
+            user_address=user_address,
+            relationship_description=relationship_description,
+            tone_boundaries=tone_boundaries,
+            forbidden_topics=forbidden_topics,
+        )
         self.repository.save(owner_id, persona)
         return persona
 

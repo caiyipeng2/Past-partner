@@ -51,6 +51,22 @@ class PersonaRepositoryTests(unittest.TestCase):
         self.assertIsInstance(envelope, bytes)
         self.assertNotIn(persona.display_name.encode("utf-8"), envelope)
 
+    def test_extended_persona_metadata_remains_encrypted(self) -> None:
+        persona = self.service.create(
+            "小雨",
+            "friend",
+            preferred_address="你",
+            user_address="小雨",
+            relationship_description="大学同学",
+            tone_boundaries=("温和",),
+            forbidden_topics=("家庭隐私",),
+        )
+
+        database_bytes = self.layout.database_path().read_bytes()
+        self.assertNotIn("大学同学".encode("utf-8"), database_bytes)
+        self.assertNotIn("家庭隐私".encode("utf-8"), database_bytes)
+        self.assertEqual("家庭隐私", self.service.get(persona.id).forbidden_topics[0])
+
     def test_tampered_persona_record_fails_closed(self) -> None:
         persona = self.service.create("小雨", "friend")
         with sqlite3.connect(self.layout.database_path()) as connection:

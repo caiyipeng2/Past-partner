@@ -103,6 +103,12 @@ class Application:
                 display_name=payload["display_name"],
                 relationship_type=payload["relationship_type"],
                 custom_label=payload.get("custom_label"),
+                relationship_label=payload.get("relationship_label"),
+                preferred_address=payload.get("preferred_address"),
+                user_address=payload.get("user_address"),
+                relationship_description=payload.get("relationship_description"),
+                tone_boundaries=payload.get("tone_boundaries"),
+                forbidden_topics=payload.get("forbidden_topics"),
             )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc

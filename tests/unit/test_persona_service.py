@@ -36,6 +36,25 @@ class PersonaServiceTests(unittest.TestCase):
         self.assertEqual(created, loaded)
         self.assertFalse((self.root / "personas").exists())
 
+    def test_persists_extended_persona_fields(self) -> None:
+        created = self.service.create(
+            "小雨",
+            "friend",
+            preferred_address="你",
+            user_address="小雨",
+            relationship_description="大学同学",
+            tone_boundaries=("温和",),
+            forbidden_topics=("隐私",),
+        )
+
+        loaded = self.service.get(created.id)
+
+        self.assertEqual("你", loaded.preferred_address)
+        self.assertEqual("小雨", loaded.user_address)
+        self.assertEqual("大学同学", loaded.relationship_description)
+        self.assertEqual(("温和",), loaded.tone_boundaries)
+        self.assertEqual(("隐私",), loaded.forbidden_topics)
+
     def test_missing_persona_has_a_domain_error(self) -> None:
         with self.assertRaises(PersonaNotFoundError):
             self.service.get("62fe0eef-7053-4df5-87bb-7842e6c738c4")

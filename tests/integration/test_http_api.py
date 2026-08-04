@@ -78,6 +78,27 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("deepseek", {item["id"] for item in providers["providers"]})
 
+    def test_persona_creation_accepts_full_relationship_schema(self) -> None:
+        status, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {
+                "display_name": "小雨",
+                "relationship_type": "friend",
+                "preferred_address": "你",
+                "user_address": "小雨",
+                "relationship_description": "大学同学",
+                "tone_boundaries": ["温和", "不说教"],
+                "forbidden_topics": ["家庭隐私"],
+            },
+        )
+
+        self.assertEqual(201, status)
+        self.assertEqual(1, persona["schema_version"])
+        self.assertEqual("你", persona["preferred_address"])
+        self.assertEqual(["温和", "不说教"], persona["tone_boundaries"])
+        self.assertEqual(["家庭隐私"], persona["forbidden_topics"])
+
     def test_data_routes_require_a_valid_owner_session(self) -> None:
         status, _, payload = self.request(
             "GET", "/api/v1/personas", headers={"Authorization": "Bearer invalid"}

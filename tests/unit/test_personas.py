@@ -29,6 +29,62 @@ class PersonaTests(unittest.TestCase):
         )
         self.assertEqual("导师", persona.custom_label)
 
+    def test_persists_full_relationship_context_and_schema_version(self) -> None:
+        persona = Persona.create(
+            "小雨",
+            RelationshipType.FRIEND.value,
+            preferred_address="你",
+            user_address="小雨",
+            relationship_description="大学时期认识的朋友",
+            tone_boundaries=("温和", "不说教"),
+            forbidden_topics=("未公开的家庭隐私", "财务密码"),
+        )
+
+        payload = persona.to_dict()
+        self.assertEqual(1, payload["schema_version"])
+        self.assertEqual(persona.created_at, persona.updated_at)
+        self.assertEqual("你", payload["preferred_address"])
+        self.assertEqual("小雨", payload["user_address"])
+        self.assertEqual(["温和", "不说教"], payload["tone_boundaries"])
+        self.assertEqual(["未公开的家庭隐私", "财务密码"], payload["forbidden_topics"])
+        self.assertEqual(persona, Persona.from_dict(payload))
+
+    def test_accepts_relationship_label_alias_and_rejects_invalid_schema_metadata(self) -> None:
+        persona = Persona.create(
+            "重要的人",
+            RelationshipType.CUSTOM.value,
+            relationship_label="导师",
+        )
+        self.assertEqual("导师", persona.custom_label)
+        self.assertEqual("导师", persona.to_dict()["relationship_label"])
+
+        with self.assertRaises(PersonaValidationError):
+            Persona.create(
+                "小雨",
+                RelationshipType.FRIEND.value,
+                tone_boundaries="温和",
+            )
+        with self.assertRaises(PersonaValidationError):
+            Persona.from_dict({**persona.to_dict(), "schema_version": 2})
+        with self.assertRaises(PersonaValidationError):
+            Persona.from_dict({**persona.to_dict(), "custom_label": "另一身份"})
+
+    def test_loads_legacy_payload_with_defaults_for_new_fields(self) -> None:
+        legacy = {
+            "id": "persona-legacy",
+            "display_name": "旧记录",
+            "relationship_type": "friend",
+            "custom_label": None,
+            "created_at": "2026-07-30T12:00:00+00:00",
+        }
+
+        persona = Persona.from_dict(legacy)
+
+        self.assertEqual(1, persona.schema_version)
+        self.assertEqual(persona.created_at, persona.updated_at)
+        self.assertIsNone(persona.preferred_address)
+        self.assertEqual((), persona.forbidden_topics)
+
     def test_rejects_unknown_relationship(self) -> None:
         with self.assertRaises(PersonaValidationError):
             Persona.create("重要的人", "coworker")
