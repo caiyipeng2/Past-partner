@@ -58,6 +58,37 @@ class ImportServiceTests(unittest.TestCase):
         self.assertEqual(ImportState.CREATED, job.state)
         self.assertEqual(DEFAULT_MAX_IMPORT_BYTES, job.total_bytes)
 
+    def test_accepts_three_gib_aggregate_across_multiple_files(self) -> None:
+        first_size = 2 * 1024**3
+        second_size = DEFAULT_MAX_IMPORT_BYTES - first_size
+
+        job = self.imports.create(
+            persona_id=self.persona.id,
+            files=[
+                {"source_name": "wechat.db", "media_type": "application/octet-stream", "total_bytes": first_size},
+                {"source_name": "photos.zip", "media_type": "application/zip", "total_bytes": second_size},
+            ],
+        )
+
+        self.assertEqual(DEFAULT_MAX_IMPORT_BYTES, job.total_bytes)
+        self.assertEqual([first_size, second_size], [item.total_bytes for item in job.files])
+
+    def test_rejects_multi_file_aggregate_one_byte_over_three_gib(self) -> None:
+        with self.assertRaises(ImportValidationError) as captured:
+            self.imports.create(
+                persona_id=self.persona.id,
+                files=[
+                    {
+                        "source_name": "wechat.db",
+                        "media_type": "application/octet-stream",
+                        "total_bytes": DEFAULT_MAX_IMPORT_BYTES - 1024,
+                    },
+                    {"source_name": "photos.zip", "media_type": "application/zip", "total_bytes": 1025},
+                ],
+            )
+
+        self.assertEqual("import_too_large", captured.exception.code)
+
     def test_creates_an_ordered_multi_file_manifest_with_independent_ids(self) -> None:
         job = self.imports.create(
             persona_id=self.persona.id,

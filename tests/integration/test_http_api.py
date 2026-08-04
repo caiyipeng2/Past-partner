@@ -241,6 +241,28 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(job["files"], loaded["files"])
 
+    def test_import_creation_rejects_multi_file_aggregate_over_three_gib(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "files": [
+                    {"source_name": "wechat.db", "media_type": "application/octet-stream", "total_bytes": 3 * 1024**3},
+                    {"source_name": "photos.zip", "media_type": "application/zip", "total_bytes": 1},
+                ],
+            },
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("import_too_large", payload["error"]["code"])
+
     def test_rejected_chunk_closes_connection_when_body_may_be_unread(self) -> None:
         _, _, persona = self.request(
             "POST",
