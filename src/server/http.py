@@ -24,6 +24,7 @@ from src.services.upload_service import UploadError
 
 logger = logging.getLogger(__name__)
 _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
+_MISSING_CHUNKS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/missing-chunks$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
@@ -140,6 +141,25 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/v1/models":
             provider_id = query.get("provider_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
+        elif match := _MISSING_CHUNKS_PATH.fullmatch(path):
+            raw_expected = query.get("expected_chunks", [None])[0]
+            expected_chunks = None
+            if raw_expected is not None:
+                try:
+                    expected_chunks = int(raw_expected)
+                except ValueError as exc:
+                    raise RequestValidationError(
+                        "invalid_expected_chunk_count",
+                        "expected_chunks must be an integer",
+                    ) from exc
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.get_missing_chunks(
+                    self.owner_id,
+                    match.group(1),
+                    expected_chunks,
+                ),
+            )
         elif match := _IMPORT_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.get_import(self.owner_id, match.group(1)))
         elif path.startswith("/api/"):

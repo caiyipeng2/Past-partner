@@ -237,6 +237,42 @@ class UploadService:
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")
 
+    def missing_chunks(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+        expected_chunks: int | None = None,
+    ) -> dict[str, Any]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        expected_chunks = self._validate_expected_chunk_count(expected_chunks)
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            manifest = self._load_manifest(owner_id, import_id)
+            received_chunks = self._manifest_indexes(manifest)
+            highest_index = received_chunks[-1] if received_chunks else -1
+            if expected_chunks is None:
+                expected_chunks = highest_index + 1
+            if expected_chunks <= highest_index:
+                raise UploadError(
+                    "invalid_expected_chunk_count",
+                    "expected chunk count is below a stored chunk index",
+                )
+            received_set = set(received_chunks)
+            return {
+                "import_id": job.id,
+                "state": job.state.value,
+                "total_bytes": job.total_bytes,
+                "received_bytes": job.received_bytes,
+                "chunk_count": len(received_chunks),
+                "expected_chunk_count": expected_chunks,
+                "received_chunks": received_chunks,
+                "missing_chunks": [
+                    index for index in range(expected_chunks) if index not in received_set
+                ],
+            }
+
     @staticmethod
     def chunk_aad(import_id: str, index: int, *, final: bool) -> bytes:
         marker = "true" if final else "false"
@@ -304,6 +340,19 @@ class UploadService:
         if value.get("version") != 2:
             raise UploadError("manifest_version_unsupported", "encrypted upload manifest version is unsupported")
         return value
+
+    def _manifest_indexes(self, manifest: Mapping[str, Any]) -> list[int]:
+        chunks = manifest["chunks"]
+        indexes: list[int] = []
+        for key, value in chunks.items():
+            if not isinstance(key, str) or not key.isdecimal():
+                raise UploadError("manifest_corrupt", "encrypted chunk index is invalid")
+            index = int(key)
+            if str(index) != key or index > 1_000_000:
+                raise UploadError("manifest_corrupt", "encrypted chunk index is invalid")
+            self._chunk_entry(value)
+            indexes.append(index)
+        return sorted(indexes)
 
     def _read_and_hash(self, stream: BinaryIO, length: int) -> tuple[bytes, str]:
         digest = hashlib.sha256()
@@ -377,6 +426,17 @@ class UploadService:
     def _validate_index(value: object) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 1_000_000:
             raise UploadError("invalid_chunk_index", "chunk index must be a bounded non-negative integer")
+        return value
+
+    @staticmethod
+    def _validate_expected_chunk_count(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 1_000_001:
+            raise UploadError(
+                "invalid_expected_chunk_count",
+                "expected chunk count must be a bounded non-negative integer",
+            )
         return value
 
     def _validate_length(self, value: object) -> int:

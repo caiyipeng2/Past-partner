@@ -52,6 +52,11 @@
 3. **数据安全**: 当前本地开发版写入配置的数据目录，并通过回环地址初始化本地 owner Bearer 会话；加密对象存储、OIDC 多用户账户、账户删除和保留期策略属于后续生产阶段，不能视为已经完成
 4. **格式要求**: 确保文件格式正确，否则可能导致解析失败
 
+## 断点续传状态查询
+
+客户端重新连接后可请求 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N`。
+其中 `N` 是客户端根据自身分片策略计算出的完整分片数量；响应会返回 `received_chunks`、`missing_chunks`、`received_bytes` 和任务状态。省略 `expected_chunks` 时，服务端只报告当前已观测索引范围内的缺口，不推测末尾尚未出现的分片。
+
 ## 支持的数据库文件
 
 - 微信聊天记录数据库 (MicroMsg.db)

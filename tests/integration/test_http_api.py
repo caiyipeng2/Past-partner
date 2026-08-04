@@ -213,6 +213,77 @@ class HttpApiTests(unittest.TestCase):
             b"".join(self.server.application.uploads.iter_payload(self.owner_id, job["id"])),
         )
 
+    def test_missing_chunks_endpoint_returns_resume_status(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 11,
+                "media_type": "text/plain",
+            },
+        )
+
+        for index, content in ((0, b"hello"), (2, b"ok")):
+            digest = hashlib.sha256(content).hexdigest()
+            status, _, _ = self.request(
+                "PUT",
+                f"/api/v1/imports/{job['id']}/chunks/{index}",
+                content,
+                {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+            )
+            self.assertEqual(200, status)
+
+        status, _, payload = self.request(
+            "GET",
+            f"/api/v1/imports/{job['id']}/missing-chunks?expected_chunks=3",
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("uploading", payload["state"])
+        self.assertEqual(3, payload["expected_chunk_count"])
+        self.assertEqual([0, 2], payload["received_chunks"])
+        self.assertEqual([1], payload["missing_chunks"])
+        self.assertEqual(7, payload["received_bytes"])
+
+    def test_missing_chunks_endpoint_validates_expected_count(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 5,
+                "media_type": "text/plain",
+            },
+        )
+        content = b"hello"
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/2",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": hashlib.sha256(content).hexdigest()},
+        )
+
+        status, _, payload = self.request(
+            "GET",
+            f"/api/v1/imports/{job['id']}/missing-chunks?expected_chunks=2",
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_expected_chunk_count", payload["error"]["code"])
+
     def test_import_creation_accepts_multiple_files_and_returns_file_ids(self) -> None:
         _, _, persona = self.request(
             "POST",

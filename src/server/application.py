@@ -159,6 +159,14 @@ class Application:
     def get_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.imports.get(owner_id, import_id).to_dict()
 
+    def get_missing_chunks(
+        self,
+        owner_id: str,
+        import_id: str,
+        expected_chunks: int | None = None,
+    ) -> dict[str, Any]:
+        return self.uploads.missing_chunks(owner_id, import_id, expected_chunks)
+
     def put_chunk(
         self,
         owner_id: str,

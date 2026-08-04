@@ -149,6 +149,31 @@ class UploadServiceTests(unittest.TestCase):
         self.assertEqual(1, self.imports.get(self.job.id).chunk_count)
         self.assertEqual(len(value), self.imports.get(self.job.id).received_bytes)
 
+    def test_reports_received_and_missing_chunk_indexes(self) -> None:
+        first = b"hello"
+        last = b"ok"
+        self.uploads.put_chunk(self.job.id, 0, len(first), self.digest(first), io.BytesIO(first))
+        self.uploads.put_chunk(self.job.id, 2, len(last), self.digest(last), io.BytesIO(last))
+
+        status = self.uploads.missing_chunks(self.job.id, expected_chunks=3)
+
+        self.assertEqual(self.job.id, status["import_id"])
+        self.assertEqual("uploading", status["state"])
+        self.assertEqual(11, status["total_bytes"])
+        self.assertEqual(7, status["received_bytes"])
+        self.assertEqual(3, status["expected_chunk_count"])
+        self.assertEqual([0, 2], status["received_chunks"])
+        self.assertEqual([1], status["missing_chunks"])
+
+    def test_missing_chunk_status_rejects_expected_count_below_stored_index(self) -> None:
+        value = b"hello"
+        self.uploads.put_chunk(self.job.id, 2, len(value), self.digest(value), io.BytesIO(value))
+
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.missing_chunks(self.job.id, expected_chunks=2)
+
+        self.assertEqual("invalid_expected_chunk_count", captured.exception.code)
+
     def test_conflicting_retry_is_rejected(self) -> None:
         value = b"hello "
         self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
