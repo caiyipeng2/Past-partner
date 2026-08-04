@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.import_repository import ImportRepository
 from src.services.import_service import (
     DEFAULT_MAX_IMPORT_BYTES,
     ImportNotFoundError,
@@ -27,7 +28,8 @@ class ImportServiceTests(unittest.TestCase):
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
         self.personas = PersonaService(PersonaRepository(layout.database_path(), encryption))
-        self.imports = ImportService(layout, self.personas)
+        repository = ImportRepository(layout.database_path(), encryption)
+        self.imports = ImportService(repository, self.personas)
         self.persona = self.personas.create("小雨", "friend")
 
     def tearDown(self) -> None:
@@ -73,10 +75,9 @@ class ImportServiceTests(unittest.TestCase):
             media_type="application/zip",
         )
 
-        manifest = self.root / "imports" / f"{job.id}.json"
-        self.assertTrue(manifest.is_file())
+        self.assertFalse((self.root / "imports").exists())
         self.assertEqual("../../family-chat.zip", self.imports.get(job.id).source_name)
-        self.assertNotIn("family-chat", manifest.name)
+        self.assertNotIn("family-chat.zip".encode("utf-8"), (self.root / "database" / "past-partner.sqlite3").read_bytes())
 
     def test_missing_import_has_a_domain_error(self) -> None:
         with self.assertRaises(ImportNotFoundError):

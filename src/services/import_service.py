@@ -8,8 +8,8 @@ from enum import Enum
 from typing import Any, Mapping
 from uuid import uuid4
 
+from src.services.import_repository import ImportRepository
 from src.services.persona_service import PersonaNotFoundError, PersonaService
-from src.services.storage import InvalidStorageIdentifier, StorageLayout
 
 
 DEFAULT_MAX_IMPORT_BYTES = 3 * 1024**3
@@ -80,13 +80,13 @@ class ImportJob:
 class ImportService:
     def __init__(
         self,
-        storage: StorageLayout,
+        repository: ImportRepository,
         personas: PersonaService,
         max_import_bytes: int = DEFAULT_MAX_IMPORT_BYTES,
     ):
         if max_import_bytes < 0:
             raise ValueError("max_import_bytes must be non-negative")
-        self.storage = storage
+        self.repository = repository
         self.personas = personas
         self.max_import_bytes = max_import_bytes
 
@@ -122,18 +122,23 @@ class ImportService:
             created_at=now,
             updated_at=now,
         )
-        self.save(job)
+        self.repository.create(job)
         return job
 
     def get(self, import_id: str) -> ImportJob:
-        try:
-            value = self.storage.read_json("imports", import_id)
-        except (FileNotFoundError, InvalidStorageIdentifier) as exc:
-            raise ImportNotFoundError("import not found") from exc
-        return ImportJob.from_dict(value)
+        job = self.repository.get(import_id)
+        if job is None:
+            raise ImportNotFoundError("import not found")
+        return job
 
     def save(self, job: ImportJob) -> None:
-        self.storage.write_json("imports", job.id, job.to_dict())
+        self.repository.save(job)
+
+    def get_manifest(self, import_id: str) -> dict[str, Any] | None:
+        return self.repository.get_manifest(import_id)
+
+    def save_state(self, job: ImportJob, manifest: Mapping[str, Any]) -> None:
+        self.repository.save_state(job, manifest)
 
 
 def _metadata_text(value: object, field_name: str, maximum: int) -> str:

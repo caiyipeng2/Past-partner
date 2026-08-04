@@ -1,0 +1,151 @@
+import base64
+import shutil
+import sqlite3
+import unittest
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+from dataclasses import replace
+from uuid import uuid4
+
+from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.import_repository import ImportRepository, ImportRepositoryError
+from src.services.import_service import ImportJob, ImportState
+from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.storage import StorageLayout
+
+
+class ImportRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path.cwd() / ".test-runtime" / str(uuid4())
+        self.layout = StorageLayout(self.root)
+        key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
+        self.encryption = AuthenticatedEncryptionService(
+            EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
+        )
+        self.repository = ImportRepository(self.layout.database_path(), self.encryption)
+        self.job = self._job()
+        self.manifest = {
+            "version": 2,
+            "import_id": self.job.id,
+            "chunks": {
+                "0": {
+                    "length": 5,
+                    "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                    "encrypted_length": 33,
+                }
+            },
+        }
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _job(self) -> ImportJob:
+        now = datetime.now(UTC).isoformat()
+        return ImportJob(
+            id=str(uuid4()),
+            persona_id=str(uuid4()),
+            source_name="聊天记录.zip",
+            media_type="application/zip",
+            total_bytes=5,
+            received_bytes=5,
+            chunk_count=1,
+            state=ImportState.UPLOADING,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def test_job_and_manifest_are_encrypted_and_round_trip(self) -> None:
+        self.repository.create(self.job, self.manifest)
+
+        self.assertEqual(self.job, self.repository.get(self.job.id))
+        self.assertEqual(self.manifest, self.repository.get_manifest(self.job.id))
+        self.assertFalse((self.root / "imports").exists())
+        self.assertFalse((self.root / "upload-manifests").exists())
+        database_bytes = self.layout.database_path().read_bytes()
+        self.assertNotIn("聊天记录.zip".encode("utf-8"), database_bytes)
+        self.assertNotIn(b"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", database_bytes)
+
+        reopened = ImportRepository(self.layout.database_path(), self.encryption)
+        self.assertEqual(self.job, reopened.get(self.job.id))
+        self.assertEqual(self.manifest, reopened.get_manifest(self.job.id))
+
+    def test_tampered_job_and_manifest_fail_closed(self) -> None:
+        self.repository.create(self.job, self.manifest)
+        with closing(sqlite3.connect(self.layout.database_path())) as connection:
+            connection.execute(
+                "UPDATE imports SET encrypted_payload = ? WHERE id = ?",
+                (sqlite3.Binary(b"tampered"), self.job.id),
+            )
+            connection.commit()
+        with self.assertRaises(ImportRepositoryError) as captured_job:
+            self.repository.get(self.job.id)
+        self.assertEqual("import_record_authentication_failed", captured_job.exception.code)
+
+        manifest_database = self.root / "manifest-only.sqlite3"
+        manifest_repository = ImportRepository(manifest_database, self.encryption)
+        manifest_repository.create(self.job, self.manifest)
+        with closing(sqlite3.connect(manifest_database)) as connection:
+            connection.execute(
+                "UPDATE import_manifests SET encrypted_payload = ? WHERE import_id = ?",
+                (sqlite3.Binary(b"tampered"), self.job.id),
+            )
+            connection.commit()
+        with self.assertRaises(ImportRepositoryError) as captured_manifest:
+            manifest_repository.get_manifest(self.job.id)
+        self.assertEqual("manifest_record_authentication_failed", captured_manifest.exception.code)
+
+    def test_state_transaction_rolls_back_job_when_manifest_update_fails(self) -> None:
+        self.repository.create(self.job, self.manifest)
+        changed = replace(
+            self.job,
+            source_name="changed.zip",
+            updated_at=datetime.now(UTC).isoformat(),
+        )
+        changed_manifest = {**self.manifest, "final_encrypted_length": 32}
+        with closing(sqlite3.connect(self.layout.database_path())) as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER reject_manifest_update
+                BEFORE UPDATE ON import_manifests
+                BEGIN SELECT RAISE(ABORT, 'blocked'); END
+                """
+            )
+            connection.commit()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.repository.save_state(changed, changed_manifest)
+
+        self.assertEqual(self.job, self.repository.get(self.job.id))
+        self.assertEqual(self.manifest, self.repository.get_manifest(self.job.id))
+
+    def test_migrates_legacy_json_and_removes_plaintext_after_commit(self) -> None:
+        imports_dir = self.root / "imports"
+        manifests_dir = self.root / "upload-manifests"
+        job_path = self.layout.write_json("imports", self.job.id, self.job.to_dict())
+        manifest_path = self.layout.write_json("upload-manifests", self.job.id, self.manifest)
+
+        self.assertEqual(1, self.repository.migrate_legacy_json(imports_dir, manifests_dir))
+        self.assertFalse(job_path.exists())
+        self.assertFalse(manifest_path.exists())
+        self.assertEqual(self.job, self.repository.get(self.job.id))
+        self.assertEqual(self.manifest, self.repository.get_manifest(self.job.id))
+        self.assertNotIn("聊天记录.zip".encode("utf-8"), self.layout.database_path().read_bytes())
+
+    def test_failed_legacy_migration_preserves_plaintext_sources(self) -> None:
+        job_path = self.layout.write_json("imports", self.job.id, self.job.to_dict())
+        manifest_path = self.layout.write_json(
+            "upload-manifests", self.job.id, {"version": 1, "import_id": self.job.id, "chunks": {}}
+        )
+
+        with self.assertRaises(ImportRepositoryError) as captured:
+            self.repository.migrate_legacy_json(self.root / "imports", self.root / "upload-manifests")
+
+        self.assertEqual("legacy_manifest_record_invalid", captured.exception.code)
+        self.assertTrue(job_path.exists())
+        self.assertTrue(manifest_path.exists())
+        self.assertIsNone(self.repository.get(self.job.id))
+
+
+if __name__ == "__main__":
+    unittest.main()

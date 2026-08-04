@@ -103,6 +103,10 @@ class HttpApiTests(unittest.TestCase):
         status, _, stored = self.request("GET", f"/api/v1/imports/{job['id']}")
         self.assertEqual(200, status)
         self.assertEqual("uploading", stored["state"])
+        self.assertFalse((self.data_root / "imports").exists())
+        self.assertFalse((self.data_root / "upload-manifests").exists())
+        database_bytes = (self.data_root / "database" / "past-partner.sqlite3").read_bytes()
+        self.assertNotIn(b"chat.txt", database_bytes)
 
         status, _, completed = self.request(
             "POST",

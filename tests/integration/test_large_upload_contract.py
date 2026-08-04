@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.import_repository import ImportRepository
 from src.services.import_service import DEFAULT_MAX_IMPORT_BYTES, ImportService, ImportState
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.persona_repository import PersonaRepository
@@ -29,7 +30,7 @@ class LargeUploadContractTests(unittest.TestCase):
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
         personas = PersonaService(PersonaRepository(layout.database_path(), encryption))
-        imports = ImportService(layout, personas)
+        imports = ImportService(ImportRepository(layout.database_path(), encryption), personas)
         uploads = UploadService(layout, imports, encryption)
         persona = personas.create("妈妈", "mother")
 

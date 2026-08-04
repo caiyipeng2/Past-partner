@@ -36,8 +36,9 @@ class Migration:
 
 
 # Version 1 establishes the durable migration ledger. Version 2 owns the
-# encrypted persona record table; business repositories add their own tables in
-# later migrations so startup remains transactional and history is auditable.
+# encrypted persona record table and version 3 owns import metadata. Business
+# repositories add their own tables in later migrations so startup remains
+# transactional and history is auditable.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -47,6 +48,26 @@ DEFAULT_MIGRATIONS = (
             """
             CREATE TABLE personas (
                 id TEXT PRIMARY KEY,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+        ),
+    ),
+    Migration(
+        version=3,
+        name="import_repository",
+        statements=(
+            """
+            CREATE TABLE imports (
+                id TEXT PRIMARY KEY,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            """
+            CREATE TABLE import_manifests (
+                import_id TEXT PRIMARY KEY REFERENCES imports(id) ON DELETE CASCADE,
                 record_version INTEGER NOT NULL CHECK (record_version = 1),
                 encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
             )

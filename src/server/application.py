@@ -14,6 +14,7 @@ from src.providers.testing import DeterministicTestAdapter
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.database import SQLiteMigrator
+from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.persona_service import PersonaService
@@ -57,7 +58,11 @@ class Application:
         persona_repository = PersonaRepository(storage.database_path(), encryption)
         persona_repository.migrate_legacy_json(storage.root / "personas")
         personas = PersonaService(persona_repository)
-        imports = ImportService(storage, personas, max_import_bytes=config.max_import_bytes)
+        import_repository = ImportRepository(storage.database_path(), encryption)
+        import_repository.migrate_legacy_json(
+            storage.root / "imports", storage.root / "upload-manifests"
+        )
+        imports = ImportService(import_repository, personas, max_import_bytes=config.max_import_bytes)
         uploads = UploadService(
             storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
         )

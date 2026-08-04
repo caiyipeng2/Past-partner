@@ -35,7 +35,11 @@ class SQLiteMigrationTests(unittest.TestCase):
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
         self.assertEqual(
-            [(1, "bootstrap_schema"), (2, "persona_repository")],
+            [
+                (1, "bootstrap_schema"),
+                (2, "persona_repository"),
+                (3, "import_repository"),
+            ],
             rows,
         )
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -53,7 +57,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertEqual(first_version, second_version)
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(2, count)
+        self.assertEqual(3, count)
 
     def test_upgrades_a_version_one_database_to_persona_repository(self) -> None:
         SQLiteMigrator(
@@ -61,12 +65,25 @@ class SQLiteMigrationTests(unittest.TestCase):
             (Migration(version=1, name="bootstrap_schema", statements=()),),
         ).migrate()
 
-        self.assertEqual(2, SQLiteMigrator(self.database_path).migrate())
+        self.assertEqual(3, SQLiteMigrator(self.database_path).migrate())
         with closing(sqlite3.connect(self.database_path)) as connection:
             table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'personas'"
             ).fetchone()
         self.assertEqual(("personas",), table)
+
+    def test_upgrades_a_version_two_database_to_import_repository(self) -> None:
+        SQLiteMigrator(
+            self.database_path,
+            DEFAULT_MIGRATIONS[:2],
+        ).migrate()
+
+        self.assertEqual(3, SQLiteMigrator(self.database_path).migrate())
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('imports', 'import_manifests') ORDER BY name"
+            ).fetchall()
+        self.assertEqual([("import_manifests",), ("imports",)], tables)
 
     def test_failed_persona_migration_rolls_back_table_and_version(self) -> None:
         version_one = Migration(version=1, name="bootstrap_schema", statements=())
@@ -100,16 +117,16 @@ class SQLiteMigrationTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             versions = sorted(executor.map(lambda _: migrate(), range(2)))
 
-        self.assertEqual([2, 2], versions)
+        self.assertEqual([3, 3], versions)
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(2, count)
+        self.assertEqual(3, count)
 
     def test_failed_pending_migration_rolls_back_its_schema_and_version(self) -> None:
         SQLiteMigrator(self.database_path).migrate()
         broken_plan = DEFAULT_MIGRATIONS + (
             Migration(
-                version=3,
+                version=4,
                 name="broken_migration",
                 statements=(
                     "CREATE TABLE should_be_rolled_back (id INTEGER PRIMARY KEY)",
@@ -128,7 +145,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             leaked_table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'should_be_rolled_back'"
             ).fetchone()
-            self.assertEqual([(1,), (2,)], applied_versions)
+            self.assertEqual([(1,), (2,), (3,)], applied_versions)
         self.assertIsNone(leaked_table)
 
     def test_rejects_changed_history_for_an_applied_version(self) -> None:
@@ -164,7 +181,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertTrue(self.database_path.is_file())
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(2, count)
+        self.assertEqual(3, count)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
+from src.services.import_repository import ImportRepositoryError
 from src.services.import_service import ImportJob, ImportService, ImportState
 from src.services.storage import StorageLayout
 
@@ -124,7 +125,6 @@ class UploadService:
                 "encrypted_length": len(encrypted),
             }
             manifest["version"] = 2
-            self.storage.write_json("upload-manifests", import_id, manifest)
             received_bytes += declared_length
             updated = replace(
                 job,
@@ -133,7 +133,13 @@ class UploadService:
                 state=ImportState.UPLOADING,
                 updated_at=datetime.now(UTC).isoformat(),
             )
-            self.imports.save(updated)
+            try:
+                self.imports.save_state(updated, manifest)
+            except ImportRepositoryError as exc:
+                destination.unlink(missing_ok=True)
+                raise UploadError(
+                    "metadata_persistence_failed", "import metadata could not be committed"
+                ) from exc
             return self._receipt(updated, index, declared_length, digest, duplicate=False)
 
     def complete(self, import_id: str, whole_sha256: str | None = None) -> ImportJob:
@@ -197,13 +203,18 @@ class UploadService:
 
             manifest["version"] = 2
             manifest["final_encrypted_length"] = len(final)
-            self.storage.write_json("upload-manifests", import_id, manifest)
             completed = replace(
                 job,
                 state=ImportState.UPLOADED,
                 updated_at=datetime.now(UTC).isoformat(),
             )
-            self.imports.save(completed)
+            try:
+                self.imports.save_state(completed, manifest)
+            except ImportRepositoryError as exc:
+                destination.unlink(missing_ok=True)
+                raise UploadError(
+                    "metadata_persistence_failed", "import metadata could not be committed"
+                ) from exc
             return completed
 
     def payload_path(self, import_id: str) -> Path:
@@ -265,9 +276,8 @@ class UploadService:
         return self.storage.object_path("upload-parts", f"{import_id}-{index}", ".part")
 
     def _load_manifest(self, import_id: str) -> dict[str, Any]:
-        try:
-            value = self.storage.read_json("upload-manifests", import_id)
-        except FileNotFoundError:
+        value = self.imports.get_manifest(import_id)
+        if value is None:
             return {"version": 2, "import_id": import_id, "chunks": {}}
         if not isinstance(value, dict) or not isinstance(value.get("chunks"), dict):
             raise UploadError("manifest_corrupt", "upload manifest is invalid")

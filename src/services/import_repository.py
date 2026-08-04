@@ -1,0 +1,378 @@
+"""Transactional encrypted persistence for import jobs and upload manifests."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+from typing import Any, Mapping
+
+from src.services.authenticated_encryption import (
+    AuthenticationError,
+    AuthenticatedEncryptionService,
+    InvalidEncryptedPayloadError,
+)
+from src.services.database import SQLiteMigrator
+
+
+class ImportRepositoryError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class ImportRepository:
+    """Stores the job and its resumable manifest in one encrypted transaction."""
+
+    _RECORD_VERSION = 1
+    _JOB_AAD_PREFIX = "past-partner/import-job/v1/"
+    _MANIFEST_AAD_PREFIX = "past-partner/import-manifest/v1/"
+
+    def __init__(
+        self,
+        database_path: Path | str,
+        encryption: AuthenticatedEncryptionService,
+    ) -> None:
+        self.database_path = Path(database_path).expanduser().resolve()
+        self.encryption = encryption
+        SQLiteMigrator(self.database_path).migrate()
+
+    def create(self, job: Any, manifest: Mapping[str, Any] | None = None) -> None:
+        payload = self._encode_job(job)
+        manifest_value = self._normalize_manifest(job.id, manifest)
+        manifest_payload = self._encode_manifest(job.id, manifest_value)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO imports (id, record_version, encrypted_payload)
+                VALUES (?, ?, ?)
+                """,
+                (job.id, self._RECORD_VERSION, payload),
+            )
+            connection.execute(
+                """
+                INSERT INTO import_manifests (import_id, record_version, encrypted_payload)
+                VALUES (?, ?, ?)
+                """,
+                (job.id, self._RECORD_VERSION, manifest_payload),
+            )
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.rollback()
+            raise ImportRepositoryError("import_exists", "import already exists") from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def get(self, import_id: str) -> Any | None:
+        if not isinstance(import_id, str) or not import_id:
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT record_version, encrypted_payload FROM imports WHERE id = ?",
+                (import_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_job(import_id, row[0], row[1])
+
+    def get_manifest(self, import_id: str) -> dict[str, Any] | None:
+        if not isinstance(import_id, str) or not import_id:
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT record_version, encrypted_payload
+                FROM import_manifests
+                WHERE import_id = ?
+                """,
+                (import_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_manifest(import_id, row[0], row[1])
+
+    def save(self, job: Any) -> None:
+        job_payload = self._encode_job(job)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """
+                UPDATE imports
+                SET record_version = ?, encrypted_payload = ?
+                WHERE id = ?
+                """,
+                (self._RECORD_VERSION, job_payload, job.id),
+            ).rowcount
+            if updated != 1:
+                raise ImportRepositoryError("import_not_found", "import not found")
+            connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def save_state(self, job: Any, manifest: Mapping[str, Any]) -> None:
+        job_payload = self._encode_job(job)
+        manifest_value = self._normalize_manifest(job.id, manifest)
+        manifest_payload = self._encode_manifest(job.id, manifest_value)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT 1 FROM imports WHERE id = ?", (job.id,)
+            ).fetchone()
+            if existing is None:
+                raise ImportRepositoryError("import_not_found", "import not found")
+            connection.execute(
+                """
+                UPDATE imports
+                SET record_version = ?, encrypted_payload = ?
+                WHERE id = ?
+                """,
+                (self._RECORD_VERSION, job_payload, job.id),
+            )
+            connection.execute(
+                """
+                INSERT INTO import_manifests (import_id, record_version, encrypted_payload)
+                VALUES (?, ?, ?)
+                ON CONFLICT(import_id) DO UPDATE SET
+                    record_version = excluded.record_version,
+                    encrypted_payload = excluded.encrypted_payload
+                """,
+                (job.id, self._RECORD_VERSION, manifest_payload),
+            )
+            connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def migrate_legacy_json(self, imports_directory: Path | str, manifests_directory: Path | str) -> int:
+        """Encrypt legacy metadata, then remove plaintext sources after commit."""
+
+        import_dir = Path(imports_directory).expanduser().resolve()
+        manifest_dir = Path(manifests_directory).expanduser().resolve()
+        import_records = self._read_legacy_jobs(import_dir)
+        manifest_records = self._read_legacy_manifests(manifest_dir)
+        if not import_records and not manifest_records:
+            return 0
+
+        for import_id in manifest_records:
+            if import_id not in import_records:
+                raise ImportRepositoryError(
+                    "legacy_manifest_orphan", "legacy manifest has no import job"
+                )
+
+        records: list[tuple[str, Any, dict[str, Any]]] = []
+        for import_id, job in import_records.items():
+            manifest = manifest_records.get(import_id, self._default_manifest(import_id))
+            records.append((import_id, job, manifest))
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for import_id, job, manifest in records:
+                existing_job = connection.execute(
+                    "SELECT record_version, encrypted_payload FROM imports WHERE id = ?",
+                    (import_id,),
+                ).fetchone()
+                existing_manifest = connection.execute(
+                    """
+                    SELECT record_version, encrypted_payload
+                    FROM import_manifests
+                    WHERE import_id = ?
+                    """,
+                    (import_id,),
+                ).fetchone()
+                if existing_job is None:
+                    connection.execute(
+                        "INSERT INTO imports (id, record_version, encrypted_payload) VALUES (?, ?, ?)",
+                        (import_id, self._RECORD_VERSION, self._encode_job(job)),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO import_manifests (import_id, record_version, encrypted_payload)
+                        VALUES (?, ?, ?)
+                        """,
+                        (import_id, self._RECORD_VERSION, self._encode_manifest(import_id, manifest)),
+                    )
+                else:
+                    if self._decode_job(import_id, existing_job[0], existing_job[1]) != job:
+                        raise ImportRepositoryError(
+                            "legacy_import_conflict", "legacy import conflicts with encrypted record"
+                        )
+                    if existing_manifest is None:
+                        connection.execute(
+                            """
+                            INSERT INTO import_manifests (import_id, record_version, encrypted_payload)
+                            VALUES (?, ?, ?)
+                            """,
+                            (import_id, self._RECORD_VERSION, self._encode_manifest(import_id, manifest)),
+                        )
+                    elif self._decode_manifest(
+                        import_id, existing_manifest[0], existing_manifest[1]
+                    ) != manifest:
+                        raise ImportRepositoryError(
+                            "legacy_manifest_conflict",
+                            "legacy manifest conflicts with encrypted record",
+                        )
+            connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+        for path in [*self._paths(import_dir), *self._paths(manifest_dir)]:
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise ImportRepositoryError(
+                    "legacy_import_cleanup_failed", "legacy import source could not be removed"
+                ) from exc
+        return len(records)
+
+    def _read_legacy_jobs(self, directory: Path) -> dict[str, Any]:
+        records: dict[str, Any] = {}
+        for path in self._paths(directory):
+            try:
+                from src.services.import_service import ImportJob
+
+                job = ImportJob.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                raise ImportRepositoryError(
+                    "legacy_import_record_invalid", "legacy import record is invalid"
+                ) from exc
+            if job.id != path.stem:
+                raise ImportRepositoryError(
+                    "legacy_import_identity_mismatch", "legacy import filename does not match its record"
+                )
+            records[job.id] = job
+        return records
+
+    def _read_legacy_manifests(self, directory: Path) -> dict[str, dict[str, Any]]:
+        records: dict[str, dict[str, Any]] = {}
+        for path in self._paths(directory):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ImportRepositoryError(
+                    "legacy_manifest_record_invalid", "legacy manifest record is invalid"
+                ) from exc
+            try:
+                manifest = self._normalize_manifest(path.stem, value)
+            except ImportRepositoryError as exc:
+                raise ImportRepositoryError(
+                    "legacy_manifest_record_invalid", "legacy manifest record is invalid"
+                ) from exc
+            records[path.stem] = manifest
+        return records
+
+    @staticmethod
+    def _paths(directory: Path) -> list[Path]:
+        if not directory.exists():
+            return []
+        if not directory.is_dir():
+            raise ImportRepositoryError("legacy_import_directory_invalid", "legacy import path is not a directory")
+        paths = sorted(directory.glob("*.json"))
+        for path in paths:
+            if path.is_symlink() or path.resolve().parent != directory:
+                raise ImportRepositoryError("legacy_import_path_invalid", "legacy import path is unsafe")
+        return paths
+
+    def _decode_job(self, import_id: str, record_version: object, envelope: object) -> Any:
+        if record_version != self._RECORD_VERSION or not isinstance(envelope, bytes):
+            raise ImportRepositoryError("import_record_version_unsupported", "import record version is unsupported")
+        try:
+            payload = self.encryption.decrypt(envelope, self._job_aad(import_id))
+        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+            raise ImportRepositoryError(
+                "import_record_authentication_failed", "import record authentication failed"
+            ) from exc
+        try:
+            from src.services.import_service import ImportJob
+
+            job = ImportJob.from_dict(json.loads(payload.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ImportRepositoryError("import_record_corrupt", "import record is invalid") from exc
+        if job.id != import_id:
+            raise ImportRepositoryError("import_record_corrupt", "import record identity mismatches")
+        return job
+
+    def _decode_manifest(self, import_id: str, record_version: object, envelope: object) -> dict[str, Any]:
+        if record_version != self._RECORD_VERSION or not isinstance(envelope, bytes):
+            raise ImportRepositoryError(
+                "manifest_record_version_unsupported", "manifest record version is unsupported"
+            )
+        try:
+            payload = self.encryption.decrypt(envelope, self._manifest_aad(import_id))
+        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+            raise ImportRepositoryError(
+                "manifest_record_authentication_failed", "manifest record authentication failed"
+            ) from exc
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ImportRepositoryError("manifest_record_corrupt", "manifest record is invalid") from exc
+        return self._normalize_manifest(import_id, value)
+
+    def _encode_job(self, job: Any) -> bytes:
+        if not hasattr(job, "id") or not hasattr(job, "to_dict"):
+            raise TypeError("job must be an ImportJob")
+        return self._encrypt_json(job.to_dict(), self._job_aad(job.id))
+
+    def _encode_manifest(self, import_id: str, manifest: Mapping[str, Any]) -> bytes:
+        return self._encrypt_json(dict(manifest), self._manifest_aad(import_id))
+
+    def _encrypt_json(self, value: Mapping[str, Any], aad: bytes) -> bytes:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return self.encryption.encrypt(payload, aad)
+
+    @classmethod
+    def _job_aad(cls, import_id: str) -> bytes:
+        return f"{cls._JOB_AAD_PREFIX}{import_id}".encode("utf-8")
+
+    @classmethod
+    def _manifest_aad(cls, import_id: str) -> bytes:
+        return f"{cls._MANIFEST_AAD_PREFIX}{import_id}".encode("utf-8")
+
+    @staticmethod
+    def _default_manifest(import_id: str) -> dict[str, Any]:
+        return {"version": 2, "import_id": import_id, "chunks": {}}
+
+    def _normalize_manifest(
+        self, import_id: str, value: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        if value is None:
+            manifest = self._default_manifest(import_id)
+        elif isinstance(value, Mapping):
+            manifest = dict(value)
+        else:
+            raise ImportRepositoryError("manifest_record_corrupt", "manifest record is invalid")
+        if (
+            manifest.get("version") != 2
+            or manifest.get("import_id") != import_id
+            or not isinstance(manifest.get("chunks"), dict)
+        ):
+            raise ImportRepositoryError("manifest_record_corrupt", "manifest record is invalid")
+        return manifest
+
+    def _connect(self) -> sqlite3.Connection:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.database_path, timeout=5)
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection

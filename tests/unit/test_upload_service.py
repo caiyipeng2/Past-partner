@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService, ImportState
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.persona_repository import PersonaRepository
@@ -36,7 +37,7 @@ class UploadServiceTests(unittest.TestCase):
         personas = PersonaService(
             PersonaRepository(layout.database_path(), self.encryption)
         )
-        imports = ImportService(layout, personas)
+        imports = ImportService(ImportRepository(layout.database_path(), self.encryption), personas)
         persona = personas.create("小雨", "friend")
         self.job = imports.create(persona.id, "chat.txt", 11, "text/plain")
         self.imports = imports
@@ -61,6 +62,8 @@ class UploadServiceTests(unittest.TestCase):
         encrypted_payload = self.uploads.payload_path(self.job.id).read_bytes()
         self.assertNotEqual(first + second, encrypted_payload)
         self.assertEqual(first + second, b"".join(self.uploads.iter_payload(self.job.id)))
+        self.assertFalse((self.root / "upload-manifests").exists())
+        self.assertNotIn(b"encrypted_length", (self.root / "database" / "past-partner.sqlite3").read_bytes())
 
     def test_chunks_and_completed_payload_are_authenticated_envelopes(self) -> None:
         value = b"secret"
