@@ -108,6 +108,12 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("uploaded", completed["state"])
+        encrypted_payload = self.server.application.uploads.payload_path(job["id"]).read_bytes()
+        self.assertNotIn(content, encrypted_payload)
+        self.assertEqual(
+            content,
+            b"".join(self.server.application.uploads.iter_payload(job["id"])),
+        )
 
     def test_rejected_chunk_closes_connection_when_body_may_be_unread(self) -> None:
         _, _, persona = self.request(

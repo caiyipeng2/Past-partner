@@ -9,9 +9,14 @@ import threading
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping
+from typing import Any, BinaryIO, Iterator, Mapping
 from uuid import uuid4
 
+from src.services.authenticated_encryption import (
+    AuthenticationError,
+    AuthenticatedEncryptionService,
+    InvalidEncryptedPayloadError,
+)
 from src.services.import_service import ImportJob, ImportService, ImportState
 from src.services.storage import StorageLayout
 
@@ -43,13 +48,17 @@ class UploadService:
         self,
         storage: StorageLayout,
         imports: ImportService,
+        encryption: AuthenticatedEncryptionService,
         max_chunk_bytes: int = DEFAULT_CHUNK_BYTES,
         read_block_bytes: int = DEFAULT_READ_BLOCK_BYTES,
     ):
         if max_chunk_bytes <= 0 or read_block_bytes <= 0:
             raise ValueError("chunk and read block limits must be positive")
+        if max_chunk_bytes > encryption.max_plaintext_bytes:
+            raise ValueError("chunk limit cannot exceed the encryption segment limit")
         self.storage = storage
         self.imports = imports
+        self.encryption = encryption
         self.max_chunk_bytes = max_chunk_bytes
         self.read_block_bytes = min(read_block_bytes, max_chunk_bytes)
         # The development runtime is one process. The lock prevents two request
@@ -78,6 +87,7 @@ class UploadService:
             chunks = manifest["chunks"]
             existing = chunks.get(str(index))
             if existing is not None:
+                existing = self._chunk_entry(existing)
                 if existing["length"] != declared_length or existing["sha256"] != digest:
                     raise UploadError("chunk_conflict", "chunk index already has different content")
                 actual_digest = self._consume_and_hash(stream, declared_length)
@@ -85,22 +95,35 @@ class UploadService:
                     raise UploadError("chunk_digest_mismatch", "chunk digest does not match its body")
                 return self._receipt(job, index, declared_length, digest, duplicate=True)
 
-            received_bytes = sum(int(item["length"]) for item in chunks.values())
+            received_bytes = sum(int(self._chunk_entry(item)["length"]) for item in chunks.values())
             if received_bytes + declared_length > job.total_bytes:
                 raise UploadError("import_size_exceeded", "chunk exceeds the import's declared size")
 
+            plaintext, actual_digest = self._read_and_hash(stream, declared_length)
+            if actual_digest != digest:
+                raise UploadError("chunk_digest_mismatch", "chunk digest does not match its body")
+
+            encrypted = self._encrypt_segment(
+                plaintext, self.chunk_aad(import_id, index, final=False), "chunk_encryption_failed"
+            )
             destination = self._chunk_path(import_id, index)
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             try:
-                actual_digest = self._write_and_hash(stream, declared_length, temporary)
-                if actual_digest != digest:
-                    raise UploadError("chunk_digest_mismatch", "chunk digest does not match its body")
+                with temporary.open("xb") as output:
+                    output.write(encrypted)
+                    output.flush()
+                    os.fsync(output.fileno())
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
 
-            chunks[str(index)] = {"length": declared_length, "sha256": digest}
+            chunks[str(index)] = {
+                "length": declared_length,
+                "sha256": digest,
+                "encrypted_length": len(encrypted),
+            }
+            manifest["version"] = 2
             self.storage.write_json("upload-manifests", import_id, manifest)
             received_bytes += declared_length
             updated = replace(
@@ -125,7 +148,8 @@ class UploadService:
             manifest = self._load_manifest(import_id)
             chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
             indexes = sorted(int(value) for value in chunks)
-            total = sum(int(chunks[str(index)]["length"]) for index in indexes)
+            entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
+            total = sum(int(entries[index]["length"]) for index in indexes)
             if total != job.total_bytes or indexes != list(range(len(indexes))):
                 raise UploadError("upload_incomplete", "all bytes and contiguous chunks are required")
 
@@ -139,10 +163,30 @@ class UploadService:
                         part = self._chunk_path(import_id, index)
                         if not part.is_file():
                             raise UploadError("chunk_missing", f"stored chunk {index} is missing")
+                        entry = entries[index]
+                        encrypted_length = self._encrypted_length(entry)
                         with part.open("rb") as source:
-                            while block := source.read(self.read_block_bytes):
-                                output.write(block)
-                                digest.update(block)
+                            encrypted = self._read_exact(source, encrypted_length, "chunk_corrupt")
+                            if source.read(1):
+                                raise UploadError("chunk_corrupt", "stored chunk has trailing bytes")
+                        try:
+                            plaintext = self.encryption.decrypt(
+                                encrypted, self.chunk_aad(import_id, index, final=False)
+                            )
+                        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                            raise UploadError(
+                                "chunk_authentication_failed", "stored chunk authentication failed"
+                            ) from exc
+                        if len(plaintext) != int(entry["length"]):
+                            raise UploadError("chunk_corrupt", "stored chunk length is invalid")
+                        if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                            raise UploadError("chunk_corrupt", "stored chunk digest is invalid")
+                        output.write(encrypted)
+                        digest.update(plaintext)
+                    final = self._encrypt_segment(
+                        b"", self.chunk_aad(import_id, len(indexes), final=True), "payload_encryption_failed"
+                    )
+                    output.write(final)
                     output.flush()
                     os.fsync(output.fileno())
                 if expected_digest is not None and digest.hexdigest() != expected_digest:
@@ -151,6 +195,9 @@ class UploadService:
             finally:
                 temporary.unlink(missing_ok=True)
 
+            manifest["version"] = 2
+            manifest["final_encrypted_length"] = len(final)
+            self.storage.write_json("upload-manifests", import_id, manifest)
             completed = replace(
                 job,
                 state=ImportState.UPLOADED,
@@ -162,6 +209,58 @@ class UploadService:
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")
 
+    @staticmethod
+    def chunk_aad(import_id: str, index: int, *, final: bool) -> bytes:
+        marker = "true" if final else "false"
+        return f"past-partner/import/{import_id}/chunk/{index}/final/{marker}".encode("ascii")
+
+    def iter_payload(self, import_id: str) -> Iterator[bytes]:
+        with self._lock:
+            job = self.imports.get(import_id)
+            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+                raise UploadError("payload_unavailable", "completed encrypted payload is unavailable")
+            manifest = self._load_manifest(import_id)
+            chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
+            indexes = sorted(int(value) for value in chunks)
+            entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
+            if indexes != list(range(len(indexes))):
+                raise UploadError("manifest_corrupt", "encrypted chunk indexes are not contiguous")
+
+            with self.payload_path(import_id).open("rb") as source:
+                for index in indexes:
+                    entry = entries[index]
+                    encrypted = self._read_exact(
+                        source, self._encrypted_length(entry), "payload_corrupt"
+                    )
+                    try:
+                        plaintext = self.encryption.decrypt(
+                            encrypted, self.chunk_aad(import_id, index, final=False)
+                        )
+                    except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                        raise UploadError(
+                            "payload_authentication_failed", "payload chunk authentication failed"
+                        ) from exc
+                    if len(plaintext) != int(entry["length"]):
+                        raise UploadError("payload_corrupt", "payload chunk length is invalid")
+                    if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                        raise UploadError("payload_corrupt", "payload chunk digest is invalid")
+                    yield plaintext
+
+                final_length = self._encrypted_length_value(manifest.get("final_encrypted_length"))
+                final = self._read_exact(source, final_length, "payload_corrupt")
+                try:
+                    sentinel = self.encryption.decrypt(
+                        final, self.chunk_aad(import_id, len(indexes), final=True)
+                    )
+                except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                    raise UploadError(
+                        "payload_authentication_failed", "payload end marker authentication failed"
+                    ) from exc
+                if sentinel:
+                    raise UploadError("payload_corrupt", "payload end marker is not empty")
+                if source.read(1):
+                    raise UploadError("payload_corrupt", "payload has trailing bytes")
+
     def _chunk_path(self, import_id: str, index: int) -> Path:
         return self.storage.object_path("upload-parts", f"{import_id}-{index}", ".part")
 
@@ -169,27 +268,67 @@ class UploadService:
         try:
             value = self.storage.read_json("upload-manifests", import_id)
         except FileNotFoundError:
-            return {"version": 1, "import_id": import_id, "chunks": {}}
+            return {"version": 2, "import_id": import_id, "chunks": {}}
         if not isinstance(value, dict) or not isinstance(value.get("chunks"), dict):
             raise UploadError("manifest_corrupt", "upload manifest is invalid")
+        if value.get("version") != 2:
+            raise UploadError("manifest_version_unsupported", "encrypted upload manifest version is unsupported")
         return value
 
-    def _write_and_hash(self, stream: BinaryIO, length: int, destination: Path) -> str:
+    def _read_and_hash(self, stream: BinaryIO, length: int) -> tuple[bytes, str]:
         digest = hashlib.sha256()
+        plaintext = bytearray()
         remaining = length
-        with destination.open("xb") as output:
-            while remaining:
-                block = stream.read(min(self.read_block_bytes, remaining))
-                if not block:
-                    raise UploadError("chunk_length_mismatch", "chunk ended before its declared length")
-                if len(block) > remaining:
-                    raise UploadError("chunk_length_mismatch", "chunk exceeded its declared length")
-                output.write(block)
-                digest.update(block)
-                remaining -= len(block)
-            output.flush()
-            os.fsync(output.fileno())
-        return digest.hexdigest()
+        while remaining:
+            block = stream.read(min(self.read_block_bytes, remaining))
+            if not block:
+                raise UploadError("chunk_length_mismatch", "chunk ended before its declared length")
+            if len(block) > remaining:
+                raise UploadError("chunk_length_mismatch", "chunk exceeded its declared length")
+            plaintext.extend(block)
+            digest.update(block)
+            remaining -= len(block)
+        return bytes(plaintext), digest.hexdigest()
+
+    def _encrypt_segment(self, plaintext: bytes, aad: bytes, code: str) -> bytes:
+        try:
+            return self.encryption.encrypt(plaintext, aad)
+        except ValueError as exc:
+            raise UploadError(code, "payload segment exceeds the encryption limit") from exc
+
+    def _encrypted_length(self, entry: Mapping[str, Any]) -> int:
+        return self._encrypted_length_value(entry.get("encrypted_length"))
+
+    def _chunk_entry(self, value: object) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping):
+            raise UploadError("manifest_corrupt", "encrypted chunk metadata is invalid")
+        length = value.get("length")
+        digest = value.get("sha256")
+        if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+            raise UploadError("manifest_corrupt", "encrypted chunk length is invalid")
+        if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+            raise UploadError("manifest_corrupt", "encrypted chunk digest is invalid")
+        self._encrypted_length(value)
+        return value
+
+    @staticmethod
+    def _encrypted_length_value(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise UploadError("manifest_corrupt", "encrypted segment length is invalid")
+        return value
+
+    def _read_exact(self, source: BinaryIO, length: int, code: str) -> bytes:
+        remaining = length
+        blocks: list[bytes] = []
+        while remaining:
+            block = source.read(min(self.read_block_bytes, remaining))
+            if not block:
+                raise UploadError(code, "encrypted segment ended before its declared length")
+            if len(block) > remaining:
+                raise UploadError(code, "encrypted segment exceeded its declared length")
+            blocks.append(block)
+            remaining -= len(block)
+        return b"".join(blocks)
 
     def _consume_and_hash(self, stream: BinaryIO, length: int) -> str:
         digest = hashlib.sha256()

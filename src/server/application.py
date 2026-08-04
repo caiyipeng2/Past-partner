@@ -55,7 +55,9 @@ class Application:
         encryption = AuthenticatedEncryptionService(master_keys)
         personas = PersonaService(storage)
         imports = ImportService(storage, personas, max_import_bytes=config.max_import_bytes)
-        uploads = UploadService(storage, imports, max_chunk_bytes=config.max_chunk_bytes)
+        uploads = UploadService(
+            storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
+        )
         catalog = ProviderCatalog.default()
         adapters = build_openai_compatible_adapters(catalog)
         if config.mode == "test":

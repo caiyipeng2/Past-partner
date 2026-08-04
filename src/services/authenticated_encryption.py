@@ -65,6 +65,10 @@ class AuthenticatedEncryptionService:
         self._key_resolver = key_resolver
         self._max_plaintext_bytes = max_plaintext_bytes
 
+    @property
+    def max_plaintext_bytes(self) -> int:
+        return self._max_plaintext_bytes
+
     def encrypt(self, plaintext: bytes, aad: bytes) -> bytes:
         plaintext = _required_bytes(plaintext, "plaintext")
         if len(plaintext) > self._max_plaintext_bytes:

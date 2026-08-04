@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import shutil
@@ -5,7 +6,9 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_service import ImportService, ImportState
+from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.persona_service import PersonaService
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadError, UploadService
@@ -30,7 +33,11 @@ class UploadServiceTests(unittest.TestCase):
         persona = personas.create("小雨", "friend")
         self.job = imports.create(persona.id, "chat.txt", 11, "text/plain")
         self.imports = imports
-        self.uploads = UploadService(layout, imports, read_block_bytes=4)
+        key = base64.b64encode(b"u" * MASTER_KEY_BYTES).decode("ascii")
+        self.encryption = AuthenticatedEncryptionService(
+            EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
+        )
+        self.uploads = UploadService(layout, imports, self.encryption, read_block_bytes=4)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
@@ -48,7 +55,83 @@ class UploadServiceTests(unittest.TestCase):
         completed = self.uploads.complete(self.job.id, self.digest(first + second))
 
         self.assertEqual(ImportState.UPLOADED, completed.state)
-        self.assertEqual(first + second, self.uploads.payload_path(self.job.id).read_bytes())
+        encrypted_payload = self.uploads.payload_path(self.job.id).read_bytes()
+        self.assertNotEqual(first + second, encrypted_payload)
+        self.assertEqual(first + second, b"".join(self.uploads.iter_payload(self.job.id)))
+
+    def test_chunks_and_completed_payload_are_authenticated_envelopes(self) -> None:
+        value = b"secret"
+        self.uploads.put_chunk(
+            self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
+        )
+
+        stored_chunk = self.uploads._chunk_path(self.job.id, 0).read_bytes()
+
+        self.assertNotIn(value, stored_chunk)
+        self.assertEqual(
+            value,
+            self.encryption.decrypt(
+                stored_chunk, self.uploads.chunk_aad(self.job.id, 0, final=False)
+            ),
+        )
+
+    def test_tampered_chunk_fails_completion_before_payload_replace(self) -> None:
+        value = b"secret"
+        filler = b"xxxxx"
+        self.uploads.put_chunk(
+            self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
+        )
+        self.uploads.put_chunk(
+            self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
+        )
+        path = self.uploads._chunk_path(self.job.id, 0)
+        tampered = bytearray(path.read_bytes())
+        tampered[0] ^= 1
+        path.write_bytes(tampered)
+
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.complete(self.job.id)
+
+        self.assertEqual("chunk_authentication_failed", captured.exception.code)
+        self.assertFalse(self.uploads.payload_path(self.job.id).exists())
+
+    def test_chunk_trailing_bytes_fail_closed(self) -> None:
+        value = b"secret"
+        filler = b"xxxxx"
+        self.uploads.put_chunk(
+            self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
+        )
+        self.uploads.put_chunk(
+            self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
+        )
+        path = self.uploads._chunk_path(self.job.id, 0)
+        with path.open("ab") as output:
+            output.write(b"trailing")
+
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.complete(self.job.id)
+
+        self.assertEqual("chunk_corrupt", captured.exception.code)
+
+    def test_tampered_final_sentinel_is_rejected_when_reading_payload(self) -> None:
+        value = b"secret"
+        filler = b"xxxxx"
+        self.uploads.put_chunk(
+            self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
+        )
+        self.uploads.put_chunk(
+            self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
+        )
+        self.uploads.complete(self.job.id)
+        path = self.uploads.payload_path(self.job.id)
+        tampered = bytearray(path.read_bytes())
+        tampered[-1] ^= 1
+        path.write_bytes(tampered)
+
+        with self.assertRaises(UploadError) as captured:
+            list(self.uploads.iter_payload(self.job.id))
+
+        self.assertEqual("payload_authentication_failed", captured.exception.code)
 
     def test_identical_retry_is_idempotent(self) -> None:
         value = b"hello "
