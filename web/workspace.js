@@ -5,7 +5,16 @@ const MAX_IMPORT_BYTES = 3 * 1024 * 1024 * 1024;
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNK_ATTEMPTS = 3;
 
+function readSessionToken() {
+    try {
+        return sessionStorage.getItem('pastPartnerSession');
+    } catch (_error) {
+        return null;
+    }
+}
+
 const state = {
+    authToken: readSessionToken(),
     personaId: null,
     selectedFiles: [],
     providers: [],
@@ -28,7 +37,9 @@ const elementIds = [
 const elements = Object.fromEntries(elementIds.map(id => [id, document.getElementById(id)]));
 
 async function api(path, options = {}) {
-    const response = await fetch(`${API_BASE}${path}`, options);
+    const request = {...options, headers: {...(options.headers || {})}};
+    if (state.authToken) request.headers.Authorization = `Bearer ${state.authToken}`;
+    const response = await fetch(`${API_BASE}${path}`, request);
     const contentType = response.headers.get('Content-Type') || '';
     const payload = contentType.includes('application/json') ? await response.json() : null;
     if (!response.ok) {
@@ -37,6 +48,24 @@ async function api(path, options = {}) {
         throw error;
     }
     return payload;
+}
+
+async function bootstrapSession() {
+    if (state.authToken) return;
+    const response = await fetch(`${API_BASE}/auth/session`, {method: 'POST'});
+    const contentType = response.headers.get('Content-Type') || '';
+    const payload = contentType.includes('application/json') ? await response.json() : null;
+    if (!response.ok) {
+        const error = new Error(payload?.error?.message || `会话初始化失败 (${response.status})`);
+        error.code = payload?.error?.code || 'session_bootstrap_failed';
+        throw error;
+    }
+    state.authToken = payload.access_token;
+    try {
+        sessionStorage.setItem('pastPartnerSession', state.authToken);
+    } catch (_error) {
+        // The current page can continue using the in-memory bearer token.
+    }
 }
 
 function postJson(path, value) {
@@ -417,6 +446,7 @@ elements.messageInput.addEventListener('keydown', event => {
     }
 });
 
-checkHealth();
-loadProviders();
+bootstrapSession()
+    .then(() => Promise.all([checkHealth(), loadProviders()]))
+    .catch(() => checkHealth());
 updateControls();

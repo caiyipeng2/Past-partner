@@ -17,6 +17,7 @@ class ServerConfig:
     data_dir: Path = Path("data/runtime")
     web_dir: Path = Path("web")
     mode: str = "development"
+    owner_bootstrap_token: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:3000",
         "http://localhost:3000",
@@ -37,6 +38,7 @@ class ServerConfig:
             data_dir=Path(os.getenv("PAST_PARTNER_DATA_DIR", str(default.data_dir))),
             web_dir=Path(os.getenv("PAST_PARTNER_WEB_DIR", str(default.web_dir))),
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
+            owner_bootstrap_token=os.getenv("PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN"),
             cors_origins=tuple(item.strip() for item in origins.split(",") if item.strip()) if origins else default.cors_origins,
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
             max_chunk_bytes=_int_env("PAST_PARTNER_MAX_CHUNK_BYTES", default.max_chunk_bytes),

@@ -35,7 +35,11 @@ class PersonaRepository:
         self.encryption = encryption
         SQLiteMigrator(self.database_path).migrate()
 
-    def save(self, persona: Persona) -> None:
+    def save(self, owner_id: str | Persona, persona: Persona | None = None) -> None:
+        if persona is None:
+            persona = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         if not isinstance(persona, Persona):
             raise TypeError("persona must be a Persona")
         envelope = self._encode(persona)
@@ -44,10 +48,10 @@ class PersonaRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
-                INSERT INTO personas (id, record_version, encrypted_payload)
-                VALUES (?, ?, ?)
+                INSERT INTO personas (id, owner_id, record_version, encrypted_payload)
+                VALUES (?, ?, ?, ?)
                 """,
-                (persona.id, self._RECORD_VERSION, envelope),
+                (persona.id, owner_id, self._RECORD_VERSION, envelope),
             )
             connection.commit()
         except sqlite3.IntegrityError as exc:
@@ -61,29 +65,47 @@ class PersonaRepository:
         finally:
             connection.close()
 
-    def get(self, persona_id: str) -> Persona | None:
+    def get(self, owner_id: str, persona_id: str | None = None) -> Persona | None:
+        if persona_id is None:
+            persona_id = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         if not isinstance(persona_id, str) or not persona_id:
             return None
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT record_version, encrypted_payload FROM personas WHERE id = ?",
-                (persona_id,),
+                f"SELECT record_version, encrypted_payload FROM personas WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (persona_id, *self._owner_params(owner_id)),
             ).fetchone()
         if row is None:
             return None
         return self._decode(persona_id, row[0], row[1])
 
-    def list(self) -> list[Persona]:
+    def list(self, owner_id: str | None = None) -> list[Persona]:
+        owner_id = self._owner_id(owner_id)
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT id, record_version, encrypted_payload FROM personas"
+                f"SELECT id, record_version, encrypted_payload FROM personas WHERE {self._owner_clause(owner_id)}",
+                self._owner_params(owner_id),
             ).fetchall()
         personas = [self._decode(row[0], row[1], row[2]) for row in rows]
         return sorted(personas, key=lambda item: (item.created_at, item.id))
 
-    def migrate_legacy_json(self, directory: Path | str) -> int:
+    def assign_unowned(self, owner_id: str) -> int:
+        owner_id = self._owner_id(owner_id)
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE personas SET owner_id = ? WHERE owner_id IS NULL",
+                (owner_id,),
+            ).rowcount
+            connection.commit()
+        return updated
+
+    def migrate_legacy_json(self, directory: Path | str, owner_id: str | None = None) -> int:
         """Encrypt legacy persona JSON before removing each committed source file."""
 
+        owner_id = self._owner_id(owner_id)
         source_dir = Path(directory).expanduser().resolve()
         if not source_dir.exists():
             return 0
@@ -114,18 +136,18 @@ class PersonaRepository:
             connection.execute("BEGIN IMMEDIATE")
             for _, persona in records:
                 row = connection.execute(
-                    "SELECT record_version, encrypted_payload FROM personas WHERE id = ?",
+                    "SELECT owner_id, record_version, encrypted_payload FROM personas WHERE id = ?",
                     (persona.id,),
                 ).fetchone()
                 if row is None:
                     connection.execute(
                         """
-                        INSERT INTO personas (id, record_version, encrypted_payload)
-                        VALUES (?, ?, ?)
+                        INSERT INTO personas (id, owner_id, record_version, encrypted_payload)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        (persona.id, self._RECORD_VERSION, self._encode(persona)),
+                        (persona.id, owner_id, self._RECORD_VERSION, self._encode(persona)),
                     )
-                elif self._decode(persona.id, row[0], row[1]) != persona:
+                elif row[0] != owner_id or self._decode(persona.id, row[1], row[2]) != persona:
                     raise PersonaRepositoryError(
                         "legacy_persona_conflict", "legacy persona conflicts with encrypted record"
                     )
@@ -185,3 +207,19 @@ class PersonaRepository:
         connection = sqlite3.connect(self.database_path, timeout=5)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _owner_id(owner_id: object) -> str | None:
+        if owner_id is None:
+            return None
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id must be a non-empty string")
+        return owner_id.strip()
+
+    @staticmethod
+    def _owner_clause(owner_id: str | None) -> str:
+        return "owner_id IS NULL" if owner_id is None else "owner_id = ?"
+
+    @staticmethod
+    def _owner_params(owner_id: str | None) -> tuple[str, ...]:
+        return () if owner_id is None else (owner_id,)

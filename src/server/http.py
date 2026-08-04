@@ -17,6 +17,7 @@ from src.providers.gateway import ProviderError
 from src.server.application import Application, RequestValidationError
 from src.server.config import ServerConfig
 from src.services.import_service import ImportNotFoundError, ImportValidationError
+from src.services.local_auth import LocalAuthError
 from src.services.persona_service import PersonaNotFoundError
 from src.services.upload_service import UploadError
 
@@ -61,7 +62,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Chunk-Sha256")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, X-Chunk-Sha256, Authorization, X-Local-Owner-Token",
+        )
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -76,7 +80,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, operation) -> None:
         try:
+            path, _ = self._request_target()
+            if self._requires_auth(path):
+                self.owner_id = self.server.application.authenticate(
+                    self.headers.get("Authorization")
+                ).user_id
+            else:
+                self.owner_id = None
             operation()
+        except LocalAuthError as exc:
+            status = HTTPStatus.SERVICE_UNAVAILABLE if exc.code.startswith("auth_owner_record_") else HTTPStatus.UNAUTHORIZED
+            self._error(status, exc.code, str(exc))
         except RequestValidationError as exc:
             self._error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
         except (PersonaValidationError, ImportValidationError) as exc:
@@ -114,14 +128,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/health":
             self._json(HTTPStatus.OK, {"status": "healthy", "service": "past-partner-api", "version": "v1"})
         elif path == "/api/v1/personas":
-            self._json(HTTPStatus.OK, self.server.application.list_personas())
+            self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
         elif path == "/api/v1/providers":
             self._json(HTTPStatus.OK, self.server.application.providers_catalog())
         elif path == "/api/v1/models":
             provider_id = query.get("provider_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
         elif match := _IMPORT_PATH.fullmatch(path):
-            self._json(HTTPStatus.OK, self.server.application.get_import(match.group(1)))
+            self._json(HTTPStatus.OK, self.server.application.get_import(self.owner_id, match.group(1)))
         elif path.startswith("/api/"):
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
         else:
@@ -129,14 +143,21 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self) -> None:
         path, _ = self._request_target()
-        if path == "/api/v1/personas":
-            self._json(HTTPStatus.CREATED, self.server.application.create_persona(self._json_body()))
+        if path == "/api/v1/auth/session":
+            self._json(
+                HTTPStatus.CREATED,
+                self.server.application.issue_session(
+                    self.client_address[0], self.headers.get("X-Local-Owner-Token")
+                ),
+            )
+        elif path == "/api/v1/personas":
+            self._json(HTTPStatus.CREATED, self.server.application.create_persona(self.owner_id, self._json_body()))
         elif path == "/api/v1/imports":
-            self._json(HTTPStatus.CREATED, self.server.application.create_import(self._json_body()))
+            self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
         elif match := _COMPLETE_PATH.fullmatch(path):
-            self._json(HTTPStatus.OK, self.server.application.complete_import(match.group(1), self._json_body()))
+            self._json(HTTPStatus.OK, self.server.application.complete_import(self.owner_id, match.group(1), self._json_body()))
         else:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
 
@@ -164,6 +185,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise RequestValidationError("digest_required", "X-Chunk-Sha256 is required")
         result = self.server.application.put_chunk(
+            self.owner_id,
             match.group(1),
             int(match.group(2)),
             content_length,
@@ -217,6 +239,13 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         if any(segment == ".." for segment in decoded.replace("\\", "/").split("/")):
             return "/__rejected__", {}
         return decoded, parse_qs(parsed.query)
+
+    @staticmethod
+    def _requires_auth(path: str) -> bool:
+        return path.startswith("/api/v1/") and path not in {
+            "/api/v1/health",
+            "/api/v1/auth/session",
+        }
 
     def _json(self, status: HTTPStatus, value: Any) -> None:
         body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

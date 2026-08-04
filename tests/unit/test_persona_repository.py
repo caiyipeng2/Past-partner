@@ -14,6 +14,7 @@ from src.services.master_key import (
 )
 from src.services.persona_repository import PersonaRepository, PersonaRepositoryError
 from src.services.persona_service import PersonaService
+from src.services.local_auth import LocalAuthService
 from src.services.storage import StorageLayout
 
 
@@ -26,6 +27,7 @@ class PersonaRepositoryTests(unittest.TestCase):
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
         self.repository = PersonaRepository(self.layout.database_path(), self.encryption)
+        self.auth = LocalAuthService(self.layout.database_path(), self.encryption, mode="test")
         self.service = PersonaService(self.repository)
 
     def tearDown(self) -> None:
@@ -109,6 +111,14 @@ class PersonaRepositoryTests(unittest.TestCase):
         shutil.rmtree(self.root)
 
         self.assertFalse(self.root.exists())
+
+    def test_personas_are_scoped_to_the_owner_id(self) -> None:
+        persona = self.service.create(self.auth.owner_id, "小雨", "friend")
+
+        self.assertEqual([persona], self.service.list(self.auth.owner_id))
+        self.assertEqual([], self.service.list("owner-b"))
+        with self.assertRaises(LookupError):
+            self.service.get("owner-b", persona.id)
 
 
 if __name__ == "__main__":

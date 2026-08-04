@@ -27,6 +27,11 @@ class HttpApiTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.port = self.server.server_address[1]
+        self.auth_token = None
+        status, _, session = self.request("POST", "/api/v1/auth/session")
+        self.assertEqual(201, status)
+        self.auth_token = session["access_token"]
+        self.owner_id = session["owner_id"]
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -38,6 +43,8 @@ class HttpApiTests(unittest.TestCase):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         encoded = None
         request_headers = dict(headers or {})
+        if self.auth_token and "Authorization" not in request_headers:
+            request_headers["Authorization"] = f"Bearer {self.auth_token}"
         if isinstance(body, dict):
             encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
@@ -70,6 +77,19 @@ class HttpApiTests(unittest.TestCase):
         status, _, providers = self.request("GET", "/api/v1/providers")
         self.assertEqual(200, status)
         self.assertIn("deepseek", {item["id"] for item in providers["providers"]})
+
+    def test_data_routes_require_a_valid_owner_session(self) -> None:
+        status, _, payload = self.request(
+            "GET", "/api/v1/personas", headers={"Authorization": "Bearer invalid"}
+        )
+        self.assertEqual(401, status)
+        self.assertEqual("authentication_required", payload["error"]["code"])
+
+        status, _, health = self.request(
+            "GET", "/api/v1/health", headers={"Authorization": "Bearer invalid"}
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("healthy", health["status"])
 
     def test_import_chunk_status_and_complete_flow(self) -> None:
         _, _, persona = self.request(
@@ -119,7 +139,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertNotIn(content, encrypted_payload)
         self.assertEqual(
             content,
-            b"".join(self.server.application.uploads.iter_payload(job["id"])),
+            b"".join(self.server.application.uploads.iter_payload(self.owner_id, job["id"])),
         )
 
     def test_rejected_chunk_closes_connection_when_body_may_be_unread(self) -> None:
@@ -165,6 +185,7 @@ class HttpApiTests(unittest.TestCase):
 
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         connection.putrequest("PUT", "/api/v1/imports/not-real/chunks/0")
+        connection.putheader("Authorization", f"Bearer {self.auth_token}")
         connection.putheader("X-Chunk-Sha256", "0" * 64)
         connection.endheaders()
         response = connection.getresponse()

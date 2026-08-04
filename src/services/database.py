@@ -36,8 +36,8 @@ class Migration:
 
 
 # Version 1 establishes the durable migration ledger. Version 2 owns the
-# encrypted persona record table and version 3 owns import metadata. Business
-# repositories add their own tables in later migrations so startup remains
+# encrypted persona record table, version 3 owns import metadata, and version 4
+# owns local owner sessions. Business repositories add their own tables in later migrations so startup remains
 # transactional and history is auditable.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
@@ -72,6 +72,29 @@ DEFAULT_MIGRATIONS = (
                 encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
             )
             """,
+        ),
+    ),
+    Migration(
+        version=4,
+        name="local_auth_owner",
+        statements=(
+            """
+            CREATE TABLE local_users (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL UNIQUE CHECK (kind = 'owner'),
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            """
+            CREATE TABLE local_sessions (
+                token_hash BLOB PRIMARY KEY CHECK (length(token_hash) = 32),
+                user_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                expires_at TEXT NOT NULL
+            )
+            """,
+            "ALTER TABLE personas ADD COLUMN owner_id TEXT REFERENCES local_users(id)",
+            "ALTER TABLE imports ADD COLUMN owner_id TEXT REFERENCES local_users(id)",
         ),
     ),
 )

@@ -1,10 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
+import base64
+import os
 import shutil
 import sqlite3
 import unittest
 from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 
 from src.server.application import Application
 from src.server.config import ServerConfig
@@ -15,6 +18,7 @@ from src.services.database import (
     SQLiteMigrator,
     SchemaHistoryError,
 )
+from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR
 
 
 class SQLiteMigrationTests(unittest.TestCase):
@@ -39,6 +43,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (1, "bootstrap_schema"),
                 (2, "persona_repository"),
                 (3, "import_repository"),
+                (4, "local_auth_owner"),
             ],
             rows,
         )
@@ -57,7 +62,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertEqual(first_version, second_version)
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(3, count)
+        self.assertEqual(4, count)
 
     def test_upgrades_a_version_one_database_to_persona_repository(self) -> None:
         SQLiteMigrator(
@@ -65,7 +70,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             (Migration(version=1, name="bootstrap_schema", statements=()),),
         ).migrate()
 
-        self.assertEqual(3, SQLiteMigrator(self.database_path).migrate())
+        self.assertEqual(4, SQLiteMigrator(self.database_path).migrate())
         with closing(sqlite3.connect(self.database_path)) as connection:
             table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'personas'"
@@ -78,7 +83,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             DEFAULT_MIGRATIONS[:2],
         ).migrate()
 
-        self.assertEqual(3, SQLiteMigrator(self.database_path).migrate())
+        self.assertEqual(4, SQLiteMigrator(self.database_path).migrate())
         with closing(sqlite3.connect(self.database_path)) as connection:
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('imports', 'import_manifests') ORDER BY name"
@@ -117,16 +122,16 @@ class SQLiteMigrationTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             versions = sorted(executor.map(lambda _: migrate(), range(2)))
 
-        self.assertEqual([3, 3], versions)
+        self.assertEqual([4, 4], versions)
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(3, count)
+        self.assertEqual(4, count)
 
     def test_failed_pending_migration_rolls_back_its_schema_and_version(self) -> None:
         SQLiteMigrator(self.database_path).migrate()
         broken_plan = DEFAULT_MIGRATIONS + (
             Migration(
-                version=4,
+                version=5,
                 name="broken_migration",
                 statements=(
                     "CREATE TABLE should_be_rolled_back (id INTEGER PRIMARY KEY)",
@@ -145,7 +150,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             leaked_table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'should_be_rolled_back'"
             ).fetchone()
-            self.assertEqual([(1,), (2,), (3,)], applied_versions)
+            self.assertEqual([(1,), (2,), (3,), (4,)], applied_versions)
         self.assertIsNone(leaked_table)
 
     def test_rejects_changed_history_for_an_applied_version(self) -> None:
@@ -175,13 +180,15 @@ class SQLiteMigrationTests(unittest.TestCase):
     def test_application_startup_runs_migrations_at_server_owned_path(self) -> None:
         config = ServerConfig(data_dir=self.root, web_dir=Path.cwd() / "web", mode="test")
 
-        Application.from_config(config)
-        Application.from_config(config)
+        key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
+        with patch.dict(os.environ, {MASTER_KEY_ENV_VAR: key}):
+            Application.from_config(config)
+            Application.from_config(config)
 
         self.assertTrue(self.database_path.is_file())
         with closing(sqlite3.connect(self.database_path)) as connection:
             count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-        self.assertEqual(3, count)
+        self.assertEqual(4, count)
 
 
 if __name__ == "__main__":

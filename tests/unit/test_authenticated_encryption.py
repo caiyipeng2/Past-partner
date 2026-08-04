@@ -181,9 +181,7 @@ class AuthenticatedEncryptionTests(unittest.TestCase):
 
     def test_application_wires_the_encryption_service(self) -> None:
         configured = base64.b64encode(b"k" * MASTER_KEY_BYTES).decode("ascii")
-        with patch.dict(os.environ, {MASTER_KEY_ENV_VAR: configured}), patch(
-            "src.server.application.SQLiteMigrator.migrate"
-        ):
+        with patch.dict(os.environ, {MASTER_KEY_ENV_VAR: configured}):
             config = ServerConfig(
                 data_dir=Path(".test-runtime/application-wiring-data"),
                 web_dir=Path("web"),

@@ -92,13 +92,22 @@ class ImportService:
 
     def create(
         self,
-        persona_id: str,
-        source_name: str,
-        total_bytes: int,
-        media_type: str,
+        owner_id: str | None = None,
+        persona_id: str | None = None,
+        source_name: str | int | None = None,
+        total_bytes: int | str | None = None,
+        media_type: str | None = None,
     ) -> ImportJob:
+        if media_type is None:
+            media_type = total_bytes
+            total_bytes = source_name
+            source_name = persona_id
+            persona_id = owner_id
+            owner_id = None
+        if persona_id is None or source_name is None or total_bytes is None or media_type is None:
+            raise TypeError("persona_id, source_name, total_bytes, and media_type are required")
         try:
-            self.personas.get(persona_id)
+            self.personas.get(owner_id, persona_id)
         except PersonaNotFoundError as exc:
             raise ImportValidationError("persona_not_found", "select an existing persona") from exc
 
@@ -122,23 +131,41 @@ class ImportService:
             created_at=now,
             updated_at=now,
         )
-        self.repository.create(job)
+        self.repository.create(owner_id, job)
         return job
 
-    def get(self, import_id: str) -> ImportJob:
-        job = self.repository.get(import_id)
+    def get(self, owner_id: str, import_id: str | None = None) -> ImportJob:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        job = self.repository.get(owner_id, import_id)
         if job is None:
             raise ImportNotFoundError("import not found")
         return job
 
-    def save(self, job: ImportJob) -> None:
-        self.repository.save(job)
+    def save(self, owner_id: str | ImportJob, job: ImportJob | None = None) -> None:
+        if job is None:
+            job = owner_id
+            owner_id = None
+        self.repository.save(owner_id, job)
 
-    def get_manifest(self, import_id: str) -> dict[str, Any] | None:
-        return self.repository.get_manifest(import_id)
+    def get_manifest(self, owner_id: str, import_id: str | None = None) -> dict[str, Any] | None:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        return self.repository.get_manifest(owner_id, import_id)
 
-    def save_state(self, job: ImportJob, manifest: Mapping[str, Any]) -> None:
-        self.repository.save_state(job, manifest)
+    def save_state(
+        self,
+        owner_id: str | ImportJob,
+        job: ImportJob | Mapping[str, Any],
+        manifest: Mapping[str, Any] | None = None,
+    ) -> None:
+        if manifest is None:
+            manifest = job
+            job = owner_id
+            owner_id = None
+        self.repository.save_state(owner_id, job, manifest)
 
 
 def _metadata_text(value: object, field_name: str, maximum: int) -> str:

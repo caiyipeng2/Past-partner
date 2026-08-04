@@ -16,6 +16,7 @@ from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.database import SQLiteMigrator
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
+from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
@@ -39,6 +40,7 @@ class Application:
         encryption: AuthenticatedEncryptionService,
         catalog: ProviderCatalog,
         gateway: ProviderGateway,
+        auth: LocalAuthService,
     ):
         self.personas = personas
         self.imports = imports
@@ -47,6 +49,7 @@ class Application:
         self.encryption = encryption
         self.catalog = catalog
         self.gateway = gateway
+        self.auth = auth
 
     @classmethod
     def from_config(cls, config: ServerConfig) -> "Application":
@@ -55,12 +58,20 @@ class Application:
         SQLiteMigrator(storage.database_path()).migrate()
         master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         encryption = AuthenticatedEncryptionService(master_keys)
+        auth = LocalAuthService(
+            storage.database_path(),
+            encryption,
+            mode=config.mode,
+            bootstrap_token=config.owner_bootstrap_token,
+        )
         persona_repository = PersonaRepository(storage.database_path(), encryption)
-        persona_repository.migrate_legacy_json(storage.root / "personas")
+        persona_repository.assign_unowned(auth.owner_id)
+        persona_repository.migrate_legacy_json(storage.root / "personas", auth.owner_id)
         personas = PersonaService(persona_repository)
         import_repository = ImportRepository(storage.database_path(), encryption)
+        import_repository.assign_unowned(auth.owner_id)
         import_repository.migrate_legacy_json(
-            storage.root / "imports", storage.root / "upload-manifests"
+            storage.root / "imports", storage.root / "upload-manifests", auth.owner_id
         )
         imports = ImportService(import_repository, personas, max_import_bytes=config.max_import_bytes)
         uploads = UploadService(
@@ -77,11 +88,18 @@ class Application:
         }
         catalog = catalog.with_configured(set(adapters) - {"test"}, runtime_models)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
-        return cls(personas, imports, uploads, master_keys, encryption, catalog, gateway)
+        return cls(personas, imports, uploads, master_keys, encryption, catalog, gateway, auth)
 
-    def create_persona(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def issue_session(self, remote_address: str, presented_bootstrap_token: str | None) -> dict[str, Any]:
+        return self.auth.issue_session(remote_address, presented_bootstrap_token)
+
+    def authenticate(self, authorization: str | None) -> OwnerPrincipal:
+        return self.auth.authenticate(authorization)
+
+    def create_persona(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             persona = self.personas.create(
+                owner_id=owner_id,
                 display_name=payload["display_name"],
                 relationship_type=payload["relationship_type"],
                 custom_label=payload.get("custom_label"),
@@ -92,12 +110,13 @@ class Application:
             raise RequestValidationError("invalid_persona", str(exc)) from exc
         return persona.to_dict()
 
-    def list_personas(self) -> dict[str, Any]:
-        return {"personas": [persona.to_dict() for persona in self.personas.list()]}
+    def list_personas(self, owner_id: str) -> dict[str, Any]:
+        return {"personas": [persona.to_dict() for persona in self.personas.list(owner_id)]}
 
-    def create_import(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             job = self.imports.create(
+                owner_id=owner_id,
                 persona_id=payload["persona_id"],
                 source_name=payload["source_name"],
                 total_bytes=payload["total_bytes"],
@@ -107,21 +126,22 @@ class Application:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
         return job.to_dict()
 
-    def get_import(self, import_id: str) -> dict[str, Any]:
-        return self.imports.get(import_id).to_dict()
+    def get_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.imports.get(owner_id, import_id).to_dict()
 
     def put_chunk(
         self,
+        owner_id: str,
         import_id: str,
         index: int,
         content_length: int,
         sha256: str,
         stream: BinaryIO,
     ) -> dict[str, Any]:
-        return asdict(self.uploads.put_chunk(import_id, index, content_length, sha256, stream))
+        return asdict(self.uploads.put_chunk(owner_id, import_id, index, content_length, sha256, stream))
 
-    def complete_import(self, import_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self.uploads.complete(import_id, payload.get("sha256")).to_dict()
+    def complete_import(self, owner_id: str, import_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self.uploads.complete(owner_id, import_id, payload.get("sha256")).to_dict()
 
     def providers_catalog(self) -> dict[str, Any]:
         return {"providers": self.catalog.to_dict()}

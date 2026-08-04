@@ -38,7 +38,17 @@ class ImportRepository:
         self.encryption = encryption
         SQLiteMigrator(self.database_path).migrate()
 
-    def create(self, job: Any, manifest: Mapping[str, Any] | None = None) -> None:
+    def create(
+        self,
+        owner_id: str | Any,
+        job: Any | Mapping[str, Any] | None = None,
+        manifest: Mapping[str, Any] | None = None,
+    ) -> None:
+        if owner_id is not None and not isinstance(owner_id, str):
+            manifest = job if isinstance(job, Mapping) else manifest
+            job = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         payload = self._encode_job(job)
         manifest_value = self._normalize_manifest(job.id, manifest)
         manifest_payload = self._encode_manifest(job.id, manifest_value)
@@ -47,10 +57,10 @@ class ImportRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
-                INSERT INTO imports (id, record_version, encrypted_payload)
-                VALUES (?, ?, ?)
+                INSERT INTO imports (id, owner_id, record_version, encrypted_payload)
+                VALUES (?, ?, ?, ?)
                 """,
-                (job.id, self._RECORD_VERSION, payload),
+                (job.id, owner_id, self._RECORD_VERSION, payload),
             )
             connection.execute(
                 """
@@ -71,46 +81,59 @@ class ImportRepository:
         finally:
             connection.close()
 
-    def get(self, import_id: str) -> Any | None:
+    def get(self, owner_id: str, import_id: str | None = None) -> Any | None:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         if not isinstance(import_id, str) or not import_id:
             return None
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT record_version, encrypted_payload FROM imports WHERE id = ?",
-                (import_id,),
+                f"SELECT record_version, encrypted_payload FROM imports WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (import_id, *self._owner_params(owner_id)),
             ).fetchone()
         if row is None:
             return None
         return self._decode_job(import_id, row[0], row[1])
 
-    def get_manifest(self, import_id: str) -> dict[str, Any] | None:
+    def get_manifest(self, owner_id: str, import_id: str | None = None) -> dict[str, Any] | None:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         if not isinstance(import_id, str) or not import_id:
             return None
         with closing(self._connect()) as connection:
             row = connection.execute(
-                """
-                SELECT record_version, encrypted_payload
-                FROM import_manifests
-                WHERE import_id = ?
+                f"""
+                SELECT m.record_version, m.encrypted_payload
+                FROM import_manifests AS m
+                JOIN imports AS i ON i.id = m.import_id
+                WHERE m.import_id = ? AND {self._owner_clause(owner_id, table_alias='i')}
                 """,
-                (import_id,),
+                (import_id, *self._owner_params(owner_id)),
             ).fetchone()
         if row is None:
             return None
         return self._decode_manifest(import_id, row[0], row[1])
 
-    def save(self, job: Any) -> None:
+    def save(self, owner_id: str | Any, job: Any | None = None) -> None:
+        if job is None:
+            job = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         job_payload = self._encode_job(job)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             updated = connection.execute(
-                """
+                f"""
                 UPDATE imports
                 SET record_version = ?, encrypted_payload = ?
-                WHERE id = ?
+                WHERE id = ? AND {self._owner_clause(owner_id)}
                 """,
-                (self._RECORD_VERSION, job_payload, job.id),
+                (self._RECORD_VERSION, job_payload, job.id, *self._owner_params(owner_id)),
             ).rowcount
             if updated != 1:
                 raise ImportRepositoryError("import_not_found", "import not found")
@@ -122,7 +145,17 @@ class ImportRepository:
         finally:
             connection.close()
 
-    def save_state(self, job: Any, manifest: Mapping[str, Any]) -> None:
+    def save_state(
+        self,
+        owner_id: str | Any,
+        job: Any | Mapping[str, Any],
+        manifest: Mapping[str, Any] | None = None,
+    ) -> None:
+        if manifest is None:
+            manifest = job
+            job = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
         job_payload = self._encode_job(job)
         manifest_value = self._normalize_manifest(job.id, manifest)
         manifest_payload = self._encode_manifest(job.id, manifest_value)
@@ -130,17 +163,18 @@ class ImportRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT 1 FROM imports WHERE id = ?", (job.id,)
+                f"SELECT 1 FROM imports WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (job.id, *self._owner_params(owner_id)),
             ).fetchone()
             if existing is None:
                 raise ImportRepositoryError("import_not_found", "import not found")
             connection.execute(
-                """
+                f"""
                 UPDATE imports
                 SET record_version = ?, encrypted_payload = ?
-                WHERE id = ?
+                WHERE id = ? AND {self._owner_clause(owner_id)}
                 """,
-                (self._RECORD_VERSION, job_payload, job.id),
+                (self._RECORD_VERSION, job_payload, job.id, *self._owner_params(owner_id)),
             )
             connection.execute(
                 """
@@ -160,8 +194,33 @@ class ImportRepository:
         finally:
             connection.close()
 
-    def migrate_legacy_json(self, imports_directory: Path | str, manifests_directory: Path | str) -> int:
+    def assign_unowned(self, owner_id: str) -> int:
+        owner_id = self._owner_id(owner_id)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE imports SET owner_id = ? WHERE owner_id IS NULL",
+                (owner_id,),
+            ).rowcount
+            connection.commit()
+            return updated
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def migrate_legacy_json(
+        self,
+        imports_directory: Path | str,
+        manifests_directory: Path | str,
+        owner_id: str | None = None,
+    ) -> int:
         """Encrypt legacy metadata, then remove plaintext sources after commit."""
+
+        owner_id = self._owner_id(owner_id)
 
         import_dir = Path(imports_directory).expanduser().resolve()
         manifest_dir = Path(manifests_directory).expanduser().resolve()
@@ -186,7 +245,10 @@ class ImportRepository:
             connection.execute("BEGIN IMMEDIATE")
             for import_id, job, manifest in records:
                 existing_job = connection.execute(
-                    "SELECT record_version, encrypted_payload FROM imports WHERE id = ?",
+                    """
+                    SELECT owner_id, record_version, encrypted_payload
+                    FROM imports WHERE id = ?
+                    """,
                     (import_id,),
                 ).fetchone()
                 existing_manifest = connection.execute(
@@ -199,8 +261,11 @@ class ImportRepository:
                 ).fetchone()
                 if existing_job is None:
                     connection.execute(
-                        "INSERT INTO imports (id, record_version, encrypted_payload) VALUES (?, ?, ?)",
-                        (import_id, self._RECORD_VERSION, self._encode_job(job)),
+                        """
+                        INSERT INTO imports (id, owner_id, record_version, encrypted_payload)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (import_id, owner_id, self._RECORD_VERSION, self._encode_job(job)),
                     )
                     connection.execute(
                         """
@@ -210,7 +275,10 @@ class ImportRepository:
                         (import_id, self._RECORD_VERSION, self._encode_manifest(import_id, manifest)),
                     )
                 else:
-                    if self._decode_job(import_id, existing_job[0], existing_job[1]) != job:
+                    if (
+                        existing_job[0] != owner_id
+                        or self._decode_job(import_id, existing_job[1], existing_job[2]) != job
+                    ):
                         raise ImportRepositoryError(
                             "legacy_import_conflict", "legacy import conflicts with encrypted record"
                         )
@@ -376,3 +444,20 @@ class ImportRepository:
         connection = sqlite3.connect(self.database_path, timeout=5)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _owner_id(owner_id: object) -> str | None:
+        if owner_id is None:
+            return None
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id must be a non-empty string")
+        return owner_id.strip()
+
+    @staticmethod
+    def _owner_clause(owner_id: str | None, table_alias: str | None = None) -> str:
+        column = f"{table_alias}.owner_id" if table_alias else "owner_id"
+        return f"{column} IS NULL" if owner_id is None else f"{column} = ?"
+
+    @staticmethod
+    def _owner_params(owner_id: str | None) -> tuple[str, ...]:
+        return () if owner_id is None else (owner_id,)

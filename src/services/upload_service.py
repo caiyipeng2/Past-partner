@@ -69,22 +69,30 @@ class UploadService:
 
     def put_chunk(
         self,
+        owner_id: str,
         import_id: str,
         index: int,
         declared_length: int,
         sha256: str,
-        stream: BinaryIO,
+        stream: BinaryIO | None = None,
     ) -> ChunkReceipt:
+        if stream is None:
+            stream = sha256
+            sha256 = declared_length
+            declared_length = index
+            index = import_id
+            import_id = owner_id
+            owner_id = None
         index = self._validate_index(index)
         declared_length = self._validate_length(declared_length)
         digest = self._validate_digest(sha256)
 
         with self._lock:
-            job = self.imports.get(import_id)
+            job = self.imports.get(owner_id, import_id)
             if job.state in {ImportState.UPLOADED, ImportState.PROCESSING, ImportState.COMPLETED}:
                 raise UploadError("upload_closed", "the import no longer accepts chunks")
 
-            manifest = self._load_manifest(import_id)
+            manifest = self._load_manifest(owner_id, import_id)
             chunks = manifest["chunks"]
             existing = chunks.get(str(index))
             if existing is not None:
@@ -134,7 +142,7 @@ class UploadService:
                 updated_at=datetime.now(UTC).isoformat(),
             )
             try:
-                self.imports.save_state(updated, manifest)
+                self.imports.save_state(owner_id, updated, manifest)
             except ImportRepositoryError as exc:
                 destination.unlink(missing_ok=True)
                 raise UploadError(
@@ -142,16 +150,25 @@ class UploadService:
                 ) from exc
             return self._receipt(updated, index, declared_length, digest, duplicate=False)
 
-    def complete(self, import_id: str, whole_sha256: str | None = None) -> ImportJob:
+    def complete(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+        whole_sha256: str | None = None,
+    ) -> ImportJob:
+        if import_id is None or (whole_sha256 is None and isinstance(import_id, str) and _SHA256.fullmatch(import_id)):
+            whole_sha256 = import_id if import_id is not None and import_id != owner_id else whole_sha256
+            import_id = owner_id
+            owner_id = None
         expected_digest = self._validate_digest(whole_sha256) if whole_sha256 is not None else None
         with self._lock:
-            job = self.imports.get(import_id)
+            job = self.imports.get(owner_id, import_id)
             if job.state is ImportState.UPLOADED and self.payload_path(import_id).is_file():
                 return job
             if job.state in {ImportState.PROCESSING, ImportState.COMPLETED}:
                 raise UploadError("upload_closed", "the import is already being processed")
 
-            manifest = self._load_manifest(import_id)
+            manifest = self._load_manifest(owner_id, import_id)
             chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
             indexes = sorted(int(value) for value in chunks)
             entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
@@ -209,7 +226,7 @@ class UploadService:
                 updated_at=datetime.now(UTC).isoformat(),
             )
             try:
-                self.imports.save_state(completed, manifest)
+                self.imports.save_state(owner_id, completed, manifest)
             except ImportRepositoryError as exc:
                 destination.unlink(missing_ok=True)
                 raise UploadError(
@@ -225,12 +242,15 @@ class UploadService:
         marker = "true" if final else "false"
         return f"past-partner/import/{import_id}/chunk/{index}/final/{marker}".encode("ascii")
 
-    def iter_payload(self, import_id: str) -> Iterator[bytes]:
+    def iter_payload(self, owner_id: str, import_id: str | None = None) -> Iterator[bytes]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
         with self._lock:
-            job = self.imports.get(import_id)
+            job = self.imports.get(owner_id, import_id)
             if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
                 raise UploadError("payload_unavailable", "completed encrypted payload is unavailable")
-            manifest = self._load_manifest(import_id)
+            manifest = self._load_manifest(owner_id, import_id)
             chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
             indexes = sorted(int(value) for value in chunks)
             entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
@@ -275,8 +295,8 @@ class UploadService:
     def _chunk_path(self, import_id: str, index: int) -> Path:
         return self.storage.object_path("upload-parts", f"{import_id}-{index}", ".part")
 
-    def _load_manifest(self, import_id: str) -> dict[str, Any]:
-        value = self.imports.get_manifest(import_id)
+    def _load_manifest(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        value = self.imports.get_manifest(owner_id, import_id)
         if value is None:
             return {"version": 2, "import_id": import_id, "chunks": {}}
         if not isinstance(value, dict) or not isinstance(value.get("chunks"), dict):

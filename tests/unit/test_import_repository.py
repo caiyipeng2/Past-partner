@@ -11,6 +11,7 @@ from uuid import uuid4
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_repository import ImportRepository, ImportRepositoryError
 from src.services.import_service import ImportJob, ImportState
+from src.services.local_auth import LocalAuthService
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.storage import StorageLayout
 
@@ -24,6 +25,7 @@ class ImportRepositoryTests(unittest.TestCase):
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
         )
         self.repository = ImportRepository(self.layout.database_path(), self.encryption)
+        self.auth = LocalAuthService(self.layout.database_path(), self.encryption, mode="test")
         self.job = self._job()
         self.manifest = {
             "version": 2,
@@ -145,6 +147,14 @@ class ImportRepositoryTests(unittest.TestCase):
         self.assertTrue(job_path.exists())
         self.assertTrue(manifest_path.exists())
         self.assertIsNone(self.repository.get(self.job.id))
+
+    def test_import_and_manifest_are_scoped_to_the_owner_id(self) -> None:
+        self.repository.create(self.auth.owner_id, self.job, self.manifest)
+
+        self.assertEqual(self.job, self.repository.get(self.auth.owner_id, self.job.id))
+        self.assertEqual(self.manifest, self.repository.get_manifest(self.auth.owner_id, self.job.id))
+        self.assertIsNone(self.repository.get("other-owner", self.job.id))
+        self.assertIsNone(self.repository.get_manifest("other-owner", self.job.id))
 
 
 if __name__ == "__main__":
