@@ -30,6 +30,7 @@ _PREVIEW_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/preview$")
 _PARTICIPANT_MAPPING_PATH = re.compile(
     r"^/api/v1/imports/([A-Za-z0-9._-]+)/participant-mapping$"
 )
+_CORRECTIONS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/corrections$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
@@ -126,6 +127,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "empty_source": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "preview_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "mapping_unavailable": HTTPStatus.CONFLICT,
+                "correction_unavailable": HTTPStatus.CONFLICT,
+                "corrections_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_correction": HTTPStatus.UNPROCESSABLE_ENTITY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except ProviderError as exc:
@@ -219,6 +223,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif match := _CORRECTIONS_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.save_import_corrections(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif match := _PARTICIPANT_MAPPING_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,

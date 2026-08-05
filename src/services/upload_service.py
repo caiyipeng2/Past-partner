@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping
 from uuid import uuid4
 
+from src.domain.messages import MessageValidationError, NormalizedMessage
 from src.services.authenticated_encryption import (
     AuthenticationError,
     AuthenticatedEncryptionService,
@@ -30,6 +31,9 @@ MAX_PREVIEW_RECORDS = 100
 PARTICIPANT_ROLES = frozenset({"persona", "user", "other", "unknown"})
 MAX_PARTICIPANT_ID_CHARACTERS = 128
 MAX_PARTICIPANT_MAPPINGS = 4_096
+CORRECTION_STATES = frozenset({"accepted", "needs_review", "rejected"})
+CORRECTION_FIELDS = frozenset({"sender_id", "sender_name", "content", "timestamp", "message_type"})
+MAX_CORRECTIONS = 4_096
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
@@ -379,6 +383,9 @@ class UploadService:
 
             source_name = job.files[0].source_name if job.files else job.source_name
             media_type = job.files[0].media_type if job.files else job.media_type
+            manifest = self._load_manifest(owner_id, import_id)
+            participant_mapping = _normalize_participant_mapping(manifest.get("participant_mapping"))
+            corrections = _normalize_corrections(manifest.get("corrections"))
             preview_id = uuid4().hex
             destination = self.storage.object_path("preview", preview_id, ".bin")
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -396,6 +403,29 @@ class UploadService:
                     )
                 except ParserError as exc:
                     raise UploadError(exc.code, str(exc)) from exc
+                records: list[dict[str, Any]] = []
+                for index, record in enumerate(result.records):
+                    record_id = _record_id(job.id, result.source_type, index)
+                    values = record.to_dict()
+                    correction = corrections.get(record_id)
+                    review_state = "needs_review"
+                    if correction is not None:
+                        values.update(correction["fields"])
+                        review_state = correction["review_state"]
+                        try:
+                            values = NormalizedMessage.from_mapping(values).to_dict()
+                        except MessageValidationError as exc:
+                            raise UploadError(
+                                "correction_corrupt",
+                                f"correction for record {record_id} is invalid",
+                            ) from exc
+                    preview_record = _preview_record(values)
+                    preview_record["record_id"] = record_id
+                    preview_record["review_state"] = review_state
+                    preview_record["sender_role"] = participant_mapping.get(
+                        preview_record["sender_id"], "unknown"
+                    )
+                    records.append(preview_record)
                 return {
                     "import_id": job.id,
                     "state": job.state.value,
@@ -404,10 +434,57 @@ class UploadService:
                     "source_type": result.source_type,
                     "summary": dict(result.summary),
                     "warnings": list(result.warnings),
-                    "records": [_preview_record(record.to_dict()) for record in result.records],
+                    "records": records,
                 }
             finally:
                 destination.unlink(missing_ok=True)
+
+    def save_corrections(
+        self,
+        owner_id: str,
+        import_id: str | list[Mapping[str, Any]] | None = None,
+        corrections: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if corrections is None and isinstance(import_id, list):
+            corrections = import_id
+            import_id = owner_id
+            owner_id = None
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        normalized = _normalize_corrections(corrections, require_non_empty=True)
+
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+                raise UploadError(
+                    "correction_unavailable",
+                    "corrections require a completed uploaded import",
+                )
+            if len(job.files) > 1:
+                raise UploadError(
+                    "corrections_multi_file_unsupported",
+                    "corrections currently require a single-file import",
+                )
+            manifest = self._load_manifest(owner_id, import_id)
+            existing = _normalize_corrections(manifest.get("corrections"))
+            existing.update(normalized)
+            manifest["corrections"] = existing
+            manifest["corrections_version"] = 1
+            manifest["corrections_updated_at"] = datetime.now(UTC).isoformat()
+            try:
+                self.imports.save_state(owner_id, job, manifest)
+            except ImportRepositoryError as exc:
+                raise UploadError(
+                    "metadata_persistence_failed",
+                    "corrections could not be committed",
+                ) from exc
+            return {
+                "import_id": job.id,
+                "state": job.state.value,
+                "correction_count": len(existing),
+                "updated_records": list(normalized),
+            }
 
     def set_participant_mapping(
         self,
@@ -676,6 +753,75 @@ def _preview_record(record: dict[str, Any], max_content_characters: int = 2_000)
         record["content"] = content[:max_content_characters]
         record["content_truncated"] = True
     return record
+
+
+def _record_id(import_id: str, source_type: str, index: int) -> str:
+    return hashlib.sha256(f"{import_id}:{source_type}:{index}".encode("utf-8")).hexdigest()
+
+
+def _normalize_corrections(
+    value: object,
+    *,
+    require_non_empty: bool = False,
+) -> dict[str, dict[str, Any]]:
+    if value is None:
+        if require_non_empty:
+            raise UploadError("invalid_correction", "corrections must not be empty")
+        return {}
+    if isinstance(value, Mapping):
+        entries: list[Mapping[str, Any]] = []
+        for record_id, item in value.items():
+            if not isinstance(item, Mapping):
+                raise UploadError("invalid_correction", "each stored correction must be an object")
+            entries.append({"record_id": record_id, **dict(item)})
+    elif isinstance(value, list):
+        entries = value
+    else:
+        raise UploadError("invalid_correction", "corrections must be a list")
+    if require_non_empty and not entries:
+        raise UploadError("invalid_correction", "corrections must not be empty")
+    if len(entries) > MAX_CORRECTIONS:
+        raise UploadError(
+            "invalid_correction",
+            f"corrections cannot contain more than {MAX_CORRECTIONS} records",
+        )
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise UploadError("invalid_correction", "each correction must be an object")
+        record_id = entry.get("record_id")
+        if not isinstance(record_id, str) or not _SHA256.fullmatch(record_id):
+            raise UploadError("invalid_correction", "record_id must be a 64-character hexadecimal ID")
+        record_id = record_id.lower()
+        fields = entry.get("fields", {})
+        if not isinstance(fields, Mapping):
+            raise UploadError("invalid_correction", "correction fields must be an object")
+        if set(fields) - CORRECTION_FIELDS:
+            raise UploadError("invalid_correction", "correction contains an unsupported field")
+        normalized_fields: dict[str, str] = {}
+        for field, field_value in fields.items():
+            if not isinstance(field_value, str):
+                raise UploadError("invalid_correction", "correction fields must be strings")
+            invalid_control = (
+                any(ord(character) < 32 and character not in "\r\n\t" for character in field_value)
+                if field == "content"
+                else any(not character.isprintable() for character in field_value)
+            )
+            if len(field_value) > 10_000 or invalid_control:
+                raise UploadError("invalid_correction", "correction fields contain invalid text")
+            normalized_fields[field] = field_value
+        review_state = entry.get("review_state")
+        if not isinstance(review_state, str) or review_state not in CORRECTION_STATES:
+            raise UploadError(
+                "invalid_correction",
+                "review_state must be accepted, needs_review, or rejected",
+            )
+        normalized[record_id] = {
+            "fields": normalized_fields,
+            "review_state": review_state,
+        }
+    return normalized
 
 
 def _normalize_participant_mapping(

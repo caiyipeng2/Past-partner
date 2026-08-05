@@ -195,6 +195,20 @@ class Application:
     def get_participant_mapping(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.uploads.participant_mapping(owner_id, import_id)
 
+    def save_import_corrections(
+        self,
+        owner_id: str,
+        import_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            corrections = payload["corrections"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing corrections") from exc
+        if not isinstance(corrections, list):
+            raise RequestValidationError("invalid_correction", "corrections must be a list")
+        return self.uploads.save_corrections(owner_id, import_id, corrections)
+
     def put_chunk(
         self,
         owner_id: str,

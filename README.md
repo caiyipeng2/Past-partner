@@ -90,6 +90,7 @@ python -m unittest discover -s tests -p "test*.py" -v
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 已完成的单文件导入可通过 `GET /api/v1/imports/{import_id}/preview?limit=20` 查看解析摘要和有限条规范化消息；`limit` 最大为 100。
 已完成的导入可通过 `POST /api/v1/imports/{import_id}/participant-mapping` 保存参与者角色映射，再通过同路径 `GET` 回读；角色仅支持 `persona`、`user`、`other` 和 `unknown`，映射内容随导入清单加密保存。
+预览记录会带有稳定 `record_id` 和 `review_state`；可通过 `POST /api/v1/imports/{import_id}/corrections` 提交字段修正及 `accepted`、`needs_review` 或 `rejected` 状态，修正同样写入加密导入清单并在后续预览中回显。
 
 P0-18 已加入基于内容探测的通用解析器注册表，可将 TXT、JSON 和 JSONL 聊天记录标准化为统一消息结构；P0-19 已接入单文件导入预览，微信/QQ 专用数据库和媒体解析仍按后续解析器任务接入。
 

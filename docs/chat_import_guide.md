@@ -82,6 +82,24 @@
 
 角色只支持 `persona`、`user`、`other` 和 `unknown`。服务端会校验来源 ID 的长度和可打印性，并将映射写入现有的加密导入清单；使用 `GET` 同一路径可以回读映射。未完成的导入不能提交映射。
 
+## 预览修正
+
+预览中的每条记录都有稳定的 `record_id`，初始审核状态为 `needs_review`。可以提交字段修正和审核状态：
+
+```json
+{
+  "corrections": [
+    {
+      "record_id": "预览返回的64位记录ID",
+      "fields": {"content": "修正后的消息内容"},
+      "review_state": "accepted"
+    }
+  ]
+}
+```
+
+接口为 `POST /api/v1/imports/{import_id}/corrections`，支持修正 `sender_id`、`sender_name`、`content`、`timestamp` 和 `message_type`。状态只支持 `accepted`、`needs_review` 和 `rejected`；服务端会重新执行消息结构校验，修正结果写入加密导入清单，并在后续预览中应用。
+
 ## 支持的数据库文件
 
 - 微信聊天记录数据库 (MicroMsg.db)

@@ -430,6 +430,143 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("mapping_unavailable", payload["error"]["code"])
 
+    def test_import_corrections_round_trip_and_apply_to_preview(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = b"[2026-08-05 21:00] wxid_1: hello\n"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+        self.assertEqual(200, status)
+        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
+        self.assertEqual(record_id, preview["records"][0].get("record_id"))
+        self.assertEqual("needs_review", preview["records"][0]["review_state"])
+
+        status, _, saved = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/corrections",
+            {
+                "corrections": [
+                    {
+                        "record_id": record_id,
+                        "fields": {"content": "corrected hello"},
+                        "review_state": "accepted",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, saved["correction_count"])
+        self.assertEqual([record_id], saved["updated_records"])
+        status, _, updated = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+        self.assertEqual(200, status)
+        self.assertEqual(record_id, updated["records"][0]["record_id"])
+        self.assertEqual("corrected hello", updated["records"][0]["content"])
+        self.assertEqual("accepted", updated["records"][0]["review_state"])
+        database_bytes = (self.data_root / "database" / "past-partner.sqlite3").read_bytes()
+        self.assertNotIn(b"corrected hello", database_bytes)
+
+    def test_import_corrections_reject_invalid_state(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = b"[2026-08-05 21:00] wxid_1: hello\n"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+        _, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
+        self.assertEqual(record_id, preview["records"][0].get("record_id"))
+
+        status, _, payload = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/corrections",
+            {
+                "corrections": [
+                    {
+                        "record_id": record_id,
+                        "fields": {},
+                        "review_state": "approved",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(422, status)
+        self.assertEqual("invalid_correction", payload["error"]["code"])
+
+    def test_import_corrections_require_completed_upload(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 4,
+                "media_type": "text/plain",
+            },
+        )
+
+        status, _, payload = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/corrections",
+            {
+                "corrections": [
+                    {
+                        "record_id": "0" * 64,
+                        "fields": {},
+                        "review_state": "accepted",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(409, status)
+        self.assertEqual("correction_unavailable", payload["error"]["code"])
+
     def test_missing_chunks_endpoint_returns_resume_status(self) -> None:
         _, _, persona = self.request(
             "POST",
