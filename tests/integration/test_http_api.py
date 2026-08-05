@@ -284,6 +284,41 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_expected_chunk_count", payload["error"]["code"])
 
+    def test_import_progress_endpoint_reports_authoritative_bytes_and_percent(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 10,
+                "media_type": "text/plain",
+            },
+        )
+        content = b"abc"
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": hashlib.sha256(content).hexdigest()},
+        )
+        self.assertEqual(200, status)
+
+        status, _, progress = self.request(
+            "GET", f"/api/v1/imports/{job['id']}/progress"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("uploading", progress["state"])
+        self.assertEqual(10, progress["total_bytes"])
+        self.assertEqual(3, progress["received_bytes"])
+        self.assertEqual(30, progress["progress_percent"])
+        self.assertEqual([0], progress["received_chunks"])
+
     def test_import_can_be_cancelled_and_rejects_follow_up_uploads(self) -> None:
         _, _, persona = self.request(
             "POST",

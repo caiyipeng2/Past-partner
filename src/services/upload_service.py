@@ -313,6 +313,32 @@ class UploadService:
                 ],
             }
 
+    def progress(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+    ) -> dict[str, Any]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            manifest = self._load_manifest(owner_id, import_id)
+            received_chunks = self._manifest_indexes(manifest)
+            if job.total_bytes == 0:
+                progress_percent = 100 if job.state is ImportState.UPLOADED else 0
+            else:
+                progress_percent = min(100, (job.received_bytes * 100) // job.total_bytes)
+            return {
+                "import_id": job.id,
+                "state": job.state.value,
+                "total_bytes": job.total_bytes,
+                "received_bytes": job.received_bytes,
+                "progress_percent": progress_percent,
+                "chunk_count": len(received_chunks),
+                "received_chunks": received_chunks,
+            }
+
     @staticmethod
     def chunk_aad(import_id: str, index: int, *, final: bool) -> bytes:
         marker = "true" if final else "false"

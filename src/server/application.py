@@ -167,6 +167,9 @@ class Application:
     ) -> dict[str, Any]:
         return self.uploads.missing_chunks(owner_id, import_id, expected_chunks)
 
+    def get_import_progress(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.uploads.progress(owner_id, import_id)
+
     def put_chunk(
         self,
         owner_id: str,

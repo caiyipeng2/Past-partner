@@ -69,6 +69,7 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
     const metrics = {
         importCreates: 0,
         missingQueries: [],
+        progressQueries: [],
         chunkRequests: [],
         completions: 0,
         cancellations: [],
@@ -121,6 +122,20 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
             job.chunk_count = 0;
             chunks.clear();
             return jsonResponse({...job});
+        }
+        if (path === `/api/v1/imports/${job.id}/progress`) {
+            metrics.progressQueries.push(job.id);
+            return jsonResponse({
+                import_id: job.id,
+                state: job.state,
+                total_bytes: job.total_bytes,
+                received_bytes: job.received_bytes,
+                progress_percent: job.total_bytes
+                    ? Math.floor((job.received_bytes * 100) / job.total_bytes)
+                    : 0,
+                chunk_count: chunks.size,
+                received_chunks: [...chunks.keys()].sort((a, b) => a - b),
+            });
         }
         const chunkMatch = path.match(new RegExp(`/api/v1/imports/${job.id}/chunks/(\\d+)$`));
         if (chunkMatch && options.method === 'PUT') {

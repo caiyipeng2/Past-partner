@@ -32,6 +32,7 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("localStorage.removeItem", self.javascript)
         self.assertIn("resolveImportJob", self.javascript)
         self.assertIn("missing-chunks", self.javascript)
+        self.assertIn("/progress", self.javascript)
 
     def test_browser_exposes_pause_and_resume_controls(self) -> None:
         self.assertIn('id="pauseUploadButton"', self.html)

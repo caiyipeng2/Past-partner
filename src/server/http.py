@@ -25,6 +25,7 @@ from src.services.upload_service import UploadError
 logger = logging.getLogger(__name__)
 _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
 _MISSING_CHUNKS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/missing-chunks$")
+_PROGRESS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/progress$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
@@ -160,6 +161,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     match.group(1),
                     expected_chunks,
                 ),
+            )
+        elif match := _PROGRESS_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.get_import_progress(self.owner_id, match.group(1)),
             )
         elif match := _IMPORT_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.get_import(self.owner_id, match.group(1)))

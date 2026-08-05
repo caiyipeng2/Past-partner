@@ -239,6 +239,10 @@ async function missingChunksForFile(job, file) {
     return api(`/imports/${encodeURIComponent(job.id)}/missing-chunks?expected_chunks=${expectedChunks}`);
 }
 
+async function progressForJob(job) {
+    return api(`/imports/${encodeURIComponent(job.id)}/progress`);
+}
+
 async function uploadSelectedFiles() {
     const totalBytes = selectedBytes();
     if (state.upload.running || !state.personaId || !state.selectedFiles.length || totalBytes > MAX_IMPORT_BYTES) return;
@@ -277,7 +281,9 @@ async function uploadSelectedFiles() {
 
             const uploadStatus = await missingChunksForFile(job, file);
             if (state.upload.paused || state.upload.cancelRequested) return;
-            uploadedBytes += uploadStatus.received_bytes || 0;
+            const progressStatus = await progressForJob(job);
+            if (state.upload.paused || state.upload.cancelRequested) return;
+            uploadedBytes += progressStatus.received_bytes ?? uploadStatus.received_bytes ?? 0;
             state.upload.uploadedBytes = uploadedBytes;
             updateProgress(totalBytes ? uploadedBytes / totalBytes : 1);
 

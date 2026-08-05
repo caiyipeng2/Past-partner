@@ -165,6 +165,19 @@ class UploadServiceTests(unittest.TestCase):
         self.assertEqual([0, 2], status["received_chunks"])
         self.assertEqual([1], status["missing_chunks"])
 
+    def test_reports_authoritative_progress(self) -> None:
+        value = b"hello"
+        self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
+
+        progress = self.uploads.progress(self.job.id)
+
+        self.assertEqual(self.job.id, progress["import_id"])
+        self.assertEqual("uploading", progress["state"])
+        self.assertEqual(11, progress["total_bytes"])
+        self.assertEqual(5, progress["received_bytes"])
+        self.assertEqual(45, progress["progress_percent"])
+        self.assertEqual([0], progress["received_chunks"])
+
     def test_cancel_clears_stored_parts_and_closes_the_import(self) -> None:
         value = b"secret"
         self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
