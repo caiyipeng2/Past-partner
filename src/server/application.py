@@ -170,6 +170,14 @@ class Application:
     def get_import_progress(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.uploads.progress(owner_id, import_id)
 
+    def preview_import(
+        self,
+        owner_id: str,
+        import_id: str,
+        max_records: int = 20,
+    ) -> dict[str, Any]:
+        return self.uploads.preview(owner_id, import_id, max_records)
+
     def put_chunk(
         self,
         owner_id: str,

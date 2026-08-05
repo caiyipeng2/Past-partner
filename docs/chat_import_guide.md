@@ -61,6 +61,10 @@
 客户端重新连接后可请求 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N`。
 其中 `N` 是客户端根据自身分片策略计算出的完整分片数量；响应会返回 `received_chunks`、`missing_chunks`、`received_bytes` 和任务状态。省略 `expected_chunks` 时，服务端只报告当前已观测索引范围内的缺口，不推测末尾尚未出现的分片。
 
+## 解析预览
+
+上传完成后，单文件导入可请求 `GET /api/v1/imports/{import_id}/preview?limit=20`。响应包括内容探测得到的 `source_type`、解析摘要和最多 20 条规范化消息；`limit` 可调整到不超过 100。未完成的导入返回 `preview_unavailable`，无法识别的内容返回 `unsupported_format`，不会伪装成空解析结果。
+
 ## 支持的数据库文件
 
 - 微信聊天记录数据库 (MicroMsg.db)

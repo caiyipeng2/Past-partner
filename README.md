@@ -88,8 +88,9 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
+已完成的单文件导入可通过 `GET /api/v1/imports/{import_id}/preview?limit=20` 查看解析摘要和有限条规范化消息；`limit` 最大为 100。
 
-P0-18 已加入基于内容探测的通用解析器注册表，可将 TXT、JSON 和 JSONL 聊天记录标准化为统一消息结构；微信/QQ 专用数据库、媒体解析和导入预览接口仍按后续解析器任务接入。
+P0-18 已加入基于内容探测的通用解析器注册表，可将 TXT、JSON 和 JSONL 聊天记录标准化为统一消息结构；P0-19 已接入单文件导入预览，微信/QQ 专用数据库和媒体解析仍按后续解析器任务接入。
 
 服务启动时会在 `<data-dir>/database/past-partner.sqlite3` 创建本地 SQLite 数据库，并在同一事务中执行尚未应用的版本化迁移。已执行版本记录在 `schema_migrations` 表中，重复启动不会重复应用；迁移历史不一致或迁移失败时，服务会停止启动而不是继续使用不确定的结构。
 

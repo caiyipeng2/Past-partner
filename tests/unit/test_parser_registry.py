@@ -138,6 +138,22 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("兼容门面", records[0]["content"])
         self.assertEqual("兼容门面", records[0]["message"])
 
+    def test_limits_preview_records_and_marks_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.txt"
+            path.write_text(
+                "\n".join(
+                    f"[2026-08-05 21:0{index}] 小雨: 消息 {index}" for index in range(3)
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path, max_records=2)
+
+        self.assertEqual(2, len(result.records))
+        self.assertEqual(2, result.summary["record_count"])
+        self.assertTrue(result.summary["truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from itertools import islice
 from pathlib import Path
 import re
 from typing import Any, Iterator, Mapping, Protocol, Sequence
@@ -114,7 +115,13 @@ class ParserRegistry:
             raise ParserError("unsupported_format", "no parser can recognize this source")
         return max(supported, key=lambda item: item[0].confidence)[1]
 
-    def parse(self, path: str | Path, metadata: Mapping[str, Any] | None = None) -> ParseResult:
+    def parse(
+        self,
+        path: str | Path,
+        metadata: Mapping[str, Any] | None = None,
+        *,
+        max_records: int | None = None,
+    ) -> ParseResult:
         source = self._source(path, metadata)
         parser = self.select(source.path, source.metadata)
         validation = parser.validate(source)
@@ -122,8 +129,18 @@ class ParserRegistry:
             raise ParserError(validation.code, validation.message or "source validation failed")
 
         probe = parser.probe(source)
+        if max_records is not None and (
+            isinstance(max_records, bool) or not isinstance(max_records, int) or max_records <= 0
+        ):
+            raise ParserError("invalid_preview_limit", "max_records must be a positive integer")
         try:
-            records = tuple(parser.stream_records(source))
+            stream = parser.stream_records(source)
+            if max_records is None:
+                records = tuple(stream)
+                truncated = False
+            else:
+                records = tuple(islice(stream, max_records))
+                truncated = next(stream, None) is not None
         except ParserError:
             raise
         except MessageValidationError as exc:
@@ -131,11 +148,13 @@ class ParserRegistry:
         if not records:
             raise ParserError("empty_source", "parser produced no records")
         warnings: tuple[str, ...] = ()
+        summary = dict(parser.summarize(records, warnings, probe.confidence))
+        summary["truncated"] = truncated
         return ParseResult(
             source_type=parser.source_type,
             records=records,
             warnings=warnings,
-            summary=parser.summarize(records, warnings, probe.confidence),
+            summary=summary,
         )
 
     @staticmethod

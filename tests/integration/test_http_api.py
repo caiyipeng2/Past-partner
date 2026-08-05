@@ -213,6 +213,111 @@ class HttpApiTests(unittest.TestCase):
             b"".join(self.server.application.uploads.iter_payload(self.owner_id, job["id"])),
         )
 
+    def test_import_preview_returns_normalized_records_after_completion(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = (
+            "[2026-08-05 21:00] 小雨: 第一条\n"
+            "[2026-08-05 21:01] 我: 第二条\n"
+        ).encode("utf-8")
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(200, status)
+        self.assertEqual("generic_text", preview["source_type"])
+        self.assertEqual(2, preview["summary"]["record_count"])
+        self.assertFalse(preview["summary"]["truncated"])
+        self.assertEqual("小雨", preview["records"][0]["sender_id"])
+        self.assertEqual("第一条", preview["records"][0]["content"])
+        self.assertFalse(list((self.data_root / "preview").glob("*")))
+
+        status, _, limited = self.request(
+            "GET", f"/api/v1/imports/{job['id']}/preview?limit=1"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, limited["summary"]["record_count"])
+        self.assertTrue(limited["summary"]["truncated"])
+
+    def test_import_preview_requires_completed_upload(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 4,
+                "media_type": "text/plain",
+            },
+        )
+
+        status, _, payload = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(409, status)
+        self.assertEqual("preview_unavailable", payload["error"]["code"])
+
+    def test_import_preview_rejects_unrecognized_content(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = b"\x00\x01not-chat-data"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "export.bin",
+                "total_bytes": len(content),
+                "media_type": "application/octet-stream",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+
+        status, _, payload = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(415, status)
+        self.assertEqual("unsupported_format", payload["error"]["code"])
+
     def test_missing_chunks_endpoint_returns_resume_status(self) -> None:
         _, _, persona = self.request(
             "POST",

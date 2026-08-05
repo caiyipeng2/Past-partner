@@ -19,11 +19,14 @@ from src.services.authenticated_encryption import (
 )
 from src.services.import_repository import ImportRepositoryError
 from src.services.import_service import ImportJob, ImportService, ImportState
+from src.preprocessing.parser_registry import ParserError, ParserRegistry
 from src.services.storage import StorageLayout
 
 
 DEFAULT_CHUNK_BYTES = 8 * 1024**2
 DEFAULT_READ_BLOCK_BYTES = 64 * 1024
+DEFAULT_PREVIEW_RECORDS = 20
+MAX_PREVIEW_RECORDS = 100
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
@@ -52,6 +55,7 @@ class UploadService:
         encryption: AuthenticatedEncryptionService,
         max_chunk_bytes: int = DEFAULT_CHUNK_BYTES,
         read_block_bytes: int = DEFAULT_READ_BLOCK_BYTES,
+        parsers: ParserRegistry | None = None,
     ):
         if max_chunk_bytes <= 0 or read_block_bytes <= 0:
             raise ValueError("chunk and read block limits must be positive")
@@ -62,6 +66,7 @@ class UploadService:
         self.encryption = encryption
         self.max_chunk_bytes = max_chunk_bytes
         self.read_block_bytes = min(read_block_bytes, max_chunk_bytes)
+        self.parsers = parsers or ParserRegistry.with_builtins()
         # The development runtime is one process. The lock prevents two request
         # threads from racing the same JSON manifest; production will replace
         # this with transactional metadata storage.
@@ -339,6 +344,68 @@ class UploadService:
                 "received_chunks": received_chunks,
             }
 
+    def preview(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+        max_records: int = DEFAULT_PREVIEW_RECORDS,
+    ) -> dict[str, Any]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        if isinstance(max_records, bool) or not isinstance(max_records, int):
+            raise UploadError("invalid_preview_limit", "preview limit must be an integer")
+        if max_records <= 0 or max_records > MAX_PREVIEW_RECORDS:
+            raise UploadError(
+                "invalid_preview_limit",
+                f"preview limit must be between 1 and {MAX_PREVIEW_RECORDS}",
+            )
+
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+                raise UploadError(
+                    "preview_unavailable",
+                    "preview requires a completed uploaded import",
+                )
+            if len(job.files) > 1:
+                raise UploadError(
+                    "preview_multi_file_unsupported",
+                    "preview currently requires a single-file import",
+                )
+
+            source_name = job.files[0].source_name if job.files else job.source_name
+            media_type = job.files[0].media_type if job.files else job.media_type
+            preview_id = uuid4().hex
+            destination = self.storage.object_path("preview", preview_id, ".bin")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with destination.open("xb") as output:
+                    for chunk in self.iter_payload(owner_id, import_id):
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+                try:
+                    result = self.parsers.parse(
+                        destination,
+                        {"source_name": source_name, "media_type": media_type},
+                        max_records=max_records,
+                    )
+                except ParserError as exc:
+                    raise UploadError(exc.code, str(exc)) from exc
+                return {
+                    "import_id": job.id,
+                    "state": job.state.value,
+                    "source_name": source_name,
+                    "media_type": media_type,
+                    "source_type": result.source_type,
+                    "summary": dict(result.summary),
+                    "warnings": list(result.warnings),
+                    "records": [_preview_record(record.to_dict()) for record in result.records],
+                }
+            finally:
+                destination.unlink(missing_ok=True)
+
     @staticmethod
     def chunk_aad(import_id: str, index: int, *, final: bool) -> bytes:
         marker = "true" if final else "false"
@@ -535,3 +602,11 @@ class UploadService:
             received_bytes=job.received_bytes,
             total_bytes=job.total_bytes,
         )
+
+
+def _preview_record(record: dict[str, Any], max_content_characters: int = 2_000) -> dict[str, Any]:
+    content = record.get("content")
+    if isinstance(content, str) and len(content) > max_content_characters:
+        record["content"] = content[:max_content_characters]
+        record["content_truncated"] = True
+    return record

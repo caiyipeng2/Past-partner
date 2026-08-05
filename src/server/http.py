@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
 _MISSING_CHUNKS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/missing-chunks$")
 _PROGRESS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/progress$")
+_PREVIEW_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/preview$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
@@ -116,6 +117,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "chunk_conflict": HTTPStatus.CONFLICT,
                 "upload_incomplete": HTTPStatus.CONFLICT,
                 "upload_closed": HTTPStatus.CONFLICT,
+                "preview_unavailable": HTTPStatus.CONFLICT,
+                "unsupported_format": HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "invalid_record": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "empty_source": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "preview_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except ProviderError as exc:
@@ -166,6 +172,21 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 self.server.application.get_import_progress(self.owner_id, match.group(1)),
+            )
+        elif match := _PREVIEW_PATH.fullmatch(path):
+            raw_limit = query.get("limit", [None])[0]
+            max_records = 20
+            if raw_limit is not None:
+                try:
+                    max_records = int(raw_limit)
+                except ValueError as exc:
+                    raise RequestValidationError(
+                        "invalid_preview_limit",
+                        "limit must be an integer",
+                    ) from exc
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.preview_import(self.owner_id, match.group(1), max_records),
             )
         elif match := _IMPORT_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.get_import(self.owner_id, match.group(1)))
