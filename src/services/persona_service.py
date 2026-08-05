@@ -85,3 +85,12 @@ class PersonaService:
 
     def list(self, owner_id: str | None = None) -> list[Persona]:
         return self.repository.list(owner_id)
+
+    def delete(self, owner_id: str, persona_id: str | None = None) -> bool:
+        if persona_id is None:
+            persona_id = owner_id
+            owner_id = None
+        deleted = self.repository.delete(owner_id, persona_id)
+        if not deleted:
+            raise PersonaNotFoundError("persona not found")
+        return True

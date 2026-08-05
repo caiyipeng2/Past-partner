@@ -134,6 +134,16 @@ class Application:
             raise RequestValidationError("invalid_persona", str(exc)) from exc
         return persona.to_dict()
 
+    def delete_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
+        self.personas.get(owner_id, persona_id)
+        deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
+        self.personas.delete(owner_id, persona_id)
+        return {
+            "persona_id": persona_id,
+            "deleted": True,
+            "deleted_imports": deleted_imports,
+        }
+
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             arguments: dict[str, Any] = {

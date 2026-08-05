@@ -644,6 +644,87 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(404, status)
         self.assertEqual("not_found", payload["error"]["code"])
 
+    def test_persona_delete_removes_completed_import_and_persona(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "待删除人物", "relationship_type": "friend"},
+        )
+        content = b"[2026-08-05 21:00] wxid_1: hello\n"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+        self.assertTrue((self.data_root / "payloads" / f"{job['id']}.bin").exists())
+
+        status, _, deleted = self.request("DELETE", f"/api/v1/personas/{persona['id']}")
+
+        self.assertEqual(200, status)
+        self.assertEqual(persona["id"], deleted["persona_id"])
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(1, deleted["deleted_imports"])
+        self.assertFalse((self.data_root / "payloads" / f"{job['id']}.bin").exists())
+        self.assertFalse(list((self.data_root / "upload-parts").glob("*")))
+        status, _, payload = self.request("GET", f"/api/v1/personas/{persona['id']}")
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", payload["error"]["code"])
+        status, _, payload = self.request("GET", f"/api/v1/imports/{job['id']}")
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", payload["error"]["code"])
+
+    def test_persona_delete_removes_incomplete_chunks(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "未完成导入人物", "relationship_type": "friend"},
+        )
+        content = b"partial"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": 100,
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertTrue(list((self.data_root / "upload-parts").glob("*")))
+
+        status, _, deleted = self.request("DELETE", f"/api/v1/personas/{persona['id']}")
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, deleted["deleted_imports"])
+        self.assertFalse(list((self.data_root / "upload-parts").glob("*")))
+        self.assertFalse((self.data_root / "payloads" / f"{job['id']}.bin").exists())
+
+    def test_persona_delete_unknown_persona_returns_not_found(self) -> None:
+        status, _, payload = self.request("DELETE", "/api/v1/personas/not-real")
+
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", payload["error"]["code"])
+
     def test_missing_chunks_endpoint_returns_resume_status(self) -> None:
         _, _, persona = self.request(
             "POST",

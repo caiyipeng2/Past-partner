@@ -148,6 +148,14 @@ class PersonaRepositoryTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             self.service.get("owner-b", persona.id)
 
+    def test_delete_is_scoped_and_removes_the_encrypted_record(self) -> None:
+        persona = self.service.create(self.auth.owner_id, "待删除", "friend")
+
+        self.assertFalse(self.repository.delete("other-owner", persona.id))
+        self.assertIsNotNone(self.repository.get(self.auth.owner_id, persona.id))
+        self.assertTrue(self.repository.delete(self.auth.owner_id, persona.id))
+        self.assertIsNone(self.repository.get(self.auth.owner_id, persona.id))
+
 
 if __name__ == "__main__":
     unittest.main()

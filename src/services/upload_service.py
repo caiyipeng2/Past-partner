@@ -327,6 +327,13 @@ class UploadService:
                 "deleted": True,
             }
 
+    def delete_persona_imports(self, owner_id: str, persona_id: str) -> int:
+        with self._lock:
+            jobs = self.imports.list_for_persona(owner_id, persona_id)
+            for job in jobs:
+                self.delete_import(owner_id, job.id)
+            return len(jobs)
+
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")
 

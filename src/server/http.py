@@ -304,6 +304,12 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_delete(self) -> None:
         path, _ = self._request_target()
+        if match := _PERSONA_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.delete_persona(self.owner_id, match.group(1)),
+            )
+            return
         match = _IMPORT_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")

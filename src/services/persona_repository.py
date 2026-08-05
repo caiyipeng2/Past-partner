@@ -82,6 +82,29 @@ class PersonaRepository:
             return None
         return self._decode(persona_id, row[0], row[1])
 
+    def delete(self, owner_id: str, persona_id: str | None = None) -> bool:
+        if persona_id is None:
+            persona_id = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
+        if not isinstance(persona_id, str) or not persona_id:
+            return False
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            deleted = connection.execute(
+                f"DELETE FROM personas WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (persona_id, *self._owner_params(owner_id)),
+            ).rowcount
+            connection.commit()
+            return deleted == 1
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def update(
         self,
         owner_id: str,

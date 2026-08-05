@@ -181,6 +181,17 @@ class ImportRepositoryTests(unittest.TestCase):
         self.assertIsNone(self.repository.get("other-owner", self.job.id))
         self.assertIsNone(self.repository.get_manifest("other-owner", self.job.id))
 
+    def test_lists_imports_for_a_persona_with_owner_scope(self) -> None:
+        other_persona_job = replace(self.job, id=str(uuid4()), persona_id=str(uuid4()))
+        self.repository.create(self.auth.owner_id, self.job, self.manifest)
+        self.repository.create(self.auth.owner_id, other_persona_job, self.manifest | {"import_id": other_persona_job.id})
+
+        self.assertEqual(
+            [self.job],
+            self.repository.list_for_persona(self.auth.owner_id, self.job.persona_id),
+        )
+        self.assertEqual([], self.repository.list_for_persona("other-owner", self.job.persona_id))
+
 
 if __name__ == "__main__":
     unittest.main()
