@@ -218,6 +218,12 @@ class ImportService:
             owner_id = None
         self.repository.save(owner_id, job)
 
+    def delete(self, owner_id: str, import_id: str | None = None) -> bool:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        return self.repository.delete(owner_id, import_id)
+
     def get_manifest(self, owner_id: str, import_id: str | None = None) -> dict[str, Any] | None:
         if import_id is None:
             import_id = owner_id

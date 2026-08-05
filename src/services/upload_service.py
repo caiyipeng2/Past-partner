@@ -286,6 +286,47 @@ class UploadService:
             self.payload_path(import_id).unlink(missing_ok=True)
             return cancelled
 
+    def delete_import(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+    ) -> dict[str, Any]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is ImportState.PROCESSING:
+                raise UploadError(
+                    "deletion_unavailable",
+                    "processing imports cannot be deleted",
+                )
+            manifest = self._load_manifest(owner_id, import_id)
+            indexes = self._manifest_indexes(manifest)
+            try:
+                for index in indexes:
+                    self._chunk_path(import_id, index).unlink(missing_ok=True)
+                self.payload_path(import_id).unlink(missing_ok=True)
+            except OSError as exc:
+                raise UploadError(
+                    "deletion_failed",
+                    "import files could not be removed",
+                ) from exc
+
+            try:
+                deleted = self.imports.delete(owner_id, import_id)
+            except ImportRepositoryError as exc:
+                raise UploadError(
+                    "deletion_failed",
+                    "import metadata could not be removed",
+                ) from exc
+            if not deleted:
+                raise UploadError("deletion_failed", "import metadata could not be removed")
+            return {
+                "import_id": job.id,
+                "deleted": True,
+            }
+
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")
 

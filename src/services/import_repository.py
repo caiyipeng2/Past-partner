@@ -119,6 +119,37 @@ class ImportRepository:
             return None
         return self._decode_manifest(import_id, row[0], row[1])
 
+    def delete(self, owner_id: str, import_id: str | None = None) -> bool:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        owner_id = self._owner_id(owner_id)
+        if not isinstance(import_id, str) or not import_id:
+            return False
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                f"SELECT 1 FROM imports WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (import_id, *self._owner_params(owner_id)),
+            ).fetchone()
+            if existing is None:
+                connection.rollback()
+                return False
+            connection.execute("DELETE FROM import_manifests WHERE import_id = ?", (import_id,))
+            deleted = connection.execute(
+                f"DELETE FROM imports WHERE id = ? AND {self._owner_clause(owner_id)}",
+                (import_id, *self._owner_params(owner_id)),
+            ).rowcount
+            connection.commit()
+            return deleted == 1
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def save(self, owner_id: str | Any, job: Any | None = None) -> None:
         if job is None:
             job = owner_id

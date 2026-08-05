@@ -70,7 +70,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, X-Chunk-Sha256, Authorization, X-Local-Owner-Token",
@@ -89,6 +89,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         self._dispatch(self._handle_patch)
+
+    def do_DELETE(self) -> None:
+        self._dispatch(self._handle_delete)
 
     def _dispatch(self, operation) -> None:
         try:
@@ -130,6 +133,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "correction_unavailable": HTTPStatus.CONFLICT,
                 "corrections_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "invalid_correction": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "deletion_unavailable": HTTPStatus.CONFLICT,
+                "deletion_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except ProviderError as exc:
@@ -295,6 +300,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 match.group(1),
                 self._json_body(),
             ),
+        )
+
+    def _handle_delete(self) -> None:
+        path, _ = self._request_target()
+        match = _IMPORT_PATH.fullmatch(path)
+        if match is None:
+            self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
+            return
+        self._json(
+            HTTPStatus.OK,
+            self.server.application.delete_import(self.owner_id, match.group(1)),
         )
 
     def _json_body(self) -> dict[str, Any]:

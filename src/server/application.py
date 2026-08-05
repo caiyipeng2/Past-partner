@@ -159,6 +159,9 @@ class Application:
     def get_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.imports.get(owner_id, import_id).to_dict()
 
+    def delete_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.uploads.delete_import(owner_id, import_id)
+
     def get_missing_chunks(
         self,
         owner_id: str,
