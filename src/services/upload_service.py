@@ -27,6 +27,9 @@ DEFAULT_CHUNK_BYTES = 8 * 1024**2
 DEFAULT_READ_BLOCK_BYTES = 64 * 1024
 DEFAULT_PREVIEW_RECORDS = 20
 MAX_PREVIEW_RECORDS = 100
+PARTICIPANT_ROLES = frozenset({"persona", "user", "other", "unknown"})
+MAX_PARTICIPANT_ID_CHARACTERS = 128
+MAX_PARTICIPANT_MAPPINGS = 4_096
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
@@ -406,6 +409,69 @@ class UploadService:
             finally:
                 destination.unlink(missing_ok=True)
 
+    def set_participant_mapping(
+        self,
+        owner_id: str,
+        import_id: str | Mapping[str, str] | None = None,
+        mapping: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Persist source participant IDs and their semantic roles in the encrypted manifest."""
+
+        if mapping is None and isinstance(import_id, Mapping):
+            mapping = import_id
+            import_id = owner_id
+            owner_id = None
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        normalized = _normalize_participant_mapping(mapping, require_non_empty=True)
+
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+                raise UploadError(
+                    "mapping_unavailable",
+                    "participant mapping requires a completed uploaded import",
+                )
+            manifest = self._load_manifest(owner_id, import_id)
+            manifest["participant_mapping"] = normalized
+            manifest["participant_mapping_version"] = 1
+            manifest["participant_mapping_updated_at"] = datetime.now(UTC).isoformat()
+            try:
+                self.imports.save_state(owner_id, job, manifest)
+            except ImportRepositoryError as exc:
+                raise UploadError(
+                    "metadata_persistence_failed",
+                    "participant mapping could not be committed",
+                ) from exc
+            return self._participant_mapping_result(job, normalized)
+
+    def participant_mapping(
+        self,
+        owner_id: str,
+        import_id: str | None = None,
+    ) -> dict[str, Any]:
+        if import_id is None:
+            import_id = owner_id
+            owner_id = None
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            manifest = self._load_manifest(owner_id, import_id)
+            normalized = _normalize_participant_mapping(manifest.get("participant_mapping"))
+            return self._participant_mapping_result(job, normalized)
+
+    @staticmethod
+    def _participant_mapping_result(
+        job: ImportJob,
+        mapping: Mapping[str, str],
+    ) -> dict[str, Any]:
+        return {
+            "import_id": job.id,
+            "state": job.state.value,
+            "participant_mapping": dict(mapping),
+            "mapped": bool(mapping),
+        }
+
     @staticmethod
     def chunk_aad(import_id: str, index: int, *, final: bool) -> bytes:
         marker = "true" if final else "false"
@@ -610,3 +676,47 @@ def _preview_record(record: dict[str, Any], max_content_characters: int = 2_000)
         record["content"] = content[:max_content_characters]
         record["content_truncated"] = True
     return record
+
+
+def _normalize_participant_mapping(
+    value: object,
+    *,
+    require_non_empty: bool = False,
+) -> dict[str, str]:
+    if value is None:
+        if require_non_empty:
+            raise UploadError("invalid_participant_mapping", "mapping must not be empty")
+        return {}
+    if not isinstance(value, Mapping):
+        raise UploadError("invalid_participant_mapping", "mapping must be an object")
+    if require_non_empty and not value:
+        raise UploadError("invalid_participant_mapping", "mapping must not be empty")
+    if len(value) > MAX_PARTICIPANT_MAPPINGS:
+        raise UploadError(
+            "invalid_participant_mapping",
+            f"mapping cannot contain more than {MAX_PARTICIPANT_MAPPINGS} participants",
+        )
+
+    normalized: dict[str, str] = {}
+    for source_id, role in value.items():
+        if not isinstance(source_id, str):
+            raise UploadError("invalid_participant_mapping", "participant IDs must be strings")
+        cleaned_source_id = source_id.strip()
+        if (
+            not cleaned_source_id
+            or len(cleaned_source_id) > MAX_PARTICIPANT_ID_CHARACTERS
+            or any(not character.isprintable() for character in cleaned_source_id)
+        ):
+            raise UploadError(
+                "invalid_participant_mapping",
+                f"participant IDs must be 1-{MAX_PARTICIPANT_ID_CHARACTERS} printable characters",
+            )
+        if cleaned_source_id in normalized:
+            raise UploadError("invalid_participant_mapping", "participant IDs must be unique")
+        if not isinstance(role, str) or role not in PARTICIPANT_ROLES:
+            raise UploadError(
+                "invalid_participant_mapping",
+                "participant role must be persona, user, other, or unknown",
+            )
+        normalized[cleaned_source_id] = role
+    return normalized

@@ -65,6 +65,23 @@
 
 上传完成后，单文件导入可请求 `GET /api/v1/imports/{import_id}/preview?limit=20`。响应包括内容探测得到的 `source_type`、解析摘要和最多 20 条规范化消息；`limit` 可调整到不超过 100。未完成的导入返回 `preview_unavailable`，无法识别的内容返回 `unsupported_format`，不会伪装成空解析结果。
 
+## 参与者映射
+
+导入完成后，可以把聊天文件中的来源参与者 ID 映射到人物、当前用户或其他参与者。提交接口为 `POST /api/v1/imports/{import_id}/participant-mapping`，请求体示例：
+
+```json
+{
+  "mapping": {
+    "wxid_example": "persona",
+    "我": "user",
+    "群成员A": "other",
+    "未知来源": "unknown"
+  }
+}
+```
+
+角色只支持 `persona`、`user`、`other` 和 `unknown`。服务端会校验来源 ID 的长度和可打印性，并将映射写入现有的加密导入清单；使用 `GET` 同一路径可以回读映射。未完成的导入不能提交映射。
+
 ## 支持的数据库文件
 
 - 微信聊天记录数据库 (MicroMsg.db)

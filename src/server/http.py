@@ -27,6 +27,9 @@ _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
 _MISSING_CHUNKS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/missing-chunks$")
 _PROGRESS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/progress$")
 _PREVIEW_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/preview$")
+_PARTICIPANT_MAPPING_PATH = re.compile(
+    r"^/api/v1/imports/([A-Za-z0-9._-]+)/participant-mapping$"
+)
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
@@ -122,6 +125,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_record": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "empty_source": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "preview_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "mapping_unavailable": HTTPStatus.CONFLICT,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except ProviderError as exc:
@@ -188,6 +192,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.application.preview_import(self.owner_id, match.group(1), max_records),
             )
+        elif match := _PARTICIPANT_MAPPING_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.get_participant_mapping(self.owner_id, match.group(1)),
+            )
         elif match := _IMPORT_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.get_import(self.owner_id, match.group(1)))
         elif path.startswith("/api/"):
@@ -210,6 +219,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif match := _PARTICIPANT_MAPPING_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.set_participant_mapping(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif match := _CANCEL_PATH.fullmatch(path):
             self._json_body()
             self._json(HTTPStatus.OK, self.server.application.cancel_import(self.owner_id, match.group(1)))

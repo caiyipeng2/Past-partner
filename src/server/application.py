@@ -178,6 +178,23 @@ class Application:
     ) -> dict[str, Any]:
         return self.uploads.preview(owner_id, import_id, max_records)
 
+    def set_participant_mapping(
+        self,
+        owner_id: str,
+        import_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            mapping = payload["mapping"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing mapping") from exc
+        if not isinstance(mapping, Mapping):
+            raise RequestValidationError("invalid_participant_mapping", "mapping must be an object")
+        return self.uploads.set_participant_mapping(owner_id, import_id, mapping)
+
+    def get_participant_mapping(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.uploads.participant_mapping(owner_id, import_id)
+
     def put_chunk(
         self,
         owner_id: str,
