@@ -224,6 +224,9 @@ class ImportService:
             owner_id = None
         return self.repository.delete(owner_id, import_id)
 
+    def list(self, owner_id: str | None = None) -> list[ImportJob]:
+        return self.repository.list(owner_id)
+
     def list_for_persona(self, owner_id: str, persona_id: str) -> list[ImportJob]:
         return self.repository.list_for_persona(owner_id, persona_id)
 

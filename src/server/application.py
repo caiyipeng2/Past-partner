@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
 
 from src.domain.personas import PersonaValidationError
@@ -142,6 +143,25 @@ class Application:
             "persona_id": persona_id,
             "deleted": True,
             "deleted_imports": deleted_imports,
+        }
+
+    def export_data(self, owner_id: str) -> dict[str, Any]:
+        imports = [
+            {
+                "job": job.to_dict(),
+                "manifest": self.imports.get_manifest(owner_id, job.id) or {},
+            }
+            for job in self.imports.list(owner_id)
+        ]
+        return {
+            "export_version": 1,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "scope": {
+                "raw_payloads_included": False,
+                "omitted": ["raw_import_payloads", "provider_side_data", "audit_records"],
+            },
+            "personas": [persona.to_dict() for persona in self.personas.list(owner_id)],
+            "imports": imports,
         }
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:

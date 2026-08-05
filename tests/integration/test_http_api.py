@@ -725,6 +725,86 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(404, status)
         self.assertEqual("not_found", payload["error"]["code"])
 
+    def test_data_export_returns_owner_metadata_without_raw_payloads(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "导出人物", "relationship_type": "friend"},
+        )
+        content = b"[2026-08-05 21:00] wxid_1: hello\n"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "chat.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+        self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/participant-mapping",
+            {"mapping": {"wxid_1": "persona"}},
+        )
+        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
+        self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/corrections",
+            {
+                "corrections": [
+                    {
+                        "record_id": record_id,
+                        "fields": {"content": "corrected"},
+                        "review_state": "accepted",
+                    }
+                ]
+            },
+        )
+
+        status, _, exported = self.request("GET", "/api/v1/data-export")
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, exported["export_version"])
+        self.assertIsInstance(exported["generated_at"], str)
+        self.assertFalse(exported["scope"]["raw_payloads_included"])
+        self.assertIn("raw_import_payloads", exported["scope"]["omitted"])
+        self.assertEqual([persona["id"]], [item["id"] for item in exported["personas"]])
+        self.assertEqual(1, len(exported["imports"]))
+        self.assertEqual(job["id"], exported["imports"][0]["job"]["id"])
+        self.assertEqual("persona", exported["imports"][0]["manifest"]["participant_mapping"]["wxid_1"])
+        self.assertEqual(
+            "accepted",
+            exported["imports"][0]["manifest"]["corrections"][record_id]["review_state"],
+        )
+        self.assertNotIn("payload", exported["imports"][0])
+
+    def test_data_export_returns_empty_owner_snapshot(self) -> None:
+        status, _, exported = self.request("GET", "/api/v1/data-export")
+
+        self.assertEqual(200, status)
+        self.assertEqual([], exported["personas"])
+        self.assertEqual([], exported["imports"])
+        self.assertFalse(exported["scope"]["raw_payloads_included"])
+
+    def test_data_export_requires_a_valid_owner_session(self) -> None:
+        status, _, payload = self.request(
+            "GET",
+            "/api/v1/data-export",
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual("authentication_required", payload["error"]["code"])
+
     def test_missing_chunks_endpoint_returns_resume_status(self) -> None:
         _, _, persona = self.request(
             "POST",

@@ -119,6 +119,16 @@ class ImportRepository:
             return None
         return self._decode_manifest(import_id, row[0], row[1])
 
+    def list(self, owner_id: str | None = None) -> list[Any]:
+        owner_id = self._owner_id(owner_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
+                self._owner_params(owner_id),
+            ).fetchall()
+        jobs = [self._decode_job(row[0], row[1], row[2]) for row in rows]
+        return sorted(jobs, key=lambda item: (item.created_at, item.id))
+
     def list_for_persona(self, owner_id: str, persona_id: str) -> list[Any]:
         owner_id = self._owner_id(owner_id)
         if not isinstance(persona_id, str) or not persona_id:

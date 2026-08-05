@@ -162,6 +162,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/v1/models":
             provider_id = query.get("provider_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
+        elif path == "/api/v1/data-export":
+            self._json(HTTPStatus.OK, self.server.application.export_data(self.owner_id))
         elif match := _MISSING_CHUNKS_PATH.fullmatch(path):
             raw_expected = query.get("expected_chunks", [None])[0]
             expected_chunks = None
