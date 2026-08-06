@@ -81,6 +81,7 @@
 ```
 
 角色只支持 `persona`、`user`、`other` 和 `unknown`。服务端会校验来源 ID 的长度和可打印性，并将映射写入现有的加密导入清单；使用 `GET` 同一路径可以回读映射。未完成的导入不能提交映射。
+角色或来源 ID 不符合约束时返回 `422 invalid_participant_mapping`；未完成的导入返回 `409 mapping_unavailable`。
 
 ## 预览修正
 

@@ -129,6 +129,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "unsupported_format": HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                 "invalid_record": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "empty_source": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_participant_mapping": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "mapping_unavailable": HTTPStatus.CONFLICT,
                 "correction_unavailable": HTTPStatus.CONFLICT,
                 "corrections_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,

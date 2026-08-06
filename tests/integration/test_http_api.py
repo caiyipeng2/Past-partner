@@ -443,7 +443,10 @@ class HttpApiTests(unittest.TestCase):
             "/api/v1/personas",
             {"display_name": "小雨", "relationship_type": "friend"},
         )
-        content = b"[2026-08-05 21:00] wxid_1: hello\n"
+        content = (
+            b"[2026-08-05 21:00] wxid_1: hello\n"
+            b"[2026-08-05 21:01] wxid_2: follow-up\n"
+        )
         _, _, job = self.request(
             "POST",
             "/api/v1/imports",
@@ -485,6 +488,10 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual(mapping, loaded["participant_mapping"])
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+        self.assertEqual(200, status)
+        self.assertEqual("persona", preview["records"][0]["sender_role"])
+        self.assertEqual("unknown", preview["records"][1]["sender_role"])
         database_bytes = (self.data_root / "database" / "past-partner.sqlite3").read_bytes()
         self.assertNotIn(b"wxid_1", database_bytes)
 
@@ -520,7 +527,7 @@ class HttpApiTests(unittest.TestCase):
             {"mapping": {"wxid_1": "administrator"}},
         )
 
-        self.assertEqual(400, status)
+        self.assertEqual(422, status)
         self.assertEqual("invalid_participant_mapping", payload["error"]["code"])
 
     def test_participant_mapping_requires_completed_upload(self) -> None:
