@@ -54,7 +54,7 @@ function jsonResponse(payload, status = 200) {
     };
 }
 
-function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
+function createBackend({pauseFirstUpload = false, initialChunks = [], initialPersona = null} = {}) {
     const fileSize = CHUNK_BYTES + 3;
     const chunks = new Map(initialChunks.map(index => [index, index === 0 ? CHUNK_BYTES : 3]));
     const job = {
@@ -67,6 +67,9 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
         state: chunks.size ? 'uploading' : 'created',
     };
     const metrics = {
+        personaGets: 0,
+        personaCreates: [],
+        personaPatches: [],
         importCreates: 0,
         missingQueries: [],
         progressQueries: [],
@@ -82,6 +85,33 @@ function createBackend({pauseFirstUpload = false, initialChunks = []} = {}) {
         if (path === '/api/v1/auth/session') return jsonResponse({access_token: 'test-token'});
         if (path === '/api/v1/health') return jsonResponse({status: 'healthy'});
         if (path === '/api/v1/providers') return jsonResponse({providers: []});
+        if (path === '/api/v1/personas' && (!options.method || options.method === 'GET')) {
+            metrics.personaGets += 1;
+            return jsonResponse({personas: initialPersona ? [{...initialPersona}] : []});
+        }
+        if (path === '/api/v1/personas' && options.method === 'POST') {
+            const payload = JSON.parse(options.body);
+            const created = {
+                id: 'persona-created',
+                schema_version: 1,
+                created_at: '2026-08-06T00:00:00+00:00',
+                updated_at: '2026-08-06T00:00:00+00:00',
+                ...payload,
+            };
+            metrics.personaCreates.push(payload);
+            return jsonResponse(created, 201);
+        }
+        const personaMatch = path.match(/^\/api\/v1\/personas\/([^/]+)$/);
+        if (personaMatch && options.method === 'PATCH') {
+            const payload = JSON.parse(options.body);
+            metrics.personaPatches.push({id: personaMatch[1], payload});
+            return jsonResponse({
+                ...(initialPersona || {}),
+                id: personaMatch[1],
+                schema_version: 1,
+                ...payload,
+            });
+        }
         if (path === '/api/v1/imports' && options.method === 'POST') {
             metrics.importCreates += 1;
             const payload = JSON.parse(options.body);
@@ -200,6 +230,10 @@ function createContext(backend, localStorage) {
         querySelector() { return makeElement('step'); },
         createElement: makeElement,
     };
+    elements.personaForm.querySelector = selector => {
+        if (selector.includes('relationship_type')) return {value: 'friend'};
+        return null;
+    };
     const context = {
         AbortController,
         Blob,
@@ -225,6 +259,7 @@ function createContext(backend, localStorage) {
         upload: vm.runInContext('uploadSelectedFiles', context),
         togglePause: vm.runInContext('toggleUploadPause', context),
         cancel: vm.runInContext('cancelUpload', context),
+        savePersona: vm.runInContext('savePersona', context),
     };
 }
 
@@ -296,4 +331,47 @@ test('cancelling a paused upload closes the server job and clears local resume s
     assert.deepEqual(backend.metrics.cancellations, ['job-1']);
     assert.equal(backend.metrics.completions, 0);
     assert.equal(storage.getItem('past-partner:import:persona-1:sample.bin:' + backend.fileSize + ':123'), null);
+});
+
+test('loads an existing persona and saves edits through the versioned PATCH API', async () => {
+    const backend = createBackend({
+        initialPersona: {
+            id: 'persona-existing',
+            display_name: '小雨',
+            relationship_type: 'friend',
+            relationship_label: null,
+            preferred_address: '你',
+            user_address: '小雨',
+            relationship_description: '大学同学',
+            tone_boundaries: ['温和'],
+            forbidden_topics: ['家庭隐私'],
+        },
+    });
+    const browser = createContext(backend, makeStorage());
+
+    await waitFor(() => browser.state.personaId === 'persona-existing');
+    assert.equal(browser.elements.displayName.value, '小雨');
+    assert.equal(browser.elements.preferredAddress.value, '你');
+    assert.equal(browser.elements.toneBoundaries.value, '温和');
+
+    browser.elements.displayName.value = '小雨同学';
+    browser.elements.preferredAddress.value = '';
+    browser.elements.toneBoundaries.value = '温和,不说教';
+    browser.elements.forbiddenTopics.value = '家庭隐私,财务';
+    await browser.savePersona({preventDefault() {}});
+
+    assert.deepEqual(backend.metrics.personaPatches, [{
+        id: 'persona-existing',
+        payload: {
+            display_name: '小雨同学',
+            relationship_type: 'friend',
+            relationship_label: null,
+            preferred_address: null,
+            user_address: '小雨',
+            relationship_description: '大学同学',
+            tone_boundaries: ['温和', '不说教'],
+            forbidden_topics: ['家庭隐私', '财务'],
+        },
+    }]);
+    assert.equal(browser.elements.activePersonaName.textContent, '小雨同学');
 });

@@ -26,6 +26,23 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("/chunks/", self.javascript)
         self.assertIn("/complete", self.javascript)
 
+    def test_persona_edit_contract_uses_detail_load_and_patch(self) -> None:
+        for field_id in (
+            "relationshipLabel",
+            "preferredAddress",
+            "userAddress",
+            "relationshipDescription",
+            "toneBoundaries",
+            "forbiddenTopics",
+        ):
+            with self.subTest(field_id=field_id):
+                self.assertIn(f'id="{field_id}"', self.html)
+        self.assertIn("loadExistingPersona", self.javascript)
+        self.assertIn("method: 'PATCH'", self.javascript)
+        self.assertIn("/personas/", self.javascript)
+        self.assertIn("relationship_label", self.javascript)
+        self.assertIn("tone_boundaries", self.javascript)
+
     def test_browser_can_resume_an_existing_import_job(self) -> None:
         self.assertIn("localStorage.getItem", self.javascript)
         self.assertIn("localStorage.setItem", self.javascript)

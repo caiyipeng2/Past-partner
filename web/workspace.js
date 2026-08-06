@@ -36,7 +36,8 @@ const state = {
 const elementIds = [
     'serviceState', 'serviceStateText', 'personaForm', 'displayName',
     'customRelationshipField', 'customRelationship', 'createPersonaButton',
-    'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
+    'relationshipLabel', 'preferredAddress', 'userAddress', 'relationshipDescription',
+    'toneBoundaries', 'forbiddenTopics', 'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
     'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'cancelUploadButton', 'uploadStatus', 'uploadProgress',
     'uploadProgressValue', 'providerSelect', 'modelSelect', 'modelCapability',
     'modelPricing', 'modelStatus', 'refreshProvidersButton', 'activePersonaName',
@@ -85,6 +86,14 @@ function postJson(path, value) {
     });
 }
 
+function patchJson(path, value) {
+    return api(path, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(value),
+    });
+}
+
 function setStatus(element, message, kind = '') {
     element.textContent = message;
     element.dataset.kind = kind;
@@ -102,23 +111,69 @@ function relationshipValue() {
     return elements.personaForm.querySelector('input[name="relationship_type"]:checked')?.value || '';
 }
 
-async function createPersona(event) {
+function optionalText(value) {
+    const normalized = value.trim();
+    return normalized || null;
+}
+
+function optionalList(value) {
+    const items = value.split(',').map(item => item.trim()).filter(Boolean);
+    return items.length ? items : [];
+}
+
+function personaPayload() {
+    const relationshipType = relationshipValue();
+    const customLabel = elements.customRelationship.value.trim();
+    const relationshipLabel = elements.relationshipLabel.value.trim() || (
+        relationshipType === 'custom' ? customLabel : ''
+    );
+    return {
+        display_name: elements.displayName.value.trim(),
+        relationship_type: relationshipType,
+        relationship_label: relationshipType === 'custom' ? (relationshipLabel || null) : null,
+        preferred_address: optionalText(elements.preferredAddress.value),
+        user_address: optionalText(elements.userAddress.value),
+        relationship_description: optionalText(elements.relationshipDescription.value),
+        tone_boundaries: optionalList(elements.toneBoundaries.value),
+        forbidden_topics: optionalList(elements.forbiddenTopics.value),
+    };
+}
+
+function setRelationshipSelection(value) {
+    elements.personaForm.querySelectorAll('input[name="relationship_type"]').forEach(input => {
+        input.checked = input.value === value;
+    });
+}
+
+function applyPersona(persona) {
+    state.personaId = persona.id;
+    elements.displayName.value = persona.display_name || '';
+    setRelationshipSelection(persona.relationship_type || '');
+    const relationshipLabel = persona.relationship_label || persona.custom_label || '';
+    elements.relationshipLabel.value = relationshipLabel;
+    elements.customRelationship.value = persona.custom_label || relationshipLabel;
+    elements.preferredAddress.value = persona.preferred_address || '';
+    elements.userAddress.value = persona.user_address || '';
+    elements.relationshipDescription.value = persona.relationship_description || '';
+    elements.toneBoundaries.value = (persona.tone_boundaries || []).join(', ');
+    elements.forbiddenTopics.value = (persona.forbidden_topics || []).join(', ');
+    elements.activePersonaName.textContent = persona.display_name || '未命名人物';
+    elements.createPersonaButton.textContent = '保存人物';
+    onRelationshipChange();
+    updateControls();
+}
+
+async function savePersona(event) {
     event.preventDefault();
     elements.createPersonaButton.disabled = true;
     setStatus(elements.personaStatus, '保存中');
-    const relationshipType = relationshipValue();
-    const payload = {
-        display_name: elements.displayName.value.trim(),
-        relationship_type: relationshipType,
-    };
-    if (relationshipType === 'custom') payload.custom_label = elements.customRelationship.value.trim();
+    const payload = personaPayload();
 
     try {
-        const persona = await postJson('/personas', payload);
-        state.personaId = persona.id;
-        elements.activePersonaName.textContent = persona.display_name;
-        elements.chatFile.disabled = false;
-        elements.chatFolder.disabled = false;
+        const persona = state.personaId
+            ? await patchJson(`/personas/${encodeURIComponent(state.personaId)}`, payload)
+            : await postJson('/personas', payload);
+        applyPersona(persona);
         setStatus(elements.personaStatus, '人物已保存', 'success');
         completeStep('persona', 'import');
         updateControls();
@@ -126,6 +181,21 @@ async function createPersona(event) {
         setStatus(elements.personaStatus, error.message, 'error');
     } finally {
         elements.createPersonaButton.disabled = false;
+    }
+}
+
+const createPersona = savePersona;
+
+async function loadExistingPersona() {
+    try {
+        const payload = await api('/personas');
+        const persona = payload?.personas?.[0];
+        if (!persona) return;
+        applyPersona(persona);
+        setStatus(elements.personaStatus, '已加载人物，可继续编辑', 'success');
+        completeStep('persona', 'import');
+    } catch (error) {
+        setStatus(elements.personaStatus, `人物加载失败：${error.message}`, 'error');
     }
 }
 
@@ -574,6 +644,6 @@ elements.messageInput.addEventListener('keydown', event => {
 });
 
 bootstrapSession()
-    .then(() => Promise.all([checkHealth(), loadProviders()]))
+    .then(() => Promise.all([checkHealth(), loadProviders(), loadExistingPersona()]))
     .catch(() => checkHealth());
 updateControls();

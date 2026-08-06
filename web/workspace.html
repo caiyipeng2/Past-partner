@@ -53,6 +53,18 @@
                             <label class="field-label" for="customRelationship">关系名称</label>
                             <input id="customRelationship" name="custom_label" type="text" maxlength="40" autocomplete="off">
                         </div>
+                        <label class="field-label" for="relationshipLabel">关系标签（可选）</label>
+                        <input id="relationshipLabel" name="relationship_label" type="text" maxlength="40" autocomplete="off">
+                        <label class="field-label" for="preferredAddress">对方称呼（可选）</label>
+                        <input id="preferredAddress" name="preferred_address" type="text" maxlength="80" autocomplete="off">
+                        <label class="field-label" for="userAddress">你的称呼（可选）</label>
+                        <input id="userAddress" name="user_address" type="text" maxlength="80" autocomplete="off">
+                        <label class="field-label" for="relationshipDescription">关系描述（可选）</label>
+                        <textarea id="relationshipDescription" name="relationship_description" rows="3" maxlength="2000"></textarea>
+                        <label class="field-label" for="toneBoundaries">语气边界（逗号分隔，可选）</label>
+                        <input id="toneBoundaries" name="tone_boundaries" type="text" maxlength="4000" autocomplete="off">
+                        <label class="field-label" for="forbiddenTopics">禁聊话题（逗号分隔，可选）</label>
+                        <input id="forbiddenTopics" name="forbidden_topics" type="text" maxlength="4000" autocomplete="off">
                         <button class="primary-button" id="createPersonaButton" type="submit">保存人物</button>
                     </form>
                     <p class="inline-status" id="personaStatus" aria-live="polite"></p>
