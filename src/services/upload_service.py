@@ -423,73 +423,176 @@ class UploadService:
                     "preview_unavailable",
                     "preview requires a completed uploaded import",
                 )
-            if len(job.files) > 1:
-                raise UploadError(
-                    "preview_multi_file_unsupported",
-                    "preview currently requires a single-file import",
-                )
-
-            source_name = job.files[0].source_name if job.files else job.source_name
-            media_type = job.files[0].media_type if job.files else job.media_type
+            file_specs = [
+                {
+                    "file_id": item.file_id if len(job.files) > 1 else None,
+                    "source_name": item.source_name,
+                    "media_type": item.media_type,
+                    "total_bytes": item.total_bytes,
+                }
+                for item in job.files
+            ]
+            if not file_specs:
+                file_specs = [
+                    {
+                        "file_id": None,
+                        "source_name": job.source_name,
+                        "media_type": job.media_type,
+                        "total_bytes": job.total_bytes,
+                    }
+                ]
+            multi_file = len(file_specs) > 1
+            source_name = file_specs[0]["source_name"]
+            media_type = file_specs[0]["media_type"]
             manifest = self._load_manifest(owner_id, import_id)
             participant_mapping = _normalize_participant_mapping(manifest.get("participant_mapping"))
             corrections = _normalize_corrections(manifest.get("corrections"))
             preview_id = uuid4().hex
-            destination = self.storage.object_path("preview", preview_id, ".bin")
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            payload = iter(self.iter_payload(owner_id, import_id))
+            pending = b""
+            records: list[dict[str, Any]] = []
+            file_summaries: list[dict[str, Any]] = []
+            warnings: list[str] = []
+            source_types: list[str] = []
+            confidences: list[float] = []
+            truncated = False
+            remaining_records = max_records
             try:
-                with destination.open("xb") as output:
-                    for chunk in self.iter_payload(owner_id, import_id):
-                        output.write(chunk)
-                    output.flush()
-                    os.fsync(output.fileno())
-                try:
-                    result = self.parsers.parse(
-                        destination,
-                        {
-                            "source_name": source_name,
-                            "media_type": media_type,
-                            "record_id_namespace": job.id,
-                        },
-                        max_records=max_records,
+                for index, file_spec in enumerate(file_specs):
+                    destination = self.storage.object_path(
+                        "preview", f"{preview_id}-{index}", ".bin"
                     )
-                except ParserError as exc:
-                    raise UploadError(exc.code, str(exc)) from exc
-                records: list[dict[str, Any]] = []
-                for index, record in enumerate(result.records):
-                    record_id = record.record_id or _record_id(job.id, result.source_type, index)
-                    values = record.to_dict()
-                    correction = corrections.get(record_id)
-                    review_state = "needs_review"
-                    if correction is not None:
-                        values.update(correction["fields"])
-                        review_state = correction["review_state"]
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        remaining_bytes = int(file_spec["total_bytes"])
+                        with destination.open("xb") as output:
+                            while remaining_bytes:
+                                if not pending:
+                                    try:
+                                        pending = next(payload)
+                                    except StopIteration as exc:
+                                        raise UploadError(
+                                            "payload_corrupt",
+                                            "payload ended before the manifest file boundary",
+                                        ) from exc
+                                take = min(remaining_bytes, len(pending))
+                                output.write(pending[:take])
+                                pending = pending[take:]
+                                remaining_bytes -= take
+                            output.flush()
+                            os.fsync(output.fileno())
+
+                        namespace = job.id
+                        if multi_file:
+                            namespace = f"{job.id}:{file_spec['file_id']}"
+                        parse_limit = max(1, remaining_records)
                         try:
-                            values = NormalizedMessage.from_mapping(values).to_dict()
-                        except MessageValidationError as exc:
+                            result = self.parsers.parse(
+                                destination,
+                                {
+                                    "source_name": file_spec["source_name"],
+                                    "media_type": file_spec["media_type"],
+                                    "record_id_namespace": namespace,
+                                },
+                                max_records=parse_limit,
+                            )
+                        except ParserError as exc:
                             raise UploadError(
-                                "correction_corrupt",
-                                f"correction for record {record_id} is invalid",
+                                exc.code,
+                                f"{file_spec['source_name']}: {exc}",
                             ) from exc
-                    preview_record = _preview_record(values)
-                    preview_record["record_id"] = record_id
-                    preview_record["review_state"] = review_state
-                    preview_record["sender_role"] = participant_mapping.get(
-                        preview_record["sender_id"], "unknown"
+
+                        source_types.append(result.source_type)
+                        summary = dict(result.summary)
+                        returned_records = result.records
+                        if remaining_records <= 0:
+                            # Continue probing later files after the global limit is
+                            # reached, but never append records beyond that limit.
+                            returned_records = ()
+                            summary["record_count"] = 0
+                            summary["truncated"] = True
+                        file_warnings = list(result.warnings)
+                        warnings.extend(file_warnings)
+                        confidences.append(float(summary.get("confidence", 0.0)))
+                        truncated = truncated or bool(summary.get("truncated"))
+                        file_summaries.append(
+                            {
+                                **file_spec,
+                                "source_type": result.source_type,
+                                "summary": summary,
+                                "warnings": file_warnings,
+                            }
+                        )
+                        remaining_records -= len(returned_records)
+                        for record_index, record in enumerate(returned_records):
+                            record_id = record.record_id or _record_id(
+                                namespace, result.source_type, record_index
+                            )
+                            values = record.to_dict()
+                            correction = corrections.get(record_id)
+                            review_state = "needs_review"
+                            if correction is not None:
+                                values.update(correction["fields"])
+                                review_state = correction["review_state"]
+                                try:
+                                    values = NormalizedMessage.from_mapping(values).to_dict()
+                                except MessageValidationError as exc:
+                                    raise UploadError(
+                                        "correction_corrupt",
+                                        f"correction for record {record_id} is invalid",
+                                    ) from exc
+                            preview_record = _preview_record(values)
+                            preview_record["record_id"] = record_id
+                            preview_record["review_state"] = review_state
+                            preview_record["sender_role"] = participant_mapping.get(
+                                preview_record["sender_id"], "unknown"
+                            )
+                            if multi_file:
+                                preview_record["file_id"] = file_spec["file_id"]
+                                preview_record["source_name"] = file_spec["source_name"]
+                                preview_record["media_type"] = file_spec["media_type"]
+                                preview_record["source_type"] = result.source_type
+                            records.append(preview_record)
+                    finally:
+                        destination.unlink(missing_ok=True)
+
+                if pending or next(payload, None) is not None:
+                    raise UploadError(
+                        "payload_corrupt",
+                        "payload contains bytes outside the manifest file boundaries",
                     )
-                    records.append(preview_record)
+
+                unique_source_types = set(source_types)
+                source_type = next(iter(unique_source_types), "unknown")
+                if len(unique_source_types) > 1:
+                    source_type = "mixed"
+                if len(file_specs) == 1:
+                    summary = dict(file_summaries[0]["summary"])
+                else:
+                    summary = {
+                        "record_count": len(records),
+                        "warning_count": len(warnings),
+                        "unsupported_count": sum(
+                            int(item["summary"].get("unsupported_count", 0))
+                            for item in file_summaries
+                        ),
+                        "confidence": min(confidences) if confidences else 0.0,
+                        "truncated": truncated,
+                        "file_count": len(file_specs),
+                    }
                 return {
                     "import_id": job.id,
                     "state": job.state.value,
                     "source_name": source_name,
                     "media_type": media_type,
-                    "source_type": result.source_type,
-                    "summary": dict(result.summary),
-                    "warnings": list(result.warnings),
+                    "source_type": source_type,
+                    "summary": summary,
+                    "warnings": warnings,
                     "records": records,
+                    "file_summaries": file_summaries,
                 }
             finally:
-                destination.unlink(missing_ok=True)
+                pending = b""
 
     def save_corrections(
         self,

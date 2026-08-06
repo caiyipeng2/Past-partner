@@ -286,6 +286,104 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(1, limited["summary"]["record_count"])
         self.assertTrue(limited["summary"]["truncated"])
 
+    def test_import_preview_parses_ordered_multi_file_manifest(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        first = "[2026-08-05 21:00] 小雨: TXT消息\n".encode("utf-8")
+        second = (
+            '[{"sender_id":"me","sender_name":"我","content":"JSON消息",'
+            '"timestamp":"2026-08-05T21:01:00Z","message_type":"text"}]'
+        ).encode("utf-8")
+        combined = first + second
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "files": [
+                    {
+                        "file_id": "file-txt",
+                        "source_name": "chat.txt",
+                        "total_bytes": len(first),
+                        "media_type": "text/plain",
+                    },
+                    {
+                        "file_id": "file-json",
+                        "source_name": "chat.json",
+                        "total_bytes": len(second),
+                        "media_type": "application/json",
+                    },
+                ],
+            },
+        )
+        digest = hashlib.sha256(combined).hexdigest()
+        chunks = (
+            combined[:7],
+            combined[7 : len(first) + 4],
+            combined[len(first) + 4 :],
+        )
+        for index, chunk in enumerate(chunks):
+            status, _, _ = self.request(
+                "PUT",
+                f"/api/v1/imports/{job['id']}/chunks/{index}",
+                chunk,
+                {
+                    "Content-Length": str(len(chunk)),
+                    "X-Chunk-Sha256": hashlib.sha256(chunk).hexdigest(),
+                },
+            )
+            self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(200, status)
+        self.assertEqual("mixed", preview["source_type"])
+        self.assertEqual(2, preview["summary"]["file_count"])
+        self.assertEqual(2, preview["summary"]["record_count"])
+        self.assertEqual(
+            ["file-txt", "file-json"],
+            [record["file_id"] for record in preview["records"]],
+        )
+        self.assertEqual(["generic_text", "generic_json"], [
+            record["source_type"] for record in preview["records"]
+        ])
+        self.assertEqual(
+            hashlib.sha256(f"{job['id']}:file-txt:generic_text:0".encode()).hexdigest(),
+            preview["records"][0]["record_id"],
+        )
+        self.assertEqual(
+            hashlib.sha256(f"{job['id']}:file-json:generic_json:0".encode()).hexdigest(),
+            preview["records"][1]["record_id"],
+        )
+        self.assertEqual("TXT消息", preview["records"][0]["content"])
+        self.assertEqual("JSON消息", preview["records"][1]["content"])
+        self.assertEqual(2, len(preview["file_summaries"]))
+        self.assertFalse(list((self.data_root / "preview").glob("*")))
+
+        status, _, limited = self.request(
+            "GET", f"/api/v1/imports/{job['id']}/preview?limit=1"
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("mixed", limited["source_type"])
+        self.assertEqual(1, limited["summary"]["record_count"])
+        self.assertTrue(limited["summary"]["truncated"])
+        self.assertEqual(
+            ["generic_text", "generic_json"],
+            [item["source_type"] for item in limited["file_summaries"]],
+        )
+        self.assertEqual(2, len(limited["file_summaries"]))
+        self.assertFalse(list((self.data_root / "preview").glob("*")))
+
     def test_import_preview_requires_completed_upload(self) -> None:
         _, _, persona = self.request(
             "POST",

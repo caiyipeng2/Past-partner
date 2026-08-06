@@ -63,7 +63,7 @@
 
 ## 解析预览
 
-上传完成后，单文件导入可请求 `GET /api/v1/imports/{import_id}/preview?limit=20`。响应包括内容探测得到的 `source_type`、解析摘要和最多 20 条规范化消息；`limit` 可调整到不超过 100。未完成的导入返回 `preview_unavailable`，无法识别的内容返回 `unsupported_format`，不会伪装成空解析结果。
+上传完成后可请求 `GET /api/v1/imports/{import_id}/preview?limit=20`。单文件响应包括内容探测得到的 `source_type`、解析摘要和最多 20 条规范化消息；多文件会按清单顺序分别切分和解析，响应额外返回 `file_summaries`，每条记录带有 `file_id`、`source_name`、`media_type` 和文件级 `source_type`。`limit` 是整个导入任务的总记录上限，不超过 100。未完成的导入返回 `preview_unavailable`，无法识别的内容返回 `unsupported_format`，不会伪装成空解析结果。
 
 ## 参与者映射
 

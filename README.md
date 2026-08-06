@@ -89,7 +89,7 @@ python -m unittest discover -s tests -p "test*.py" -v
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 错误响应统一返回稳定 `error.code` 和 UUID 格式的 `error.diagnostic_id`；诊断 ID 同时写入服务端日志，便于在不暴露内部异常细节的情况下定位请求。
-已完成的单文件导入可通过 `GET /api/v1/imports/{import_id}/preview?limit=20` 查看解析摘要和有限条规范化消息；`limit` 最大为 100。
+已完成的导入可通过 `GET /api/v1/imports/{import_id}/preview?limit=20` 查看解析摘要和有限条规范化消息；多文件导入按清单顺序逐文件解析，并在记录中返回文件来源；`limit` 最大为 100。
 已完成的导入可通过 `POST /api/v1/imports/{import_id}/participant-mapping` 保存参与者角色映射，再通过同路径 `GET` 回读；角色仅支持 `persona`、`user`、`other` 和 `unknown`，映射内容随导入清单加密保存。
 预览记录会带有稳定 `record_id` 和 `review_state`；可通过 `POST /api/v1/imports/{import_id}/corrections` 提交字段修正及 `accepted`、`needs_review` 或 `rejected` 状态，修正同样写入加密导入清单并在后续预览中回显。
 可通过 `DELETE /api/v1/imports/{import_id}` 删除单个导入及其加密分片、合并对象和清单；该操作按当前 owner 校验，删除后导入接口返回 404。
@@ -97,7 +97,7 @@ python -m unittest discover -s tests -p "test*.py" -v
 可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化人物、导入任务和加密清单元数据；原始导入载荷、第三方供应商数据和审计记录会在导出范围中明确标记为未包含。
 可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 启用启动时保留期清理；正数表示清理当前 owner 名下更新时间早于阈值且状态为 `failed` 或 `cancelled` 的导入及其加密对象，默认 `0` 关闭。由于当前尚未记录成功标准化事件，`uploaded`、`processing` 和 `completed` 导入不会被该策略自动删除。
 
-P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准化消息现在包含服务端稳定 `record_id`，并在解析阶段生成后供预览、修正和后续持久化复用；P0-20 的 TXT 解析支持常见时间/发送者格式、多行消息、UTF-8/UTF-16 编码和无时间发送者行；P0-21 的 JSON/JSONL 解析统一支持 UTF-8/UTF-16 编码并保持 JSONL 流式读取。微信/QQ 专用数据库和媒体解析仍按后续解析器任务接入。
+P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准化消息现在包含服务端稳定 `record_id`，并在解析阶段生成后供预览、修正和后续持久化复用；P0-20 的 TXT 解析支持常见时间/发送者格式、多行消息、UTF-8/UTF-16 编码和无时间发送者行；P0-21 的 JSON/JSONL 解析统一支持 UTF-8/UTF-16 编码并保持 JSONL 流式读取；P0-22 的导入预览按多文件清单边界逐文件解析并聚合有限记录。微信/QQ 专用数据库和媒体解析仍按后续解析器任务接入。
 
 服务启动时会在 `<data-dir>/database/past-partner.sqlite3` 创建本地 SQLite 数据库，并在同一事务中执行尚未应用的版本化迁移。已执行版本记录在 `schema_migrations` 表中，重复启动不会重复应用；迁移历史不一致或迁移失败时，服务会停止启动而不是继续使用不确定的结构。
 
