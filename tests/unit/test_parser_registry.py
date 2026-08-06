@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,38 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("小雨", result.records[0].sender_id)
         self.assertEqual("你好", result.records[0].content)
         self.assertEqual("text", result.records[1].message_type)
+
+    def test_assigns_stable_record_ids_during_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.data"
+            path.write_text(
+                "[2026-08-05 21:00] 小雨: 你好\n[2026-08-05 21:01] 我: 在吗\n",
+                encoding="utf-8",
+            )
+
+            first = self.registry.parse(
+                path,
+                {"record_id_namespace": "import-123", "source_name": "chat.data"},
+            )
+            second = self.registry.parse(
+                path,
+                {"record_id_namespace": "import-123", "source_name": "chat.data"},
+            )
+            other_import = self.registry.parse(
+                path,
+                {"record_id_namespace": "import-456", "source_name": "chat.data"},
+            )
+
+        first_ids = [record.record_id for record in first.records]
+        second_ids = [record.record_id for record in second.records]
+        other_ids = [record.record_id for record in other_import.records]
+        self.assertEqual(first_ids, second_ids)
+        self.assertNotEqual(first_ids, other_ids)
+        self.assertEqual(
+            hashlib.sha256(b"import-123:generic_text:0").hexdigest(),
+            first_ids[0],
+        )
+        self.assertEqual(first_ids[0], first.records[0].to_dict()["record_id"])
 
     def test_supports_jsonl_as_a_streaming_format(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

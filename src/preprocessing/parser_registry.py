@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from itertools import islice
 from pathlib import Path
@@ -145,6 +146,7 @@ class ParserRegistry:
             raise
         except MessageValidationError as exc:
             raise ParserError("invalid_record", str(exc)) from exc
+        records = _assign_record_ids(records, source, parser.source_type)
         if not records:
             raise ParserError("empty_source", "parser produced no records")
         warnings: tuple[str, ...] = ()
@@ -336,3 +338,27 @@ def _looks_like_message(value: Mapping[str, Any]) -> bool:
     content_keys = {"content", "message"}
     timestamp_keys = {"timestamp", "time"}
     return bool(sender_keys.intersection(value) and content_keys.intersection(value) and timestamp_keys.intersection(value))
+
+
+def _assign_record_ids(
+    records: Sequence[NormalizedMessage],
+    source: ParserSource,
+    source_type: str,
+) -> tuple[NormalizedMessage, ...]:
+    """Attach server-stable IDs before parsed records reach preview or storage."""
+    namespace = source.metadata.get("record_id_namespace")
+    if not isinstance(namespace, str) or not namespace.strip():
+        namespace = source.metadata.get("source_name")
+    if not isinstance(namespace, str) or not namespace.strip():
+        namespace = source.path.name
+    namespace = namespace.strip()
+
+    normalized: list[NormalizedMessage] = []
+    for index, record in enumerate(records):
+        record_id = _stable_record_id(namespace, source_type, index)
+        normalized.append(record.with_record_id(record_id))
+    return tuple(normalized)
+
+
+def _stable_record_id(namespace: str, source_type: str, index: int) -> str:
+    return hashlib.sha256(f"{namespace}:{source_type}:{index}".encode("utf-8")).hexdigest()

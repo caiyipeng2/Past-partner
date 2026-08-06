@@ -446,14 +446,18 @@ class UploadService:
                 try:
                     result = self.parsers.parse(
                         destination,
-                        {"source_name": source_name, "media_type": media_type},
+                        {
+                            "source_name": source_name,
+                            "media_type": media_type,
+                            "record_id_namespace": job.id,
+                        },
                         max_records=max_records,
                     )
                 except ParserError as exc:
                     raise UploadError(exc.code, str(exc)) from exc
                 records: list[dict[str, Any]] = []
                 for index, record in enumerate(result.records):
-                    record_id = _record_id(job.id, result.source_type, index)
+                    record_id = record.record_id or _record_id(job.id, result.source_type, index)
                     values = record.to_dict()
                     correction = corrections.get(record_id)
                     review_state = "needs_review"

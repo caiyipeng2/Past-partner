@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 
 class MessageValidationError(ValueError):
     """Raised when an imported message cannot be normalized safely."""
+
+
+_RECORD_ID = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +22,7 @@ class NormalizedMessage:
     timestamp: str
     message_type: str
     attachments: tuple[dict[str, Any], ...]
+    record_id: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "NormalizedMessage":
@@ -46,6 +51,8 @@ class NormalizedMessage:
                 raise MessageValidationError("each attachment must be an object")
             attachments.append(dict(attachment))
 
+        record_id = _optional_record_id(value.get("record_id"))
+
         if not content and not attachments:
             raise MessageValidationError("message content or attachments are required")
 
@@ -56,10 +63,25 @@ class NormalizedMessage:
             timestamp=timestamp,
             message_type=message_type,
             attachments=tuple(attachments),
+            record_id=record_id,
+        )
+
+    def with_record_id(self, record_id: str) -> "NormalizedMessage":
+        normalized = _optional_record_id(record_id)
+        if normalized is None:
+            raise MessageValidationError("record_id must be a 64-character hexadecimal ID")
+        return NormalizedMessage(
+            sender_id=self.sender_id,
+            sender_name=self.sender_name,
+            content=self.content,
+            timestamp=self.timestamp,
+            message_type=self.message_type,
+            attachments=self.attachments,
+            record_id=normalized,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "sender_id": self.sender_id,
             "sender_name": self.sender_name,
             "content": self.content,
@@ -67,6 +89,9 @@ class NormalizedMessage:
             "message_type": self.message_type,
             "attachments": [dict(item) for item in self.attachments],
         }
+        if self.record_id is not None:
+            result["record_id"] = self.record_id
+        return result
 
 
 def _first_text(value: Mapping[str, Any], *keys: str) -> str:
@@ -82,3 +107,11 @@ def _optional_text(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _optional_record_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _RECORD_ID.fullmatch(value):
+        raise MessageValidationError("record_id must be a 64-character hexadecimal ID")
+    return value.lower()

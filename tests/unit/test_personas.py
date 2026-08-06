@@ -175,6 +175,20 @@ class PersonaTests(unittest.TestCase):
         self.assertEqual("image", message.message_type)
         self.assertEqual("photo.jpg", message.attachments[0]["name"])
 
+    def test_preserves_an_explicit_stable_record_id(self) -> None:
+        record_id = "a" * 64
+        message = NormalizedMessage.from_mapping(
+            {
+                "record_id": record_id,
+                "sender_id": "wxid_123",
+                "content": "带稳定 ID",
+                "timestamp": "2026-07-30T20:00:00+08:00",
+            }
+        )
+
+        self.assertEqual(record_id, message.record_id)
+        self.assertEqual(record_id, message.to_dict()["record_id"])
+
 
 if __name__ == "__main__":
     unittest.main()
