@@ -13,7 +13,12 @@ from typing import Any, Iterator, Mapping, Protocol, Sequence
 from src.domain.messages import MessageValidationError, NormalizedMessage
 
 
-_TEXT_LINE = re.compile(r"^\[(?P<timestamp>[^\]]+)\]\s*(?P<sender>[^:]+):\s*(?P<content>.*)$")
+_TIMESTAMP = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?"
+_TEXT_LINE = re.compile(
+    rf"^(?:\[(?P<bracket_timestamp>[^\]]+)\]|(?P<bare_timestamp>{_TIMESTAMP}))"
+    r"\s*(?:[-|]\s*)?(?P<sender>[^:：]{1,128})\s*[:：]\s*(?P<content>.*)$"
+)
+_SENDER_LINE = re.compile(r"^(?P<sender>[^:：]{1,128})\s*[:：]\s*(?P<content>.+)$")
 _PROBE_BYTES = 64 * 1024
 
 
@@ -194,9 +199,13 @@ class GenericTextParser(_BaseParser):
         non_empty = [line for line in sample.splitlines() if line.strip()]
         if not non_empty:
             return ParserProbe(self.source_type, 0.0, False, "source is empty")
-        matched = sum(1 for line in non_empty if _TEXT_LINE.match(line.strip()))
+        matched = sum(
+            1
+            for line in non_empty
+            if _TEXT_LINE.match(line.strip()) or _SENDER_LINE.match(line.strip())
+        )
         confidence = 0.92 if matched else 0.55
-        return ParserProbe(self.source_type, confidence, True, "UTF-8 text source")
+        return ParserProbe(self.source_type, confidence, True, "supported text source")
 
     def validate(self, source: ParserSource) -> ParserValidation:
         probe = self.probe(source)
@@ -205,32 +214,55 @@ class GenericTextParser(_BaseParser):
         return ParserValidation(True)
 
     def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
-        with source.path.open("r", encoding="utf-8-sig") as handle:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+
+        pending: dict[str, str] | None = None
+        with source.path.open("r", encoding=encoding) as handle:
             for line_number, raw_line in enumerate(handle, 1):
-                line = raw_line.strip()
-                if not line:
+                line = raw_line.rstrip("\r\n")
+                if not line.strip():
                     continue
-                match = _TEXT_LINE.match(line)
+                stripped = line.strip()
+                match = _TEXT_LINE.match(stripped)
+                sender_match = _SENDER_LINE.match(stripped) if match is None else None
                 if match:
-                    values = {
-                        "sender_id": match.group("sender").strip(),
-                        "sender_name": match.group("sender").strip(),
+                    if pending is not None:
+                        yield _text_record(pending)
+                    timestamp = match.group("bracket_timestamp") or match.group("bare_timestamp")
+                    pending = {
+                        "sender_id": match.group("sender").strip().lstrip("-| ").strip(),
+                        "sender_name": match.group("sender").strip().lstrip("-| ").strip(),
                         "content": match.group("content").strip(),
-                        "timestamp": match.group("timestamp").strip(),
+                        "timestamp": timestamp.strip(),
                         "message_type": "text",
                     }
-                else:
+                elif sender_match:
+                    if pending is not None:
+                        yield _text_record(pending)
                     values = {
-                        "sender_id": "unknown",
-                        "sender_name": "unknown",
-                        "content": line,
+                        "sender_id": sender_match.group("sender").strip(),
+                        "sender_name": sender_match.group("sender").strip(),
+                        "content": sender_match.group("content").strip(),
                         "timestamp": f"line:{line_number}",
                         "message_type": "text",
                     }
-                try:
-                    yield NormalizedMessage.from_mapping(values)
-                except MessageValidationError as exc:
-                    raise ParserError("invalid_record", f"line {line_number}: {exc}") from exc
+                    pending = values
+                elif pending is not None:
+                    continuation = stripped
+                    if continuation:
+                        pending["content"] += f"\n{continuation}"
+                else:
+                    pending = {
+                        "sender_id": "unknown",
+                        "sender_name": "unknown",
+                        "content": stripped,
+                        "timestamp": f"line:{line_number}",
+                        "message_type": "text",
+                    }
+            if pending is not None:
+                yield _text_record(pending)
 
 
 class GenericJsonParser(_BaseParser):
@@ -311,9 +343,38 @@ class GenericJsonLinesParser(_BaseParser):
 def _read_text_sample(path: Path) -> str | None:
     try:
         with path.open("rb") as handle:
-            return handle.read(_PROBE_BYTES).decode("utf-8-sig")
-    except (OSError, UnicodeDecodeError):
+            return _decode_text(handle.read(_PROBE_BYTES))[1]
+    except OSError:
         return None
+
+
+def _detect_text_encoding(path: Path) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(_PROBE_BYTES)
+    except OSError:
+        return None
+    return _decode_text(raw)[0]
+
+
+def _decode_text(raw: bytes) -> tuple[str | None, str | None]:
+    encodings = ("utf-8-sig", "utf-16", "utf-32", "gb18030")
+    for encoding in encodings:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" in text:
+            continue
+        return encoding, text
+    return None, None
+
+
+def _text_record(values: Mapping[str, str]) -> NormalizedMessage:
+    try:
+        return NormalizedMessage.from_mapping(values)
+    except MessageValidationError as exc:
+        raise ParserError("invalid_record", str(exc)) from exc
 
 
 def _load_json(path: Path) -> Any:

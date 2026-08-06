@@ -55,6 +55,50 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("你好", result.records[0].content)
         self.assertEqual("text", result.records[1].message_type)
 
+    def test_parses_common_txt_timestamp_variants_and_multiline_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.txt"
+            path.write_text(
+                "2026-08-05 21:00:00 小雨: 第一行\n"
+                "继续内容\n"
+                "[2026/08/05 21:01] 我：第二条\n",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_text", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("小雨", result.records[0].sender_id)
+        self.assertEqual("第一行\n继续内容", result.records[0].content)
+        self.assertEqual("2026-08-05 21:00:00", result.records[0].timestamp)
+        self.assertEqual("我", result.records[1].sender_id)
+        self.assertEqual("第二条", result.records[1].content)
+
+    def test_decodes_utf16_txt_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.txt"
+            path.write_text(
+                "[2026-08-05 21:00] 小雨: UTF-16 消息\n",
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual(1, len(result.records))
+        self.assertEqual("UTF-16 消息", result.records[0].content)
+
+    def test_parses_sender_only_txt_lines_with_line_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.txt"
+            path.write_text("小雨：没有时间也要保留发送者\n", encoding="utf-8")
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("小雨", result.records[0].sender_id)
+        self.assertEqual("没有时间也要保留发送者", result.records[0].content)
+        self.assertEqual("line:1", result.records[0].timestamp)
+
     def test_assigns_stable_record_ids_during_normalization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.data"
