@@ -21,6 +21,7 @@ from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
+from src.services.retention_service import RetentionService
 from src.services.storage import StorageLayout
 from src.services.upload_service import UploadService
 
@@ -78,6 +79,7 @@ class Application:
         uploads = UploadService(
             storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
         )
+        RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)
         catalog = ProviderCatalog.default()
         adapters = build_openai_compatible_adapters(catalog)
         if config.mode == "test":

@@ -227,6 +227,9 @@ class ImportService:
     def list(self, owner_id: str | None = None) -> list[ImportJob]:
         return self.repository.list(owner_id)
 
+    def list_expired_terminal(self, owner_id: str, cutoff: datetime) -> list[ImportJob]:
+        return self.repository.list_expired_terminal(owner_id, cutoff)
+
     def list_for_persona(self, owner_id: str, persona_id: str) -> list[ImportJob]:
         return self.repository.list_for_persona(owner_id, persona_id)
 

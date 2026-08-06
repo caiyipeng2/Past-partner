@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -123,11 +124,14 @@ class ImportRepository:
         owner_id = self._owner_id(owner_id)
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                f"SELECT id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
+                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
                 self._owner_params(owner_id),
             ).fetchall()
-        jobs = [self._decode_job(row[0], row[1], row[2]) for row in rows]
-        return sorted(jobs, key=lambda item: (item.created_at, item.id))
+        jobs = [(row[0], self._decode_job(row[1], row[2], row[3])) for row in rows]
+        return [
+            job
+            for _, job in sorted(jobs, key=lambda item: (item[1].created_at, item[0]))
+        ]
 
     def list_for_persona(self, owner_id: str, persona_id: str) -> list[Any]:
         owner_id = self._owner_id(owner_id)
@@ -135,16 +139,37 @@ class ImportRepository:
             return []
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                f"SELECT id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
+                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
                 self._owner_params(owner_id),
             ).fetchall()
         jobs = [
-            job
+            (row[0], job)
             for row in rows
-            for job in [self._decode_job(row[0], row[1], row[2])]
+            for job in [self._decode_job(row[1], row[2], row[3])]
             if job.persona_id == persona_id
         ]
-        return sorted(jobs, key=lambda item: (item.created_at, item.id))
+        return [
+            job
+            for _, job in sorted(jobs, key=lambda item: (item[1].created_at, item[0]))
+        ]
+
+    def list_expired_terminal(self, owner_id: str, cutoff: datetime) -> list[Any]:
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("cutoff must be timezone-aware")
+        cutoff_utc = cutoff.astimezone(UTC)
+        expired = []
+        for job in self.list(owner_id):
+            if getattr(job.state, "value", None) not in {"failed", "cancelled"}:
+                continue
+            try:
+                updated_at = datetime.fromisoformat(job.updated_at.replace("Z", "+00:00"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if updated_at.tzinfo is None or updated_at.utcoffset() is None:
+                continue
+            if updated_at.astimezone(UTC) < cutoff_utc:
+                expired.append(job)
+        return expired
 
     def delete(self, owner_id: str, import_id: str | None = None) -> bool:
         if import_id is None:

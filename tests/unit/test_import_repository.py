@@ -204,6 +204,39 @@ class ImportRepositoryTests(unittest.TestCase):
         self.assertEqual([self.job, other_job], self.repository.list(self.auth.owner_id))
         self.assertEqual([], self.repository.list("other-owner"))
 
+    def test_lists_only_expired_terminal_imports_for_an_owner(self) -> None:
+        now = datetime.now(UTC)
+        cutoff = now.replace(microsecond=0)
+        old = replace(
+            self.job,
+            state=ImportState.CANCELLED,
+            updated_at=(cutoff.replace(year=cutoff.year - 1)).isoformat(),
+        )
+        failed = replace(
+            self.job,
+            id=str(uuid4()),
+            state=ImportState.FAILED,
+            updated_at=(cutoff.replace(year=cutoff.year - 1)).isoformat(),
+        )
+        active = replace(
+            self.job,
+            id=str(uuid4()),
+            state=ImportState.UPLOADING,
+            updated_at=(cutoff.replace(year=cutoff.year - 1)).isoformat(),
+        )
+        newer_cancelled = replace(
+            self.job,
+            id=str(uuid4()),
+            state=ImportState.CANCELLED,
+            updated_at=(cutoff.replace(year=cutoff.year + 1)).isoformat(),
+        )
+        for job in (old, failed, active, newer_cancelled):
+            self.repository.create(self.auth.owner_id, job)
+
+        expired = self.repository.list_expired_terminal(self.auth.owner_id, cutoff)
+
+        self.assertEqual([old.id, failed.id], [job.id for job in expired])
+
 
 if __name__ == "__main__":
     unittest.main()

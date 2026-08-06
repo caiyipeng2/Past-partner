@@ -94,6 +94,7 @@ python -m unittest discover -s tests -p "test*.py" -v
 可通过 `DELETE /api/v1/imports/{import_id}` 删除单个导入及其加密分片、合并对象和清单；该操作按当前 owner 校验，删除后导入接口返回 404。
 可通过 `DELETE /api/v1/personas/{persona_id}` 删除人物及其 owner 名下的全部导入任务、加密分片、合并对象和清单；删除后人物和关联导入接口返回 404。
 可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化人物、导入任务和加密清单元数据；原始导入载荷、第三方供应商数据和审计记录会在导出范围中明确标记为未包含。
+可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 启用启动时保留期清理；正数表示清理当前 owner 名下更新时间早于阈值且状态为 `failed` 或 `cancelled` 的导入及其加密对象，默认 `0` 关闭。由于当前尚未记录成功标准化事件，`uploaded`、`processing` 和 `completed` 导入不会被该策略自动删除。
 
 P0-18 已加入基于内容探测的通用解析器注册表，可将 TXT、JSON 和 JSONL 聊天记录标准化为统一消息结构；P0-19 已接入单文件导入预览，微信/QQ 专用数据库和媒体解析仍按后续解析器任务接入。
 

@@ -9,6 +9,8 @@ from pathlib import Path
 from src.services.import_service import DEFAULT_MAX_IMPORT_BYTES
 from src.services.upload_service import DEFAULT_CHUNK_BYTES
 
+MAX_RAW_RETENTION_SECONDS = 5 * 365 * 24 * 60 * 60
+
 
 @dataclass(frozen=True, slots=True)
 class ServerConfig:
@@ -27,6 +29,7 @@ class ServerConfig:
     max_json_bytes: int = 1024 * 1024
     max_chunk_bytes: int = DEFAULT_CHUNK_BYTES
     max_import_bytes: int = DEFAULT_MAX_IMPORT_BYTES
+    raw_retention_seconds: int = 0
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -43,6 +46,9 @@ class ServerConfig:
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
             max_chunk_bytes=_int_env("PAST_PARTNER_MAX_CHUNK_BYTES", default.max_chunk_bytes),
             max_import_bytes=_int_env("PAST_PARTNER_MAX_IMPORT_BYTES", default.max_import_bytes),
+            raw_retention_seconds=_int_env(
+                "PAST_PARTNER_RAW_RETENTION_SECONDS", default.raw_retention_seconds
+            ),
         ).validated()
 
     def validated(self) -> "ServerConfig":
@@ -52,6 +58,8 @@ class ServerConfig:
             raise ValueError("mode must be development, test, or production")
         if min(self.max_json_bytes, self.max_chunk_bytes, self.max_import_bytes) <= 0:
             raise ValueError("request and import limits must be positive")
+        if not 0 <= self.raw_retention_seconds <= MAX_RAW_RETENTION_SECONDS:
+            raise ValueError("raw retention must be between 0 and five years")
         return replace(
             self,
             data_dir=self.data_dir.expanduser().resolve(),
