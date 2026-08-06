@@ -326,7 +326,10 @@ class GenericJsonLinesParser(_BaseParser):
         return ParserValidation(True)
 
     def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
-        with source.path.open("r", encoding="utf-8-sig") as handle:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+        with source.path.open("r", encoding=encoding) as handle:
             for line_number, raw_line in enumerate(handle, 1):
                 line = raw_line.strip()
                 if not line:
@@ -378,7 +381,10 @@ def _text_record(values: Mapping[str, str]) -> NormalizedMessage:
 
 
 def _load_json(path: Path) -> Any:
-    with path.open("r", encoding="utf-8-sig") as handle:
+    encoding = _detect_text_encoding(path)
+    if encoding is None:
+        raise ParserError("unsupported_format", "source is not a supported text encoding")
+    with path.open("r", encoding=encoding) as handle:
         return json.load(handle)
 
 

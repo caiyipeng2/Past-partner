@@ -162,6 +162,51 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("generic_jsonl", result.source_type)
         self.assertEqual(["收到", "好的"], [record.content for record in result.records])
 
+    def test_decodes_utf16_json_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "messages": [
+                            {
+                                "sender_id": "wxid_1",
+                                "content": "UTF-16 JSON",
+                                "timestamp": "2026-08-05T21:00:00+08:00",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_json", result.source_type)
+        self.assertEqual("UTF-16 JSON", result.records[0].content)
+
+    def test_decodes_utf16_jsonl_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sender_id": "qq_1",
+                        "content": "UTF-16 JSONL",
+                        "timestamp": "2026-08-05T21:00:00+08:00",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_jsonl", result.source_type)
+        self.assertEqual("UTF-16 JSONL", result.records[0].content)
+
     def test_unsupported_content_returns_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "export.bin"
