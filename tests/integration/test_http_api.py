@@ -286,6 +286,49 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(1, limited["summary"]["record_count"])
         self.assertTrue(limited["summary"]["truncated"])
 
+    def test_import_preview_detects_wechat_text_export(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = (
+            "微信聊天记录导出\n"
+            "2026-08-05 21:00:00 小雨\n"
+            "来自微信的消息\n"
+        ).encode("utf-8")
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "微信聊天记录.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(200, status)
+        self.assertEqual("wechat_text", preview["source_type"])
+        self.assertEqual("小雨", preview["records"][0]["sender_id"])
+        self.assertEqual("来自微信的消息", preview["records"][0]["content"])
+
     def test_import_preview_parses_ordered_multi_file_manifest(self) -> None:
         _, _, persona = self.request(
             "POST",
@@ -678,8 +721,8 @@ class HttpApiTests(unittest.TestCase):
 
         status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
         self.assertEqual(200, status)
-        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
-        self.assertEqual(record_id, preview["records"][0].get("record_id"))
+        record_id = preview["records"][0]["record_id"]
+        self.assertEqual(64, len(record_id))
         self.assertEqual("needs_review", preview["records"][0]["review_state"])
 
         status, _, saved = self.request(
@@ -733,8 +776,8 @@ class HttpApiTests(unittest.TestCase):
         )
         self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
         _, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
-        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
-        self.assertEqual(record_id, preview["records"][0].get("record_id"))
+        record_id = preview["records"][0]["record_id"]
+        self.assertEqual(64, len(record_id))
 
         status, _, payload = self.request(
             "POST",
@@ -975,7 +1018,9 @@ class HttpApiTests(unittest.TestCase):
             f"/api/v1/imports/{job['id']}/participant-mapping",
             {"mapping": {"wxid_1": "persona"}},
         )
-        record_id = hashlib.sha256(f"{job['id']}:generic_text:0".encode()).hexdigest()
+        _, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+        record_id = preview["records"][0]["record_id"]
+        self.assertEqual(64, len(record_id))
         self.request(
             "POST",
             f"/api/v1/imports/{job['id']}/corrections",

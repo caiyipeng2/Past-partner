@@ -75,6 +75,70 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("我", result.records[1].sender_id)
         self.assertEqual("第二条", result.records[1].content)
 
+    def test_parses_wechat_text_export_with_timestamp_sender_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "微信聊天记录.txt"
+            path.write_text(
+                "微信聊天记录导出\n"
+                "2026-08-05 21:00:00 小雨\n"
+                "第一条消息\n"
+                "第二行\n"
+                "2026-08-05 21:01:00 我: 回复消息\n",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("wechat_text", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("小雨", result.records[0].sender_id)
+        self.assertEqual("第一条消息\n第二行", result.records[0].content)
+        self.assertEqual("2026-08-05 21:00:00", result.records[0].timestamp)
+        self.assertEqual("我", result.records[1].sender_id)
+        self.assertEqual("回复消息", result.records[1].content)
+
+    def test_parses_wechat_html_export_with_nested_content_and_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wechat-export.html"
+            path.write_text(
+                "<!doctype html><html data-platform=\"wechat\"><body>"
+                '<div class="message" data-sender-id="wxid_1" '
+                'data-sender-name="小雨" data-timestamp="2026-08-05T21:00:00+08:00">'
+                '<span class="content">你好 &amp; 晚安</span></div>'
+                '<div class="message">'
+                '<time datetime="2026-08-05T21:01:00+08:00">21:01</time>'
+                '<span class="sender">我</span>'
+                '<div class="message-content"><b>收到</b> 了</div>'
+                "</div></body></html>",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("wechat_html", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("wxid_1", result.records[0].sender_id)
+        self.assertEqual("小雨", result.records[0].sender_name)
+        self.assertEqual("你好 & 晚安", result.records[0].content)
+        self.assertEqual("2026-08-05T21:00:00+08:00", result.records[0].timestamp)
+        self.assertEqual("我", result.records[1].sender_id)
+        self.assertEqual("收到 了", result.records[1].content)
+
+    def test_decodes_utf16_wechat_html_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "微信聊天.html"
+            path.write_text(
+                '<html data-platform="wechat"><div class="message" '
+                'data-sender="wxid_1" data-time="2026-08-05 21:00">'
+                '<span class="text">UTF-16 微信消息</span></div></html>',
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("wechat_html", result.source_type)
+        self.assertEqual("UTF-16 微信消息", result.records[0].content)
+
     def test_decodes_utf16_txt_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.txt"

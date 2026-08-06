@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from html.parser import HTMLParser
 import json
 from itertools import islice
 from pathlib import Path
@@ -19,6 +20,10 @@ _TEXT_LINE = re.compile(
     r"\s*(?:[-|]\s*)?(?P<sender>[^:：]{1,128})\s*[:：]\s*(?P<content>.*)$"
 )
 _SENDER_LINE = re.compile(r"^(?P<sender>[^:：]{1,128})\s*[:：]\s*(?P<content>.+)$")
+_WECHAT_TEXT_LINE = re.compile(
+    rf"^(?P<timestamp>{_TIMESTAMP})\s+(?P<sender>[^:：]{{1,128}})"
+    r"(?:\s*[:：]\s*(?P<content>.*))?$"
+)
 _PROBE_BYTES = 64 * 1024
 
 
@@ -90,7 +95,15 @@ class ParserRegistry:
 
     @classmethod
     def with_builtins(cls) -> "ParserRegistry":
-        return cls((GenericJsonParser(), GenericJsonLinesParser(), GenericTextParser()))
+        return cls(
+            (
+                GenericJsonParser(),
+                GenericJsonLinesParser(),
+                WeChatHtmlParser(),
+                WeChatTextParser(),
+                GenericTextParser(),
+            )
+        )
 
     def register(self, parser: ParserPlugin) -> None:
         if not parser.source_type.strip():
@@ -265,6 +278,307 @@ class GenericTextParser(_BaseParser):
                 yield _text_record(pending)
 
 
+class WeChatTextParser(GenericTextParser):
+    """Parse common WeChat text exports with timestamped sender blocks."""
+
+    source_type = "wechat_text"
+
+    def probe(self, source: ParserSource) -> ParserProbe:
+        sample = _read_text_sample(source.path)
+        if sample is None or "\x00" in sample:
+            return ParserProbe(self.source_type, 0.0, False, "source is not valid text")
+        if _looks_like_json_sample(sample):
+            return ParserProbe(self.source_type, 0.0, False, "source is JSON")
+        lines = [line.strip() for line in sample.splitlines() if line.strip()]
+        matched = sum(
+            1
+            for line in lines
+            if _WECHAT_TEXT_LINE.match(line) or _TEXT_LINE.match(line)
+        )
+        explicit = source.metadata.get("source_type") == self.source_type
+        if not matched and not explicit:
+            return ParserProbe(self.source_type, 0.0, False, "no timestamped WeChat messages found")
+        marker = _wechat_marker(source, sample)
+        if not marker and not explicit:
+            return ParserProbe(self.source_type, 0.0, False, "source has no WeChat signature")
+        confidence = 0.99 if explicit or marker == "explicit" else 0.96
+        return ParserProbe(self.source_type, confidence, True, "WeChat text export recognized")
+
+    def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+
+        pending: dict[str, str] | None = None
+        with source.path.open("r", encoding=encoding) as handle:
+            for line_number, raw_line in enumerate(handle, 1):
+                line = raw_line.rstrip("\r\n")
+                if not line.strip():
+                    continue
+                stripped = line.strip()
+                wechat_match = _WECHAT_TEXT_LINE.match(stripped)
+                generic_match = _TEXT_LINE.match(stripped)
+                sender_match = (
+                    _SENDER_LINE.match(stripped)
+                    if wechat_match is None and generic_match is None
+                    else None
+                )
+                if wechat_match or generic_match:
+                    if pending is not None:
+                        yield _text_record(pending)
+                    if wechat_match:
+                        timestamp = wechat_match.group("timestamp")
+                        sender = wechat_match.group("sender").strip().lstrip("-| ").strip()
+                        content = wechat_match.group("content") or ""
+                    else:
+                        timestamp = generic_match.group("bracket_timestamp") or generic_match.group(
+                            "bare_timestamp"
+                        )
+                        sender = generic_match.group("sender").strip().lstrip("-| ").strip()
+                        content = generic_match.group("content")
+                    pending = {
+                        "sender_id": sender,
+                        "sender_name": sender,
+                        "content": content.strip(),
+                        "timestamp": timestamp.strip(),
+                        "message_type": "text",
+                    }
+                elif sender_match:
+                    if pending is not None:
+                        yield _text_record(pending)
+                    sender = sender_match.group("sender").strip()
+                    pending = {
+                        "sender_id": sender,
+                        "sender_name": sender,
+                        "content": sender_match.group("content").strip(),
+                        "timestamp": f"line:{line_number}",
+                        "message_type": "text",
+                    }
+                elif pending is not None:
+                    pending["content"] += f"\n{stripped}"
+                elif not _is_wechat_header(stripped):
+                    pending = {
+                        "sender_id": "unknown",
+                        "sender_name": "unknown",
+                        "content": stripped,
+                        "timestamp": f"line:{line_number}",
+                        "message_type": "text",
+                    }
+            if pending is not None:
+                yield _text_record(pending)
+
+
+@dataclass(slots=True)
+class _HtmlMessageContext:
+    tag: str
+    depth: int
+    sender_id: str | None = None
+    sender_name: str | None = None
+    timestamp: str | None = None
+    message_type: str = "text"
+    content_parts: list[str] | None = None
+    active_fields: list[tuple[str, int]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.content_parts is None:
+            self.content_parts = []
+        if self.active_fields is None:
+            self.active_fields = []
+
+
+class _WeChatHTMLDocumentParser(HTMLParser):
+    _FIELD_NAMES = {
+        "sender": "sender",
+        "sender-id": "sender",
+        "sender_name": "sender",
+        "sender-name": "sender",
+        "nickname": "sender",
+        "name": "sender",
+        "from": "sender",
+        "time": "timestamp",
+        "timestamp": "timestamp",
+        "date": "timestamp",
+        "content": "content",
+        "message-content": "content",
+        "text": "content",
+        "message-text": "content",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.contexts: list[_HtmlMessageContext] = []
+        self.records: list[NormalizedMessage] = []
+        self._ignored_depths: list[int] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.depth += 1
+        normalized = {key.lower(): value or "" for key, value in attrs}
+        if tag.lower() in {"script", "style", "template"}:
+            self._ignored_depths.append(self.depth)
+            return
+        if self._ignored_depths:
+            return
+        if tag.lower() == "br" and self.contexts:
+            self.contexts[-1].content_parts.append("\n")
+            return
+        if self._is_message_container(normalized):
+            context = _HtmlMessageContext(tag.lower(), self.depth)
+            context.sender_id = _first_attr(normalized, "data-sender-id", "data-sender", "data-from")
+            context.sender_name = _first_attr(
+                normalized,
+                "data-sender-name",
+                "data-nickname",
+                "data-name",
+            )
+            context.timestamp = _first_attr(
+                normalized,
+                "data-timestamp",
+                "data-time",
+                "datetime",
+            )
+            context.message_type = _first_attr(normalized, "data-message-type", "data-type") or "text"
+            self.contexts.append(context)
+            return
+        if self.contexts:
+            field = self._field_for_element(tag, normalized)
+            if field:
+                self.contexts[-1].active_fields.append((field, self.depth))
+            context = self.contexts[-1]
+            if tag.lower() == "time" and not context.timestamp:
+                context.timestamp = normalized.get("datetime") or normalized.get("data-time") or None
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if self._ignored_depths and self._ignored_depths[-1] == self.depth:
+            self._ignored_depths.pop()
+        elif not self._ignored_depths and self.contexts:
+            context = self.contexts[-1]
+            if context.tag == normalized_tag and context.depth == self.depth:
+                self._finalize_context()
+            else:
+                context.active_fields[:] = [
+                    item for item in context.active_fields if item[1] != self.depth
+                ]
+        self.depth = max(0, self.depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depths or not self.contexts or not data:
+            return
+        context = self.contexts[-1]
+        field = context.active_fields[-1][0] if context.active_fields else "content"
+        text = data.strip() if field != "content" else data
+        if not text:
+            return
+        if field == "sender":
+            if context.sender_name is None:
+                context.sender_name = text
+            if not context.sender_id:
+                context.sender_id = context.sender_name
+        elif field == "timestamp":
+            if context.timestamp is None:
+                context.timestamp = text
+        else:
+            context.content_parts.append(text)
+
+    def finish(self) -> None:
+        while self.contexts:
+            self._finalize_context()
+
+    def drain(self) -> tuple[NormalizedMessage, ...]:
+        records = tuple(self.records)
+        self.records.clear()
+        return records
+
+    def _is_message_container(self, attrs: Mapping[str, str]) -> bool:
+        classes = set(re.split(r"\s+", attrs.get("class", "").lower()))
+        return bool(
+            classes.intersection({"message", "msg", "chat-message", "message-item", "record"})
+            or attrs.get("data-message-id")
+            or attrs.get("data-sender-id")
+            or attrs.get("data-sender")
+        )
+
+    def _field_for_element(self, tag: str, attrs: Mapping[str, str]) -> str | None:
+        if tag == "time":
+            return "timestamp"
+        values = [attrs.get("id", ""), attrs.get("class", "")]
+        for value in values:
+            for token in re.split(r"\s+", value.lower()):
+                if token in self._FIELD_NAMES:
+                    return self._FIELD_NAMES[token]
+        return None
+
+    def _finalize_context(self) -> None:
+        context = self.contexts.pop()
+        content = _normalize_html_text("".join(context.content_parts))
+        if not content:
+            return
+        sender_id = (context.sender_id or context.sender_name or "unknown").strip()
+        sender_name = (context.sender_name or sender_id).strip()
+        timestamp = (context.timestamp or f"html:{len(self.records) + 1}").strip()
+        self.records.append(
+            _text_record(
+                {
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                    "content": content,
+                    "timestamp": timestamp,
+                    "message_type": context.message_type,
+                }
+            )
+        )
+
+
+class WeChatHtmlParser(_BaseParser):
+    """Parse WeChat HTML exports using message containers and data attributes."""
+
+    source_type = "wechat_html"
+
+    def probe(self, source: ParserSource) -> ParserProbe:
+        sample = _read_text_sample(source.path)
+        if sample is None or "\x00" in sample:
+            return ParserProbe(self.source_type, 0.0, False, "source is not valid HTML text")
+        lower = sample.lower()
+        html_hint = "<html" in lower or "<!doctype html" in lower or "<body" in lower
+        message_hint = bool(
+            re.search(r'class\s*=\s*[\"\'][^\"\']*\b(message|msg)\b', lower)
+            or "data-sender-id" in lower
+            or "data-message-id" in lower
+        )
+        explicit = source.metadata.get("source_type") == self.source_type
+        if not html_hint or (not message_hint and not explicit):
+            return ParserProbe(self.source_type, 0.0, False, "no WeChat HTML message signature found")
+        marker = _wechat_marker(source, sample)
+        if not marker and not explicit:
+            return ParserProbe(self.source_type, 0.0, False, "source has no WeChat signature")
+        confidence = 0.99 if explicit or marker == "explicit" else 0.97
+        return ParserProbe(self.source_type, confidence, True, "WeChat HTML export recognized")
+
+    def validate(self, source: ParserSource) -> ParserValidation:
+        probe = self.probe(source)
+        if not probe.supported:
+            return ParserValidation(False, "unsupported_format", probe.reason)
+        return ParserValidation(True)
+
+    def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+        parser = _WeChatHTMLDocumentParser()
+        with source.path.open("r", encoding=encoding) as handle:
+            for chunk in iter(lambda: handle.read(_PROBE_BYTES), ""):
+                parser.feed(chunk)
+                yield from parser.drain()
+        parser.close()
+        parser.finish()
+        yield from parser.drain()
+
+
 class GenericJsonParser(_BaseParser):
     source_type = "generic_json"
 
@@ -371,6 +685,56 @@ def _decode_text(raw: bytes) -> tuple[str | None, str | None]:
             continue
         return encoding, text
     return None, None
+
+
+def _looks_like_json_sample(sample: str) -> bool:
+    stripped = sample.lstrip()
+    if stripped.startswith("{"):
+        return True
+    return stripped.startswith("[") and len(stripped) > 1 and not stripped[1].isdigit()
+
+
+def _wechat_marker(source: ParserSource, sample: str) -> str | None:
+    requested = source.metadata.get("source_type")
+    if requested in {"wechat_text", "wechat_html"}:
+        return "explicit"
+    source_name = source.metadata.get("source_name")
+    labels = [source.path.name]
+    if isinstance(source_name, str):
+        labels.append(source_name)
+    label = " ".join(labels).lower()
+    if any(marker in label for marker in ("微信", "wechat", "weixin", "micro-msg")):
+        return "explicit"
+    sample_lower = sample.lower()
+    if any(marker in sample_lower for marker in ("微信", "wechat", "weixin", "wxid_")):
+        return "inferred"
+    return None
+
+
+def _is_wechat_header(line: str) -> bool:
+    normalized = line.strip().lower()
+    return any(marker in normalized for marker in ("微信聊天记录", "wechat chat", "wechat export"))
+
+
+def _first_attr(attrs: Mapping[str, str], *names: str) -> str | None:
+    for name in names:
+        value = attrs.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _normalize_html_text(value: str) -> str:
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    value = re.sub(r"[ \t\f\v]+", " ", value)
+    value = re.sub(r" *\n *", "\n", value)
+    return value.strip()
+
+
+def _join_html_text(current: str | None, value: str) -> str:
+    if not current:
+        return value.strip()
+    return f"{current.strip()} {value.strip()}".strip()
 
 
 def _text_record(values: Mapping[str, str]) -> NormalizedMessage:
