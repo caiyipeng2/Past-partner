@@ -36,6 +36,7 @@ const state = {
 const elementIds = [
     'serviceState', 'serviceStateText', 'personaForm', 'displayName',
     'customRelationshipField', 'customRelationship', 'createPersonaButton',
+    'optionalPersonaFields',
     'relationshipLabel', 'preferredAddress', 'userAddress', 'relationshipDescription',
     'toneBoundaries', 'forbiddenTopics', 'personaStatus', 'chatFile', 'chatFolder', 'fileSummary', 'fileList',
     'clearFilesButton', 'uploadButton', 'pauseUploadButton', 'cancelUploadButton', 'uploadStatus', 'uploadProgress',
@@ -157,6 +158,7 @@ function applyPersona(persona) {
     elements.relationshipDescription.value = persona.relationship_description || '';
     elements.toneBoundaries.value = (persona.tone_boundaries || []).join(', ');
     elements.forbiddenTopics.value = (persona.forbidden_topics || []).join(', ');
+    elements.optionalPersonaFields.open = true;
     elements.activePersonaName.textContent = persona.display_name || '未命名人物';
     elements.createPersonaButton.textContent = '保存人物';
     onRelationshipChange();

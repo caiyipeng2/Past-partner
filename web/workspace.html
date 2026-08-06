@@ -13,28 +13,35 @@
         <header class="topbar">
             <div class="brand-block">
                 <span class="brand-mark" aria-hidden="true">PP</span>
-                <div>
+                <div class="brand-copy">
+                    <span class="brand-eyebrow">PAST PARTNER / WORKSPACE</span>
                     <h1>Past Partner</h1>
                     <p>陪伴者工作台</p>
                 </div>
             </div>
-            <div class="service-state" id="serviceState" role="status">
-                <span class="state-dot" aria-hidden="true"></span>
-                <span id="serviceStateText">连接中</span>
+            <div class="topbar-meta">
+                <span class="local-badge">本地工作区</span>
+                <div class="service-state" id="serviceState" role="status">
+                    <span class="state-dot" aria-hidden="true"></span>
+                    <span id="serviceStateText">连接中</span>
+                </div>
             </div>
         </header>
 
         <ol class="workflow" aria-label="工作流程">
-            <li class="workflow-step is-current" data-step="persona"><span>1</span>人物</li>
-            <li class="workflow-step" data-step="import"><span>2</span>资料</li>
-            <li class="workflow-step" data-step="model"><span>3</span>模型</li>
-            <li class="workflow-step" data-step="chat"><span>4</span>对话</li>
+            <li class="workflow-step is-current" data-step="persona"><span class="step-number">1</span><span class="step-label">人物</span></li>
+            <li class="workflow-step" data-step="import"><span class="step-number">2</span><span class="step-label">资料</span></li>
+            <li class="workflow-step" data-step="model"><span class="step-number">3</span><span class="step-label">模型</span></li>
+            <li class="workflow-step" data-step="chat"><span class="step-number">4</span><span class="step-label">对话</span></li>
         </ol>
 
         <main class="workspace">
             <aside class="setup-panel" aria-label="陪伴者设置">
                 <section class="setup-section" id="personaSection">
-                    <div class="section-heading"><span class="section-index">01</span><h2>人物身份</h2></div>
+                    <div class="section-heading">
+                        <div class="section-heading-copy"><span class="section-index">01</span><h2>人物身份</h2></div>
+                        <span class="section-state">必填</span>
+                    </div>
                     <form id="personaForm">
                         <label class="field-label" for="displayName">称呼</label>
                         <input id="displayName" name="display_name" type="text" maxlength="80" autocomplete="off" required>
@@ -53,25 +60,33 @@
                             <label class="field-label" for="customRelationship">关系名称</label>
                             <input id="customRelationship" name="custom_label" type="text" maxlength="40" autocomplete="off">
                         </div>
-                        <label class="field-label" for="relationshipLabel">关系标签（可选）</label>
-                        <input id="relationshipLabel" name="relationship_label" type="text" maxlength="40" autocomplete="off">
-                        <label class="field-label" for="preferredAddress">对方称呼（可选）</label>
-                        <input id="preferredAddress" name="preferred_address" type="text" maxlength="80" autocomplete="off">
-                        <label class="field-label" for="userAddress">你的称呼（可选）</label>
-                        <input id="userAddress" name="user_address" type="text" maxlength="80" autocomplete="off">
-                        <label class="field-label" for="relationshipDescription">关系描述（可选）</label>
-                        <textarea id="relationshipDescription" name="relationship_description" rows="3" maxlength="2000"></textarea>
-                        <label class="field-label" for="toneBoundaries">语气边界（逗号分隔，可选）</label>
-                        <input id="toneBoundaries" name="tone_boundaries" type="text" maxlength="4000" autocomplete="off">
-                        <label class="field-label" for="forbiddenTopics">禁聊话题（逗号分隔，可选）</label>
-                        <input id="forbiddenTopics" name="forbidden_topics" type="text" maxlength="4000" autocomplete="off">
+                        <details id="optionalPersonaFields" class="optional-fields">
+                            <summary><span>关系细节</span><span class="summary-meta">可选资料</span></summary>
+                            <div class="optional-fields-body">
+                                <label class="field-label" for="relationshipLabel">关系标签</label>
+                                <input id="relationshipLabel" name="relationship_label" type="text" maxlength="40" autocomplete="off">
+                                <label class="field-label" for="preferredAddress">对方称呼</label>
+                                <input id="preferredAddress" name="preferred_address" type="text" maxlength="80" autocomplete="off">
+                                <label class="field-label" for="userAddress">你的称呼</label>
+                                <input id="userAddress" name="user_address" type="text" maxlength="80" autocomplete="off">
+                                <label class="field-label" for="relationshipDescription">关系描述</label>
+                                <textarea id="relationshipDescription" name="relationship_description" rows="3" maxlength="2000"></textarea>
+                                <label class="field-label" for="toneBoundaries">语气边界 <span class="field-hint">逗号分隔</span></label>
+                                <input id="toneBoundaries" name="tone_boundaries" type="text" maxlength="4000" autocomplete="off">
+                                <label class="field-label" for="forbiddenTopics">禁聊话题 <span class="field-hint">逗号分隔</span></label>
+                                <input id="forbiddenTopics" name="forbidden_topics" type="text" maxlength="4000" autocomplete="off">
+                            </div>
+                        </details>
                         <button class="primary-button" id="createPersonaButton" type="submit">保存人物</button>
                     </form>
                     <p class="inline-status" id="personaStatus" aria-live="polite"></p>
                 </section>
 
                 <section class="setup-section" id="importSection">
-                    <div class="section-heading"><span class="section-index">02</span><h2>导入资料</h2></div>
+                    <div class="section-heading">
+                        <div class="section-heading-copy"><span class="section-index">02</span><h2>导入资料</h2></div>
+                        <span class="section-state">最大 3 GiB</span>
+                    </div>
                     <div class="file-actions">
                         <label class="file-button" for="chatFile">选择文件</label>
                         <input id="chatFile" type="file" multiple disabled accept=".json,.txt,.db,.sqlite,.zip,.html,.htm,.csv,.xml,.pdf,.docx,.jpg,.jpeg,.png,.webp,.gif,.mp3,.m4a,.wav,.mp4,.mov">
@@ -93,7 +108,10 @@
                 </section>
 
                 <section class="setup-section" id="modelSection">
-                    <div class="section-heading"><span class="section-index">03</span><h2>对话模型</h2></div>
+                    <div class="section-heading">
+                        <div class="section-heading-copy"><span class="section-index">03</span><h2>对话模型</h2></div>
+                        <span class="section-state">可切换</span>
+                    </div>
                     <label class="field-label" for="providerSelect">供应商</label>
                     <select id="providerSelect" disabled></select>
                     <label class="field-label" for="modelSelect">模型</label>
@@ -106,13 +124,14 @@
 
             <section class="chat-panel" aria-label="对话">
                 <header class="chat-header">
-                    <div><span class="utility-label">当前人物</span><h2 id="activePersonaName">尚未创建</h2></div>
+                    <div class="chat-header-copy"><span class="utility-label">当前人物</span><h2 id="activePersonaName">尚未创建</h2></div>
                     <div class="active-model"><span class="utility-label">当前模型</span><strong id="activeModelName">未选择</strong></div>
                 </header>
                 <div class="chat-history" id="chatHistory" aria-live="polite">
                     <div class="empty-chat" id="emptyChat"><span class="empty-monogram" aria-hidden="true">PP</span><p>完成人物、资料与模型设置后开始对话</p></div>
                 </div>
                 <form class="composer" id="messageForm">
+                    <div class="composer-head"><span class="utility-label">MESSAGE</span><span class="composer-meta">对话输入</span></div>
                     <label class="visually-hidden" for="messageInput">消息</label>
                     <textarea id="messageInput" rows="3" maxlength="12000" placeholder="输入消息" disabled></textarea>
                     <div class="composer-footer"><span id="chatStatus" class="inline-status" aria-live="polite"></span><button class="send-button" id="sendButton" type="submit" disabled>发送</button></div>

@@ -69,6 +69,21 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("@media (max-width: 760px)", self.styles)
         self.assertIn(":focus-visible", self.styles)
 
+    def test_workspace_uses_the_modern_workbench_visual_contract(self) -> None:
+        for class_name in (
+            "topbar-meta",
+            "brand-eyebrow",
+            "optional-fields",
+            "chat-header-copy",
+            "composer-head",
+        ):
+            with self.subTest(class_name=class_name):
+                self.assertIn(f'class="{class_name}', self.html)
+        for token in ("--accent", "--shadow-soft", "--radius-md", "prefers-reduced-motion"):
+            with self.subTest(token=token):
+                self.assertIn(token, self.styles)
+        self.assertNotIn("linear-gradient", self.styles)
+
 
 if __name__ == "__main__":
     unittest.main()
