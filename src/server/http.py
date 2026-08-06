@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import uuid4
 
 from src.domain.personas import PersonaValidationError
 from src.providers.gateway import ProviderError
@@ -146,8 +147,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except Exception:
-            logger.exception("Unhandled request failure")
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error", "request could not be completed")
+            diagnostic_id = str(uuid4())
+            logger.exception("Unhandled request failure diagnostic_id=%s", diagnostic_id)
+            self._error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "request could not be completed",
+                diagnostic_id=diagnostic_id,
+            )
 
     def _handle_get(self) -> None:
         path, query = self._request_target()
@@ -386,8 +393,26 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status: HTTPStatus, code: str, message: str) -> None:
-        self._json(status, {"error": {"code": code, "message": message}})
+    def _error(
+        self,
+        status: HTTPStatus,
+        code: str,
+        message: str,
+        *,
+        diagnostic_id: str | None = None,
+    ) -> None:
+        diagnostic_id = diagnostic_id or str(uuid4())
+        logger.info("Request error code=%s diagnostic_id=%s", code, diagnostic_id)
+        self._json(
+            status,
+            {
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "diagnostic_id": diagnostic_id,
+                }
+            },
+        )
 
     def end_headers(self) -> None:
         origin = self.headers.get("Origin")

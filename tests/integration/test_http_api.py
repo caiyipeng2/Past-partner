@@ -5,7 +5,7 @@ import shutil
 import threading
 import unittest
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from src.server.application import Application
 from src.server.config import ServerConfig
@@ -132,6 +132,27 @@ class HttpApiTests(unittest.TestCase):
         status, _, missing = self.request("GET", "/api/v1/personas/not-found")
         self.assertEqual(404, status)
         self.assertEqual("not_found", missing["error"]["code"])
+
+    def test_errors_include_a_diagnostic_id_without_changing_stable_codes(self) -> None:
+        status, _, missing = self.request("GET", "/api/v1/personas/not-found")
+
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", missing["error"]["code"])
+        first_diagnostic_id = missing["error"]["diagnostic_id"]
+        self.assertIsInstance(first_diagnostic_id, str)
+        UUID(first_diagnostic_id)
+
+        status, _, invalid = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨"},
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("missing_field", invalid["error"]["code"])
+        second_diagnostic_id = invalid["error"]["diagnostic_id"]
+        UUID(second_diagnostic_id)
+        self.assertNotEqual(first_diagnostic_id, second_diagnostic_id)
 
     def test_persona_update_rejects_unknown_fields(self) -> None:
         _, _, created = self.request(
