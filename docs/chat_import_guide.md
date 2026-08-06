@@ -99,7 +99,7 @@
 }
 ```
 
-接口为 `POST /api/v1/imports/{import_id}/corrections`，支持修正 `sender_id`、`sender_name`、`content`、`timestamp` 和 `message_type`。状态只支持 `accepted`、`needs_review` 和 `rejected`；服务端会重新执行消息结构校验，修正结果写入加密导入清单，并在后续预览中应用。
+接口为 `POST /api/v1/imports/{import_id}/corrections`，支持修正单文件或多文件预览中的 `sender_id`、`sender_name`、`content`、`timestamp` 和 `message_type`。状态只支持 `accepted`、`needs_review` 和 `rejected`；服务端会重新执行消息结构校验，修正结果写入加密导入清单，并在后续预览中应用。
 
 ## 支持的数据库文件
 

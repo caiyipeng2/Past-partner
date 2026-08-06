@@ -132,7 +132,6 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_participant_mapping": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "mapping_unavailable": HTTPStatus.CONFLICT,
                 "correction_unavailable": HTTPStatus.CONFLICT,
-                "corrections_multi_file_unsupported": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "invalid_correction": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "deletion_unavailable": HTTPStatus.CONFLICT,
                 "deletion_failed": HTTPStatus.INTERNAL_SERVER_ERROR,

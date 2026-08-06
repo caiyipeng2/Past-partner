@@ -616,11 +616,6 @@ class UploadService:
                     "correction_unavailable",
                     "corrections require a completed uploaded import",
                 )
-            if len(job.files) > 1:
-                raise UploadError(
-                    "corrections_multi_file_unsupported",
-                    "corrections currently require a single-file import",
-                )
             manifest = self._load_manifest(owner_id, import_id)
             existing = _normalize_corrections(manifest.get("corrections"))
             existing.update(normalized)
