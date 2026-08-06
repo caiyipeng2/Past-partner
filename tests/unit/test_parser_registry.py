@@ -139,6 +139,69 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("wechat_html", result.source_type)
         self.assertEqual("UTF-16 微信消息", result.records[0].content)
 
+    def test_parses_qq_text_export_with_timestamp_sender_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "QQ聊天记录.txt"
+            path.write_text(
+                "QQ聊天记录导出\n"
+                "2026-08-05 21:00:00 小雨(qq_1)\n"
+                "第一条 QQ 消息\n"
+                "2026-08-05 21:01:00 我(qq_2): 回复消息\n",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("qq_text", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("小雨(qq_1)", result.records[0].sender_id)
+        self.assertEqual("第一条 QQ 消息", result.records[0].content)
+        self.assertEqual("2026-08-05 21:00:00", result.records[0].timestamp)
+        self.assertEqual("我(qq_2)", result.records[1].sender_id)
+        self.assertEqual("回复消息", result.records[1].content)
+
+    def test_parses_qq_html_export_with_nested_content_and_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq-export.html"
+            path.write_text(
+                "<!doctype html><html data-platform=\"qq\"><body>"
+                '<div class="message" data-sender-id="qq_1" '
+                'data-sender-name="小雨" data-timestamp="2026-08-05T21:00:00+08:00">'
+                '<span class="content">你好 &amp; 晚安</span></div>'
+                '<div class="message">'
+                '<time datetime="2026-08-05T21:01:00+08:00">21:01</time>'
+                '<span class="sender">我</span>'
+                '<div class="message-content"><b>收到</b> 了</div>'
+                "</div></body></html>",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("qq_html", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("qq_1", result.records[0].sender_id)
+        self.assertEqual("小雨", result.records[0].sender_name)
+        self.assertEqual("你好 & 晚安", result.records[0].content)
+        self.assertEqual("2026-08-05T21:00:00+08:00", result.records[0].timestamp)
+        self.assertEqual("我", result.records[1].sender_id)
+        self.assertEqual("收到 了", result.records[1].content)
+
+    def test_decodes_utf16_qq_html_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "QQ聊天.html"
+            path.write_text(
+                '<html data-platform="qq"><div class="message" '
+                'data-sender="qq_1" data-time="2026-08-05 21:00">'
+                '<span class="text">UTF-16 QQ 消息</span></div></html>',
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("qq_html", result.source_type)
+        self.assertEqual("UTF-16 QQ 消息", result.records[0].content)
+
     def test_decodes_utf16_txt_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.txt"

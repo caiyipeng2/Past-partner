@@ -101,6 +101,8 @@ class ParserRegistry:
                 GenericJsonLinesParser(),
                 WeChatHtmlParser(),
                 WeChatTextParser(),
+                QqHtmlParser(),
+                QqTextParser(),
                 GenericTextParser(),
             )
         )
@@ -282,6 +284,11 @@ class WeChatTextParser(GenericTextParser):
     """Parse common WeChat text exports with timestamped sender blocks."""
 
     source_type = "wechat_text"
+    _platform_name = "WeChat"
+    _marker_source_types = frozenset({"wechat_text", "wechat_html"})
+    _marker_labels = ("微信", "wechat", "weixin", "micro-msg")
+    _sample_markers = ("微信", "wechat", "weixin", "wxid_")
+    _header_markers = ("微信聊天记录", "wechat chat", "wechat export")
 
     def probe(self, source: ParserSource) -> ParserProbe:
         sample = _read_text_sample(source.path)
@@ -298,11 +305,27 @@ class WeChatTextParser(GenericTextParser):
         explicit = source.metadata.get("source_type") == self.source_type
         if not matched and not explicit:
             return ParserProbe(self.source_type, 0.0, False, "no timestamped WeChat messages found")
-        marker = _wechat_marker(source, sample)
+        marker = _platform_marker(
+            source,
+            sample,
+            source_types=self._marker_source_types,
+            labels=self._marker_labels,
+            sample_markers=self._sample_markers,
+        )
         if not marker and not explicit:
-            return ParserProbe(self.source_type, 0.0, False, "source has no WeChat signature")
+            return ParserProbe(
+                self.source_type,
+                0.0,
+                False,
+                f"source has no {self._platform_name} signature",
+            )
         confidence = 0.99 if explicit or marker == "explicit" else 0.96
-        return ParserProbe(self.source_type, confidence, True, "WeChat text export recognized")
+        return ParserProbe(
+            self.source_type,
+            confidence,
+            True,
+            f"{self._platform_name} text export recognized",
+        )
 
     def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
         encoding = _detect_text_encoding(source.path)
@@ -356,7 +379,7 @@ class WeChatTextParser(GenericTextParser):
                     }
                 elif pending is not None:
                     pending["content"] += f"\n{stripped}"
-                elif not _is_wechat_header(stripped):
+                elif not self._is_platform_header(stripped):
                     pending = {
                         "sender_id": "unknown",
                         "sender_name": "unknown",
@@ -366,6 +389,21 @@ class WeChatTextParser(GenericTextParser):
                     }
             if pending is not None:
                 yield _text_record(pending)
+
+    def _is_platform_header(self, line: str) -> bool:
+        normalized = line.strip().lower()
+        return any(marker in normalized for marker in self._header_markers)
+
+
+class QqTextParser(WeChatTextParser):
+    """Parse common QQ text exports with timestamped sender blocks."""
+
+    source_type = "qq_text"
+    _platform_name = "QQ"
+    _marker_source_types = frozenset({"qq_text", "qq_html"})
+    _marker_labels = ("qq", "qq群", "qq聊天", "qq chat", "qq export")
+    _sample_markers = ("qq", "qq群", "qq聊天", "qq chat", "qq export", "qq_")
+    _header_markers = ("qq聊天记录", "qq chat", "qq export", "qq群")
 
 
 @dataclass(slots=True)
@@ -538,6 +576,10 @@ class WeChatHtmlParser(_BaseParser):
     """Parse WeChat HTML exports using message containers and data attributes."""
 
     source_type = "wechat_html"
+    _platform_name = "WeChat"
+    _marker_source_types = frozenset({"wechat_text", "wechat_html"})
+    _marker_labels = ("微信", "wechat", "weixin", "micro-msg")
+    _sample_markers = ("微信", "wechat", "weixin", "wxid_")
 
     def probe(self, source: ParserSource) -> ParserProbe:
         sample = _read_text_sample(source.path)
@@ -552,12 +594,33 @@ class WeChatHtmlParser(_BaseParser):
         )
         explicit = source.metadata.get("source_type") == self.source_type
         if not html_hint or (not message_hint and not explicit):
-            return ParserProbe(self.source_type, 0.0, False, "no WeChat HTML message signature found")
-        marker = _wechat_marker(source, sample)
+            return ParserProbe(
+                self.source_type,
+                0.0,
+                False,
+                f"no {self._platform_name} HTML message signature found",
+            )
+        marker = _platform_marker(
+            source,
+            sample,
+            source_types=self._marker_source_types,
+            labels=self._marker_labels,
+            sample_markers=self._sample_markers,
+        )
         if not marker and not explicit:
-            return ParserProbe(self.source_type, 0.0, False, "source has no WeChat signature")
+            return ParserProbe(
+                self.source_type,
+                0.0,
+                False,
+                f"source has no {self._platform_name} signature",
+            )
         confidence = 0.99 if explicit or marker == "explicit" else 0.97
-        return ParserProbe(self.source_type, confidence, True, "WeChat HTML export recognized")
+        return ParserProbe(
+            self.source_type,
+            confidence,
+            True,
+            f"{self._platform_name} HTML export recognized",
+        )
 
     def validate(self, source: ParserSource) -> ParserValidation:
         probe = self.probe(source)
@@ -577,6 +640,16 @@ class WeChatHtmlParser(_BaseParser):
         parser.close()
         parser.finish()
         yield from parser.drain()
+
+
+class QqHtmlParser(WeChatHtmlParser):
+    """Parse common QQ HTML exports using message containers and data attributes."""
+
+    source_type = "qq_html"
+    _platform_name = "QQ"
+    _marker_source_types = frozenset({"qq_text", "qq_html"})
+    _marker_labels = ("qq", "qq群", "qq聊天", "qq chat", "qq export")
+    _sample_markers = ("qq", "qq群", "qq聊天", "qq chat", "qq export", "qq_")
 
 
 class GenericJsonParser(_BaseParser):
@@ -694,26 +767,28 @@ def _looks_like_json_sample(sample: str) -> bool:
     return stripped.startswith("[") and len(stripped) > 1 and not stripped[1].isdigit()
 
 
-def _wechat_marker(source: ParserSource, sample: str) -> str | None:
+def _platform_marker(
+    source: ParserSource,
+    sample: str,
+    *,
+    source_types: frozenset[str],
+    labels: tuple[str, ...],
+    sample_markers: tuple[str, ...],
+) -> str | None:
     requested = source.metadata.get("source_type")
-    if requested in {"wechat_text", "wechat_html"}:
+    if requested in source_types:
         return "explicit"
     source_name = source.metadata.get("source_name")
-    labels = [source.path.name]
+    source_labels = [source.path.name]
     if isinstance(source_name, str):
-        labels.append(source_name)
-    label = " ".join(labels).lower()
-    if any(marker in label for marker in ("微信", "wechat", "weixin", "micro-msg")):
+        source_labels.append(source_name)
+    label = " ".join(source_labels).lower()
+    if any(marker in label for marker in labels):
         return "explicit"
     sample_lower = sample.lower()
-    if any(marker in sample_lower for marker in ("微信", "wechat", "weixin", "wxid_")):
+    if any(marker in sample_lower for marker in sample_markers):
         return "inferred"
     return None
-
-
-def _is_wechat_header(line: str) -> bool:
-    normalized = line.strip().lower()
-    return any(marker in normalized for marker in ("微信聊天记录", "wechat chat", "wechat export"))
 
 
 def _first_attr(attrs: Mapping[str, str], *names: str) -> str | None:

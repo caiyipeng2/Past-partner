@@ -329,6 +329,49 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual("小雨", preview["records"][0]["sender_id"])
         self.assertEqual("来自微信的消息", preview["records"][0]["content"])
 
+    def test_import_preview_detects_qq_text_export(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = (
+            "QQ聊天记录导出\n"
+            "2026-08-05 21:00:00 小雨(qq_1): 来自 QQ 的消息\n"
+        ).encode("utf-8")
+        digest = hashlib.sha256(content).hexdigest()
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "QQ聊天记录.txt",
+                "total_bytes": len(content),
+                "media_type": "text/plain",
+            },
+        )
+
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(200, status)
+        self.assertEqual("qq_text", preview["source_type"])
+        self.assertEqual("小雨(qq_1)", preview["records"][0]["sender_id"])
+        self.assertEqual("来自 QQ 的消息", preview["records"][0]["content"])
+
     def test_import_preview_parses_ordered_multi_file_manifest(self) -> None:
         _, _, persona = self.request(
             "POST",
