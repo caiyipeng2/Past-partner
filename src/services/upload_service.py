@@ -330,6 +330,11 @@ class UploadService:
     def delete_persona_imports(self, owner_id: str, persona_id: str) -> int:
         with self._lock:
             jobs = self.imports.list_for_persona(owner_id, persona_id)
+            if any(job.state is ImportState.PROCESSING for job in jobs):
+                raise UploadError(
+                    "deletion_unavailable",
+                    "processing imports cannot be deleted",
+                )
             for job in jobs:
                 self.delete_import(owner_id, job.id)
             return len(jobs)

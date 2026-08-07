@@ -45,6 +45,7 @@ class PrivacyPolicyContractTests(unittest.TestCase):
             "P0-08 已将导入任务和上传清单保存为同一事务中的加密 SQLite 字段",
             "当前版本提供单一本地 owner 的 Bearer 会话、人物/导入/上传 owner 归属和未授权拦截",
             "当前版本尚未提供成功标准化数据的自动保留期清理、原始载荷完整导出或账户级级联删除功能；已提供默认关闭、按 `PAST_PARTNER_RAW_RETENTION_SECONDS` 配置的终态导入清理（仅 `failed` 和 `cancelled`）",
+            "人物级删除会清理该人物的元数据及其 owner 名下的导入任务、清单、上传分片和合并文件",
             "文本消息会发送给用户选择且由服务端配置的模型供应商",
             "原始图片、音频或视频不得发送给第三方模型供应商",
             "按供应商、用途、范围和预计费用进行逐次告知并取得授权",
@@ -56,6 +57,11 @@ class PrivacyPolicyContractTests(unittest.TestCase):
         for disclosure in required_disclosures:
             with self.subTest(disclosure=disclosure):
                 self.assertIn(disclosure, self.policy)
+
+        self.assertNotIn(
+            "多用户账户、成功标准化数据的保留期、原始载荷完整导出、级联删除和审计仍属于后续生产化任务",
+            self.policy,
+        )
 
     def test_policy_separates_runtime_adapters_from_catalog_placeholders(self) -> None:
         runtime_disclosure = next(

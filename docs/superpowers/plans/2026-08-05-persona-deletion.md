@@ -1,4 +1,4 @@
-# P0-23 Persona Deletion Implementation Plan
+# P0-29 Persona Deletion Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -7,6 +7,8 @@
 **Architecture:** Keep the existing HTTP/Application/Service/Repository layering. `Application.delete_persona` coordinates owner-scoped import cleanup through `UploadService` and then removes the encrypted persona row through `PersonaService`; this preserves the existing `UploadService -> ImportService -> PersonaService` dependency direction. No account-wide deletion, provider-side deletion, retention scheduler, or export archive is added in this task.
 
 **Tech Stack:** Python standard-library HTTP server, encrypted SQLite repositories, AES-GCM object storage, `unittest`, npm test wrapper, CodeGraph.
+
+**Current audit status (2026-08-07):** The original persona-deletion implementation is present on `main`. This plan is retained as the P0-29 traceability record; the historical branch name is normalized below and the cascade now preflights processing imports to avoid partial deletion.
 
 ---
 
@@ -17,9 +19,9 @@
 - Test: `tests/integration/test_http_api.py`
 - Test: `tests/unit/test_persona_service.py`
 
-- [ ] Create `feature/p0-23-persona-deletion` from the verified `main` commit.
+- [ ] Create `feature/p0-29-persona-deletion` from the verified `main` commit.
 - [ ] Run `npm test` on the clean baseline and record the result before changing production code.
-- [ ] Add integration tests for: completed import deletion through persona deletion, incomplete chunk cleanup, unknown persona `404`, and another owner's persona returning `404` without deleting data.
+- [ ] Add integration tests for: completed import deletion through persona deletion, incomplete chunk cleanup, and unknown persona `404`; cover owner isolation at the service layer because the current local-auth schema exposes one owner and enforces a foreign key on `local_users`.
 - [ ] Add a service-level test proving deletion delegates only to the requested owner scope.
 - [ ] Run the focused tests and confirm they fail because the DELETE route/service does not exist.
 

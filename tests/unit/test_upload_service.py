@@ -3,6 +3,7 @@ import hashlib
 import io
 import shutil
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -177,6 +178,19 @@ class UploadServiceTests(unittest.TestCase):
         self.assertEqual(5, progress["received_bytes"])
         self.assertEqual(45, progress["progress_percent"])
         self.assertEqual([0], progress["received_chunks"])
+
+    def test_persona_delete_preflights_processing_imports_before_removing_anything(self) -> None:
+        value = b"partial"
+        self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
+        processing = self.imports.create(self.job.persona_id, "processing.txt", 1, "text/plain")
+        self.imports.save(replace(processing, state=ImportState.PROCESSING))
+
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.delete_persona_imports(None, self.job.persona_id)
+
+        self.assertEqual("deletion_unavailable", captured.exception.code)
+        self.assertIsNotNone(self.imports.repository.get(self.job.id))
+        self.assertTrue(self.uploads._chunk_path(self.job.id, 0).exists())
 
     def test_cancel_clears_stored_parts_and_closes_the_import(self) -> None:
         value = b"secret"

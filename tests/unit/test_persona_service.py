@@ -81,6 +81,14 @@ class PersonaServiceTests(unittest.TestCase):
         with self.assertRaises(PersonaNotFoundError):
             self.service.update("owner-b", created.id, {"display_name": "越权"})
 
+    def test_delete_is_scoped_to_the_requested_owner(self) -> None:
+        created = self.service.create(self.auth.owner_id, "小雨", "friend")
+
+        with self.assertRaises(PersonaNotFoundError):
+            self.service.delete("owner-b", created.id)
+
+        self.assertEqual(created, self.service.get(self.auth.owner_id, created.id))
+
     def test_missing_persona_has_a_domain_error(self) -> None:
         with self.assertRaises(PersonaNotFoundError):
             self.service.get("62fe0eef-7053-4df5-87bb-7842e6c738c4")
