@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 
 from src.server.application import Application
 from src.server.config import ServerConfig
@@ -56,6 +57,12 @@ class RetentionStartupTests(unittest.TestCase):
 
         self.assertIsNone(restarted.imports.repository.get(owner_id, cancelled.id))
         self.assertIsNotNone(restarted.imports.repository.get(owner_id, active.id))
+
+    def test_disabled_startup_does_not_construct_retention_cleanup(self) -> None:
+        with patch("src.server.application.RetentionService") as retention_service:
+            Application.from_config(self.config)
+
+        retention_service.assert_not_called()
 
 
 if __name__ == "__main__":

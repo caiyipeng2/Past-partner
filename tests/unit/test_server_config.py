@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from src.server.config import ServerConfig
@@ -22,6 +23,11 @@ class ServerConfigTests(unittest.TestCase):
     def test_raw_retention_rejects_negative_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "retention"):
             ServerConfig(raw_retention_seconds=-1).validated()
+
+    def test_env_template_exposes_disabled_raw_retention_setting(self) -> None:
+        template = Path(__file__).parents[2] / ".env.example"
+
+        self.assertIn("PAST_PARTNER_RAW_RETENTION_SECONDS=0", template.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

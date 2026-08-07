@@ -1,4 +1,4 @@
-# P0-25 Retention Cleanup Implementation Plan
+# P0-27 Retention Cleanup Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -15,7 +15,7 @@
 **Files:**
 - Create: `docs/superpowers/plans/2026-08-06-retention-cleanup.md`
 
-- [ ] **Step 1: Create `feature/p0-25-retention-cleanup` from clean `main`.**
+- [ ] **Step 1: Create `feature/p0-27-raw-retention` from clean `main`.**
 - [ ] **Step 2: Run `npm test` before production edits; if the existing P0-24 timestamp-tie ordering test reproduces, record and fix that prerequisite before continuing.**
 - [ ] **Step 3: Confirm `git status --short` is empty and CodeGraph is current.**
 

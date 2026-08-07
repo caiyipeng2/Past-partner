@@ -79,7 +79,8 @@ class Application:
         uploads = UploadService(
             storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
         )
-        RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)
+        if config.raw_retention_seconds > 0:
+            RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)
         catalog = ProviderCatalog.default()
         adapters = build_openai_compatible_adapters(catalog)
         if config.mode == "test":
