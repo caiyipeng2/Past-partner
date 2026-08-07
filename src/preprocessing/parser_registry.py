@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 import hashlib
 from html.parser import HTMLParser
+import io
 import json
 from itertools import islice
 from pathlib import Path
@@ -111,6 +113,7 @@ class ParserRegistry:
                 WeChatTextParser(),
                 QqHtmlParser(),
                 QqTextParser(),
+                GenericCsvParser(),
                 GenericTextParser(),
             )
         )
@@ -775,6 +778,84 @@ class GenericJsonLinesParser(_BaseParser):
                     raise ParserError("invalid_record", f"JSONL line {line_number}: {exc}") from exc
 
 
+class GenericCsvParser(_BaseParser):
+    """Parse delimited conversation exports into canonical messages."""
+
+    source_type = "generic_csv"
+
+    def probe(self, source: ParserSource) -> ParserProbe:
+        sample = _read_text_sample(source.path)
+        if sample is None or "\x00" in sample:
+            return ParserProbe(self.source_type, 0.0, False, "source is not valid text")
+        header_info = _csv_header_info(sample)
+        if header_info is None:
+            return ParserProbe(self.source_type, 0.0, False, "CSV header could not be detected")
+        headers, _ = header_info
+        header_map = _csv_header_map(headers)
+        if _csv_has_required_headers(header_map):
+            return ParserProbe(self.source_type, 0.97, True, "CSV conversation headers recognized")
+        if (
+            source.path.suffix.casefold() == ".csv"
+            or source.metadata.get("source_type") == self.source_type
+        ):
+            return ParserProbe(
+                self.source_type,
+                0.8,
+                True,
+                "CSV structure recognized but required conversation headers are missing",
+            )
+        return ParserProbe(self.source_type, 0.0, False, "CSV conversation headers not recognized")
+
+    def validate(self, source: ParserSource) -> ParserValidation:
+        probe = self.probe(source)
+        if not probe.supported:
+            return ParserValidation(False, "unsupported_format", probe.reason)
+        header_info = _csv_header_info(_read_text_sample(source.path) or "")
+        if header_info is None:
+            return ParserValidation(False, "unsupported_format", "CSV header could not be detected")
+        headers, _ = header_info
+        header_map = _csv_header_map(headers)
+        if not _csv_has_required_headers(header_map):
+            return ParserValidation(
+                False,
+                "unsupported_format",
+                "CSV must include sender, content, and timestamp columns",
+            )
+        return ParserValidation(True)
+
+    def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+        sample = _read_text_sample(source.path)
+        header_info = _csv_header_info(sample or "")
+        if header_info is None:
+            raise ParserError("unsupported_format", "CSV header could not be detected")
+        _, dialect = header_info
+        try:
+            with source.path.open("r", encoding=encoding, newline="") as handle:
+                reader = csv.DictReader(handle, dialect=dialect, strict=True)
+                header_map = _csv_header_map(reader.fieldnames or ())
+                if not _csv_has_required_headers(header_map):
+                    raise ParserError(
+                        "unsupported_format",
+                        "CSV must include sender, content, and timestamp columns",
+                    )
+                for row_number, row in enumerate(reader, 2):
+                    if None in row:
+                        raise ParserError(
+                            "invalid_record",
+                            f"CSV row {row_number} has more fields than its header",
+                        )
+                    values = _csv_record_values(row, header_map)
+                    try:
+                        yield NormalizedMessage.from_mapping(values)
+                    except MessageValidationError as exc:
+                        raise ParserError("invalid_record", f"CSV row {row_number}: {exc}") from exc
+        except csv.Error as exc:
+            raise ParserError("invalid_record", f"CSV parsing failed: {exc}") from exc
+
+
 def _read_text_sample(path: Path) -> str | None:
     try:
         with path.open("rb") as handle:
@@ -803,6 +884,117 @@ def _decode_text(raw: bytes) -> tuple[str | None, str | None]:
             continue
         return encoding, text
     return None, None
+
+
+_CSV_HEADER_ALIASES: dict[str, frozenset[str]] = {
+    "sender_id": frozenset(
+        {
+            "sender_id",
+            "sender",
+            "from",
+            "speaker",
+            "author",
+            "发送者",
+            "发送人",
+            "发言人",
+            "用户",
+            "用户名",
+        }
+    ),
+    "sender_name": frozenset({"sender_name", "sendername", "昵称", "姓名", "名称"}),
+    "content": frozenset(
+        {
+            "content",
+            "message",
+            "text",
+            "body",
+            "消息",
+            "消息内容",
+            "内容",
+            "文本",
+        }
+    ),
+    "timestamp": frozenset(
+        {
+            "timestamp",
+            "time",
+            "date",
+            "created_at",
+            "created",
+            "时间",
+            "时间戳",
+            "日期",
+        }
+    ),
+    "message_type": frozenset({"message_type", "type", "kind", "类型", "消息类型"}),
+}
+
+
+def _csv_header_info(sample: str) -> tuple[tuple[str, ...], csv.Dialect] | None:
+    lines = [line for line in sample.splitlines() if line.strip()]
+    if not lines:
+        return None
+    header_line = lines[0]
+    try:
+        dialect = csv.Sniffer().sniff(header_line, delimiters=",;\t|")
+        headers = tuple(next(csv.reader(io.StringIO(header_line), dialect=dialect, strict=True)))
+    except (csv.Error, StopIteration):
+        return None
+    normalized = tuple(header.strip() for header in headers if header.strip())
+    if len(normalized) < 2:
+        return None
+    return normalized, dialect
+
+
+def _normalize_csv_header(value: str) -> str:
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "_", value.strip().casefold())
+    return normalized.strip("_")
+
+
+def _csv_header_map(headers: Sequence[str]) -> dict[str, str]:
+    normalized_headers = {
+        _normalize_csv_header(header): header
+        for header in headers
+        if isinstance(header, str) and header.strip()
+    }
+    result: dict[str, str] = {}
+    for canonical, aliases in _CSV_HEADER_ALIASES.items():
+        for alias in aliases:
+            normalized_alias = _normalize_csv_header(alias)
+            if normalized_alias in normalized_headers:
+                result[canonical] = normalized_headers[normalized_alias]
+                break
+    return result
+
+
+def _csv_has_required_headers(header_map: Mapping[str, str]) -> bool:
+    return bool(
+        (header_map.get("sender_id") or header_map.get("sender_name"))
+        and header_map.get("content")
+        and header_map.get("timestamp")
+    )
+
+
+def _csv_record_values(
+    row: Mapping[str | None, str | None],
+    header_map: Mapping[str, str],
+) -> dict[str, str]:
+    def value_for(key: str) -> str:
+        header = header_map.get(key)
+        if not header:
+            return ""
+        value = row.get(header)
+        return value.strip() if isinstance(value, str) else ""
+
+    sender_name = value_for("sender_name")
+    sender_id = value_for("sender_id") or sender_name
+    return {
+        "sender_id": sender_id,
+        "sender_name": sender_name or sender_id,
+        "content": value_for("content"),
+        "timestamp": value_for("timestamp"),
+        "message_type": value_for("message_type") or "text",
+    }
 
 
 def _looks_like_json_sample(sample: str) -> bool:

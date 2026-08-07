@@ -289,6 +289,67 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("generic_jsonl", result.source_type)
         self.assertEqual(["收到", "好的"], [record.content for record in result.records])
 
+    def test_parses_csv_by_header_signature_and_normalizes_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat-export.any"
+            path.write_text(
+                "sender_name,message,time,type\n"
+                "小雨,你好,2026-08-05T21:00:00+08:00,text\n"
+                "我,收到,2026-08-05T21:01:00+08:00,text\n",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_csv", result.source_type)
+        self.assertEqual(["小雨", "我"], [record.sender_id for record in result.records])
+        self.assertEqual(["你好", "收到"], [record.content for record in result.records])
+        self.assertEqual("2026-08-05T21:00:00+08:00", result.records[0].timestamp)
+
+    def test_parses_utf16_semicolon_csv_and_honors_record_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.csv"
+            path.write_text(
+                "sender;content;timestamp\n"
+                "qq_1;第一条;2026-08-05 21:00:00\n"
+                "qq_2;第二条;2026-08-05 21:01:00\n",
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path, max_records=1)
+
+        self.assertEqual("generic_csv", result.source_type)
+        self.assertEqual(1, len(result.records))
+        self.assertTrue(result.summary["truncated"])
+        self.assertEqual("第一条", result.records[0].content)
+
+    def test_rejects_csv_without_required_chat_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contacts.csv"
+            path.write_text("name,email\n小雨,xiaoyu@example.com\n", encoding="utf-8")
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+        self.assertIn("CSV", str(raised.exception))
+
+    def test_reports_malformed_csv_rows_as_invalid_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.csv"
+            path.write_text(
+                "sender,content,timestamp\n"
+                "小雨,未闭合的消息,2026-08-05 21:00:00\n"
+                '我,"缺少结束引号,2026-08-05 21:01:00\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("invalid_record", raised.exception.code)
+        self.assertIn("CSV", str(raised.exception))
+
     def test_decodes_utf16_json_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.json"
