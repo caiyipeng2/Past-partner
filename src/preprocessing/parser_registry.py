@@ -12,6 +12,7 @@ import re
 from typing import Any, Iterator, Mapping, Protocol, Sequence
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
+from src.preprocessing.wechat_database import WeChatDatabaseError, WeChatDatabaseParser
 
 
 _TIMESTAMP = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?"
@@ -99,6 +100,7 @@ class ParserRegistry:
             (
                 GenericJsonParser(),
                 GenericJsonLinesParser(),
+                WeChatDatabaseParser(),
                 WeChatHtmlParser(),
                 WeChatTextParser(),
                 QqHtmlParser(),
@@ -166,6 +168,8 @@ class ParserRegistry:
             raise
         except MessageValidationError as exc:
             raise ParserError("invalid_record", str(exc)) from exc
+        except WeChatDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
         records = _assign_record_ids(records, source, parser.source_type)
         if not records:
             raise ParserError("empty_source", "parser produced no records")
@@ -182,9 +186,14 @@ class ParserRegistry:
     @staticmethod
     def _source(path: str | Path, metadata: Mapping[str, Any] | None) -> ParserSource:
         resolved = Path(path)
-        if not resolved.is_file():
-            raise ParserError("source_not_found", "parser source file does not exist")
-        return ParserSource(resolved, dict(metadata or {}))
+        normalized_metadata = dict(metadata or {})
+        if not resolved.exists():
+            raise ParserError("source_not_found", "parser source does not exist")
+        if resolved.is_dir() and normalized_metadata.get("source_type") != "wechat_database":
+            # A named WeChat database directory may still be auto-probed.
+            if resolved.name.casefold() not in {"db_storage", "msg", "wechat", "wechat_db"}:
+                raise ParserError("source_not_file", "parser source must be a file unless it is a WeChat database directory")
+        return ParserSource(resolved, normalized_metadata)
 
 
 class _BaseParser:

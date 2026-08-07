@@ -86,8 +86,9 @@ class PrivacyPolicyContractTests(unittest.TestCase):
 
     def test_policy_preserves_wechat_database_secret_boundaries(self) -> None:
         required_boundaries = (
-            "微信数据库直接解析和模型学习尚未在当前项目中实现",
+            "P0-30 已提供微信 3.x/4.x 明文 SQLite 数据库目录的只读解析",
             "数据库、WAL 和 SHM 文件应先形成一致的只读快照",
+            "单个 `.db`、加密数据库和未知 schema 会拒绝解析",
             "用户明确授权的本地步骤",
             "密钥只允许短暂存在于进程内存中",
             "不得写入日志、配置或持久化文件",
