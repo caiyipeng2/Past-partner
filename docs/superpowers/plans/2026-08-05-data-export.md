@@ -1,4 +1,4 @@
-# P0-24 Data Export Implementation Plan
+# P0-28 Data Export Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -7,6 +7,8 @@
 **Architecture:** Reuse the existing encrypted SQLite repositories and application facade. The endpoint returns a versioned JSON document containing decrypted metadata that the authenticated owner can restore or inspect; raw encrypted upload payloads are deliberately omitted from this bounded JSON slice and reported in the response scope. No account-level export, third-party provider data, or 3 GiB in-memory buffering is introduced.
 
 **Tech Stack:** Python standard-library HTTP server, encrypted SQLite repositories, `unittest`, npm test wrapper, CodeGraph.
+
+**Current audit status (2026-08-07):** The implementation and tests from the original data-export slice are already present on `main`. This plan is retained as the P0-28 traceability record; the historical branch name below is normalized to the current numbering so progress is not reported under P0-24.
 
 ---
 
@@ -17,7 +19,7 @@
 - Test: `tests/integration/test_http_api.py`
 - Test: `tests/unit/test_import_repository.py`
 
-- [ ] Create `feature/p0-24-data-export` from the verified `main` commit.
+- [ ] Create `feature/p0-28-data-export` from the verified `main` commit.
 - [ ] Run the baseline `npm test` before production edits.
 - [ ] Add an integration test that creates a persona, completes an import, saves participant mapping and corrections, then expects `GET /api/v1/data-export` to return a versioned owner export containing all metadata and an explicit `raw_payloads_included: false` scope marker.
 - [ ] Add an integration test that proves an invalid bearer token cannot export data and an empty owner export returns empty arrays.
