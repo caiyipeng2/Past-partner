@@ -12,6 +12,7 @@ import re
 from typing import Any, Iterator, Mapping, Protocol, Sequence
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
+from src.preprocessing.qq_database import QqDatabaseError, QqDatabaseParser
 from src.preprocessing.wechat_database import WeChatDatabaseError, WeChatDatabaseParser
 
 
@@ -101,6 +102,7 @@ class ParserRegistry:
                 GenericJsonParser(),
                 GenericJsonLinesParser(),
                 WeChatDatabaseParser(),
+                QqDatabaseParser(),
                 WeChatHtmlParser(),
                 WeChatTextParser(),
                 QqHtmlParser(),
@@ -170,6 +172,8 @@ class ParserRegistry:
             raise ParserError("invalid_record", str(exc)) from exc
         except WeChatDatabaseError as exc:
             raise ParserError(exc.code, str(exc)) from exc
+        except QqDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
         records = _assign_record_ids(records, source, parser.source_type)
         if not records:
             raise ParserError("empty_source", "parser produced no records")
@@ -189,10 +193,34 @@ class ParserRegistry:
         normalized_metadata = dict(metadata or {})
         if not resolved.exists():
             raise ParserError("source_not_found", "parser source does not exist")
-        if resolved.is_dir() and normalized_metadata.get("source_type") != "wechat_database":
-            # A named WeChat database directory may still be auto-probed.
-            if resolved.name.casefold() not in {"db_storage", "msg", "wechat", "wechat_db"}:
-                raise ParserError("source_not_file", "parser source must be a file unless it is a WeChat database directory")
+        if (
+            resolved.is_file()
+            and resolved.suffix.casefold() == ".db"
+            and not normalized_metadata.get("source_type")
+        ):
+            raise ParserError(
+                "source_not_directory",
+                "数据库解析必须提供包含 .db 文件的目录，不能直接上传单个数据库文件",
+            )
+        if resolved.is_dir() and normalized_metadata.get("source_type") not in {
+            "wechat_database",
+            "qq_database",
+        }:
+            # Named platform database directories may still be auto-probed.
+            normalized_name = resolved.name.casefold()
+            is_named_database = normalized_name in {
+                "db_storage",
+                "msg",
+                "wechat",
+                "wechat_db",
+                "qq",
+                "qq_db",
+                "qq_database",
+                "qqdata",
+                "qq_storage",
+            } or "qq" in normalized_name or "群" in resolved.name
+            if not is_named_database:
+                raise ParserError("source_not_file", "parser source must be a file unless it is a named platform database directory")
         return ParserSource(resolved, normalized_metadata)
 
 
