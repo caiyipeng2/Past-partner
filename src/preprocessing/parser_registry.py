@@ -13,6 +13,7 @@ from typing import Any, Iterator, Mapping, Protocol, Sequence
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
 from src.preprocessing.qq_database import QqDatabaseError, QqDatabaseParser
+from src.preprocessing.wechat_backup import WeChatBackupError, WeChatBackupParser
 from src.preprocessing.wechat_database import WeChatDatabaseError, WeChatDatabaseParser
 
 
@@ -103,6 +104,7 @@ class ParserRegistry:
                 GenericJsonLinesParser(),
                 WeChatDatabaseParser(),
                 QqDatabaseParser(),
+                WeChatBackupParser(),
                 WeChatHtmlParser(),
                 WeChatTextParser(),
                 QqHtmlParser(),
@@ -173,6 +175,8 @@ class ParserRegistry:
         except WeChatDatabaseError as exc:
             raise ParserError(exc.code, str(exc)) from exc
         except QqDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except WeChatBackupError as exc:
             raise ParserError(exc.code, str(exc)) from exc
         records = _assign_record_ids(records, source, parser.source_type)
         if not records:
