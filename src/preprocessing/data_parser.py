@@ -4,8 +4,10 @@
 """
 
 import logging
+from collections.abc import Iterable
 from typing import List, Dict, Any
 
+from src.learning.style_profile import StyleProfileExtractor
 from src.preprocessing.parser_registry import ParserRegistry
 
 # 配置日志
@@ -68,9 +70,51 @@ class ChatDataParser:
         result = self.registry.parse(file_path, metadata)
         return [self._legacy_record(record.to_dict(), index) for index, record in enumerate(result.records, 1)]
 
+    def generate_style_profile(
+        self,
+        file_path: str,
+        persona_sender_ids: Iterable[str],
+        *,
+        format_type: str = "auto",
+        user_sender_ids: Iterable[str] = (),
+        known_addresses: Iterable[str] = (),
+        relationship_type: str | None = None,
+        relationship_label: str | None = None,
+        preferred_address: str | None = None,
+    ) -> Dict[str, Any]:
+        """Generate a profile from canonical parser output without retaining source text."""
+
+        metadata = self._format_metadata(format_type)
+        result = self.registry.parse(file_path, metadata)
+        profile = StyleProfileExtractor().extract(
+            result.records,
+            persona_sender_ids=persona_sender_ids,
+            user_sender_ids=user_sender_ids,
+            known_addresses=known_addresses,
+            relationship_type=relationship_type,
+            relationship_label=relationship_label,
+            preferred_address=preferred_address,
+        ).to_dict()
+        profile["source_type"] = result.source_type
+        return profile
+
     def _parse_legacy(self, file_path: str, source_type: str) -> List[Dict[str, Any]]:
         result = self.registry.parse(file_path, {"source_type": source_type})
         return [self._legacy_record(record.to_dict(), index) for index, record in enumerate(result.records, 1)]
+
+    @staticmethod
+    def _format_metadata(format_type: str) -> Dict[str, str]:
+        if format_type == "auto":
+            return {}
+        if format_type in {"text", "json", "jsonl"}:
+            return {
+                "source_type": {
+                    "text": "generic_text",
+                    "json": "generic_json",
+                    "jsonl": "generic_jsonl",
+                }[format_type]
+            }
+        raise ValueError(f"不支持的格式类型: {format_type}")
 
     @staticmethod
     def _legacy_record(record: Dict[str, Any], line_num: int) -> Dict[str, Any]:
