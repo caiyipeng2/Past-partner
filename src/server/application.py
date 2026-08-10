@@ -14,6 +14,8 @@ from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.consent_repository import ConsentRepository
+from src.services.consent_service import ConsentService
 from src.services.database import SQLiteMigrator
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
@@ -38,6 +40,7 @@ class Application:
         personas: PersonaService,
         imports: ImportService,
         uploads: UploadService,
+        consents: ConsentService,
         master_keys: MasterKeyProvider,
         encryption: AuthenticatedEncryptionService,
         catalog: ProviderCatalog,
@@ -47,6 +50,7 @@ class Application:
         self.personas = personas
         self.imports = imports
         self.uploads = uploads
+        self.consents = consents
         self.master_keys = master_keys
         self.encryption = encryption
         self.catalog = catalog
@@ -76,6 +80,8 @@ class Application:
             storage.root / "imports", storage.root / "upload-manifests", auth.owner_id
         )
         imports = ImportService(import_repository, personas, max_import_bytes=config.max_import_bytes)
+        consent_repository = ConsentRepository(storage.database_path(), encryption)
+        consents = ConsentService(consent_repository, personas)
         uploads = UploadService(
             storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
         )
@@ -92,7 +98,7 @@ class Application:
         }
         catalog = catalog.with_configured(set(adapters) - {"test"}, runtime_models)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
-        return cls(personas, imports, uploads, master_keys, encryption, catalog, gateway, auth)
+        return cls(personas, imports, uploads, consents, master_keys, encryption, catalog, gateway, auth)
 
     def issue_session(self, remote_address: str, presented_bootstrap_token: str | None) -> dict[str, Any]:
         return self.auth.issue_session(remote_address, presented_bootstrap_token)
@@ -141,11 +147,13 @@ class Application:
     def delete_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
         self.personas.get(owner_id, persona_id)
         deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
+        deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
         self.personas.delete(owner_id, persona_id)
         return {
             "persona_id": persona_id,
             "deleted": True,
             "deleted_imports": deleted_imports,
+            "deleted_consents": deleted_consents,
         }
 
     def export_data(self, owner_id: str) -> dict[str, Any]:
@@ -165,7 +173,30 @@ class Application:
             },
             "personas": [persona.to_dict() for persona in self.personas.list(owner_id)],
             "imports": imports,
+            "consents": [consent.to_dict() for consent in self.consents.list(owner_id)],
         }
+
+    def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            consent = self.consents.create(
+                owner_id=owner_id,
+                persona_id=payload["persona_id"],
+                provider_id=payload["provider_id"],
+                model_id=payload["model_id"],
+                data_category=payload["data_category"],
+                estimated_cost=payload["estimated_cost"],
+                purpose=payload["purpose"],
+                authorization_scope=payload["authorization_scope"],
+            )
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+        return consent.to_dict()
+
+    def list_consents(self, owner_id: str, persona_id: str | None = None) -> dict[str, Any]:
+        return {"consents": [consent.to_dict() for consent in self.consents.list(owner_id, persona_id)]}
+
+    def revoke_consent(self, owner_id: str, consent_id: str) -> dict[str, Any]:
+        return self.consents.revoke(owner_id, consent_id).to_dict()
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
