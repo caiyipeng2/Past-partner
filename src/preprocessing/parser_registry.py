@@ -15,6 +15,7 @@ from typing import Any, Iterator, Mapping, Protocol, Sequence
 import xml.etree.ElementTree as ET
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
+from src.preprocessing.document_parser import DocumentParserError, GenericDocxParser, GenericPdfParser
 from src.preprocessing.generic_database import GenericDatabaseError, GenericSqliteParser
 from src.preprocessing.qq_backup import QqBackupError, QqBackupParser
 from src.preprocessing.qq_database import QqDatabaseError, QqDatabaseParser
@@ -116,6 +117,8 @@ class ParserRegistry:
                 QqHtmlParser(),
                 QqTextParser(),
                 GenericSqliteParser(),
+                GenericDocxParser(),
+                GenericPdfParser(),
                 GenericHtmlParser(),
                 GenericXmlParser(),
                 GenericCsvParser(),
@@ -191,6 +194,8 @@ class ParserRegistry:
         except QqBackupError as exc:
             raise ParserError(exc.code, str(exc)) from exc
         except GenericDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except DocumentParserError as exc:
             raise ParserError(exc.code, str(exc)) from exc
         records = _assign_record_ids(records, source, parser.source_type)
         if not records:

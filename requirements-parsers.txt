@@ -7,3 +7,6 @@ nltk>=3.6
 jieba>=0.42.1
 scikit-learn>=1.0.0
 jsonlines>=3.1.0
+# Optional high-fidelity PDF extraction; the built-in parser keeps a bounded
+# plain-text fallback when this dependency is not installed.
+pypdf>=5.0.0
