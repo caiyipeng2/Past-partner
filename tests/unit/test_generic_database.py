@@ -40,6 +40,17 @@ class GenericDatabaseTests(unittest.TestCase):
         self.assertEqual(1, len(result.records))
         self.assertTrue(result.summary["truncated"])
 
+    def test_extracts_attachment_reference_columns_from_generic_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "conversation-db"
+            self._create_attachment_fixture(root)
+
+            result = self.registry.parse(root)
+
+        self.assertEqual("image", result.records[0].attachments[0]["kind"])
+        self.assertEqual("images/photo.jpg", result.records[0].attachments[0]["path"])
+        self.assertEqual(512, result.records[0].attachments[0]["size"])
+
     def test_rejects_unknown_generic_database_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "conversation-db"
@@ -121,6 +132,25 @@ class GenericDatabaseTests(unittest.TestCase):
                     (1, 'conversation-1', 'user-2', '小雨', '你好', 1780000000, 1);
                 INSERT INTO chat_log VALUES
                     (2, 'conversation-1', 'user-1', '我', '收到文件', 1780000060, 5);
+                """
+            )
+        connection.close()
+
+    @staticmethod
+    def _create_attachment_fixture(root: Path) -> None:
+        root.mkdir(parents=True)
+        connection = sqlite3.connect(root / "messages.db")
+        with connection:
+            connection.executescript(
+                """
+                CREATE TABLE chat_log (
+                    event_id INTEGER, sender_id TEXT, sender_name TEXT, content TEXT,
+                    timestamp INTEGER, message_type TEXT, attachment_path TEXT,
+                    attachment_size INTEGER, attachment_type TEXT
+                );
+                INSERT INTO chat_log VALUES
+                    (1, 'user-1', '小雨', '看图', 1780000000, 'image',
+                     'images/photo.jpg', 512, 'image/jpeg');
                 """
             )
         connection.close()
