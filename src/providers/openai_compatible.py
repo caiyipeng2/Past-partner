@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from src.providers.base import AdapterError, ChatRequest, ChatResponse, JsonObject
+from src.providers.transport import JsonTransport, urllib_json_transport
 
 
-Transport = Callable[[str, dict[str, str], JsonObject, float], Mapping[str, Any]]
+Transport = JsonTransport
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +26,7 @@ class OpenAICompatibleAdapter:
     def __init__(self, config: OpenAICompatibleConfig, transport: Transport | None = None):
         self.config = config
         self.provider_id = config.provider_id
-        self.transport = transport or _urllib_transport
+        self.transport = transport or urllib_json_transport
 
     def supports_model(self, model_id: str) -> bool:
         return model_id in self.config.allowed_models
@@ -76,26 +74,3 @@ class OpenAICompatibleAdapter:
             usage=normalized_usage,
             provider_request_id=str(payload["id"]) if payload.get("id") is not None else None,
         )
-
-
-def _urllib_transport(
-    url: str,
-    headers: dict[str, str],
-    body: JsonObject,
-    timeout_seconds: float,
-) -> Mapping[str, Any]:
-    request = Request(
-        url,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise AdapterError("provider_http_error", f"provider returned HTTP {exc.code}") from exc
-    except (URLError, TimeoutError) as exc:
-        raise AdapterError("provider_unavailable", "provider could not be reached") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AdapterError("invalid_provider_response", "provider returned invalid JSON") from exc

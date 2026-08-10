@@ -9,7 +9,7 @@ from typing import Any, BinaryIO, Mapping
 from src.domain.personas import PersonaValidationError
 from src.providers.base import ChatMessage, ChatRequest
 from src.providers.catalog import ProviderCatalog
-from src.providers.configuration import build_openai_compatible_adapters
+from src.providers.configuration import build_provider_adapters
 from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter
 from src.server.config import ServerConfig
@@ -88,7 +88,7 @@ class Application:
         if config.raw_retention_seconds > 0:
             RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)
         catalog = ProviderCatalog.default()
-        adapters = build_openai_compatible_adapters(catalog)
+        adapters = build_provider_adapters(catalog)
         if config.mode == "test":
             adapters["test"] = DeterministicTestAdapter()
         runtime_models = {

@@ -93,6 +93,7 @@ P1-03 已增加通用 HTML 聊天记录解析，支持常见消息容器、发�
 原 P1-08 DOCX 对话文档解析已独立收口：只读取受控 `word/document.xml`，保留段落内换行和制表符，并对损坏、超限、不安全归档和无对话内容返回明确错误。原 P1-09 PDF 对话文档解析现已独立收口：优先使用可选 `pypdf`，并保留有界纯文本回退，支持常见文本操作符和 UTF-16 十六进制文本；加密、页数超限、损坏和无对话内容会返回明确错误。文档扩展名优先于通用文本探测。
 P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商、模型、数据类别和作用域精确匹配，记录使用 AES-GCM 加密保存，支持 owner 级查询、撤回和人物删除级联清理。原始媒体只在存在有效授权时才允许后续第三方处理；本地上传、解析或保存媒体引用不等于同意向第三方发送。当前任务只提供授权生命周期，不触发 OCR、ASR、视觉分析或真实媒体模型调用。
 P2-01 已扩展模型目录元数据，提供能力、上下文长度、区域、隐私标签、结构化价格和价格刷新时间；可通过 `PAST_PARTNER_MODEL_PRICING_JSON` 配置供应商/管理员价格。`POST /api/v1/models/cost-estimate` 按输入/输出 token 和媒体单位返回可复核估算，未配置价格时明确返回 `pricing_unavailable`，不生成伪造成本。价格是估算值，不替代供应商最终账单。
+P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义 OpenAI-compatible 继续使用兼容协议；Anthropic Messages 与 Google Gemini `generateContent` 使用原生请求/响应适配器。所有网络调用都经过统一 JSON 传输边界，未配置凭据时仍返回 `provider_not_configured`；本任务不实现流式、Embedding、媒体分析或微调。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
@@ -117,4 +118,4 @@ P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片�
 
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 
-DeepSeek、小米 MiMo、阿里千问、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。
+OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 HTTP 仍需后续插件 SDK，不会因为目录可见而伪造可用状态。
