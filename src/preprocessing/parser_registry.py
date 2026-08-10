@@ -15,6 +15,7 @@ from typing import Any, Iterator, Mapping, Protocol, Sequence
 import xml.etree.ElementTree as ET
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
+from src.preprocessing.generic_database import GenericDatabaseError, GenericSqliteParser
 from src.preprocessing.qq_backup import QqBackupError, QqBackupParser
 from src.preprocessing.qq_database import QqDatabaseError, QqDatabaseParser
 from src.preprocessing.wechat_backup import WeChatBackupError, WeChatBackupParser
@@ -114,6 +115,7 @@ class ParserRegistry:
                 WeChatTextParser(),
                 QqHtmlParser(),
                 QqTextParser(),
+                GenericSqliteParser(),
                 GenericHtmlParser(),
                 GenericXmlParser(),
                 GenericCsvParser(),
@@ -188,6 +190,8 @@ class ParserRegistry:
             raise ParserError(exc.code, str(exc)) from exc
         except QqBackupError as exc:
             raise ParserError(exc.code, str(exc)) from exc
+        except GenericDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
         records = _assign_record_ids(records, source, parser.source_type)
         if not records:
             raise ParserError("empty_source", "parser produced no records")
@@ -233,7 +237,13 @@ class ParserRegistry:
                 "qqdata",
                 "qq_storage",
             } or "qq" in normalized_name or "群" in resolved.name
-            if not is_named_database:
+            if not is_named_database and normalized_metadata.get("source_type") != "generic_sqlite":
+                try:
+                    has_database_file = any(resolved.rglob("*.db"))
+                except OSError:
+                    has_database_file = False
+                if has_database_file:
+                    return ParserSource(resolved, normalized_metadata)
                 raise ParserError("source_not_file", "parser source must be a file unless it is a named platform database directory")
         return ParserSource(resolved, normalized_metadata)
 
