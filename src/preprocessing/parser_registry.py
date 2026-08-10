@@ -34,6 +34,7 @@ _WECHAT_TEXT_LINE = re.compile(
     r"(?:\s*[:：]\s*(?P<content>.*))?$"
 )
 _PROBE_BYTES = 64 * 1024
+_DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 
 
 class ParserError(ValueError):
@@ -218,7 +219,7 @@ class ParserRegistry:
             raise ParserError("source_not_found", "parser source does not exist")
         if (
             resolved.is_file()
-            and resolved.suffix.casefold() == ".db"
+            and resolved.suffix.casefold() in _DATABASE_SUFFIXES
             and not normalized_metadata.get("source_type")
         ):
             raise ParserError(
@@ -244,7 +245,10 @@ class ParserRegistry:
             } or "qq" in normalized_name or "群" in resolved.name
             if not is_named_database and normalized_metadata.get("source_type") != "generic_sqlite":
                 try:
-                    has_database_file = any(resolved.rglob("*.db"))
+                    has_database_file = any(
+                        candidate.is_file() and candidate.suffix.casefold() in _DATABASE_SUFFIXES
+                        for candidate in resolved.rglob("*")
+                    )
                 except OSError:
                     has_database_file = False
                 if has_database_file:
