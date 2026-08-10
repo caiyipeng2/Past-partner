@@ -29,6 +29,14 @@ class ServerConfigTests(unittest.TestCase):
 
         self.assertIn("PAST_PARTNER_RAW_RETENTION_SECONDS=0", template.read_text(encoding="utf-8"))
 
+    def test_model_pricing_json_is_loaded_from_environment(self) -> None:
+        raw = '{"deepseek/deepseek-v4-flash":{"input_price_per_million_tokens":0.14}}'
+        with patch.dict(os.environ, {"PAST_PARTNER_MODEL_PRICING_JSON": raw}, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual(raw, config.model_pricing_json)
+        self.assertIsNone(ServerConfig().model_pricing_json)
+
 
 if __name__ == "__main__":
     unittest.main()

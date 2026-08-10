@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from src.domain.consents import ConsentValidationError
 from src.domain.personas import PersonaValidationError
+from src.providers.catalog import CatalogValidationError
 from src.providers.gateway import ProviderError
 from src.server.application import Application, RequestValidationError
 from src.server.config import ServerConfig
@@ -40,6 +41,7 @@ _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
 _CONSENTS_PATH = "/api/v1/consents"
 _CONSENT_REVOKE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/revoke$")
+_MODEL_COST_ESTIMATE_PATH = "/api/v1/models/cost-estimate"
 _STATIC_FILES = {
     "/": "workspace.html",
     "/index.html": "workspace.html",
@@ -125,6 +127,12 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._error(status, exc.code, str(exc))
         except ConsentNotFoundError:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+        except CatalogValidationError as exc:
+            status = HTTPStatus.UNPROCESSABLE_ENTITY if exc.code in {
+                "pricing_unavailable",
+                "invalid_usage",
+            } else HTTPStatus.BAD_REQUEST
+            self._error(status, exc.code, str(exc))
         except (PersonaNotFoundError, ImportNotFoundError):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
         except UploadError as exc:
@@ -253,6 +261,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif path == _MODEL_COST_ESTIMATE_PATH:
+            self._json(HTTPStatus.OK, self.server.application.estimate_model_cost(self._json_body()))
         elif path == _CONSENTS_PATH:
             self._json(HTTPStatus.CREATED, self.server.application.create_consent(self.owner_id, self._json_body()))
         elif match := _CORRECTIONS_PATH.fullmatch(path):

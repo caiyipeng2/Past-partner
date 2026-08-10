@@ -30,6 +30,7 @@ class ServerConfig:
     max_chunk_bytes: int = DEFAULT_CHUNK_BYTES
     max_import_bytes: int = DEFAULT_MAX_IMPORT_BYTES
     raw_retention_seconds: int = 0
+    model_pricing_json: str | None = None
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -49,6 +50,7 @@ class ServerConfig:
             raw_retention_seconds=_int_env(
                 "PAST_PARTNER_RAW_RETENTION_SECONDS", default.raw_retention_seconds
             ),
+            model_pricing_json=os.getenv("PAST_PARTNER_MODEL_PRICING_JSON"),
         ).validated()
 
     def validated(self) -> "ServerConfig":
