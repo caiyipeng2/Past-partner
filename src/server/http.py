@@ -13,11 +13,13 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
+from src.domain.consents import ConsentValidationError
 from src.domain.personas import PersonaValidationError
 from src.providers.gateway import ProviderError
 from src.server.application import Application, RequestValidationError
 from src.server.config import ServerConfig
 from src.services.import_service import ImportNotFoundError, ImportValidationError
+from src.services.consent_service import ConsentNotFoundError
 from src.services.local_auth import LocalAuthError
 from src.services.persona_service import PersonaNotFoundError
 from src.services.upload_service import UploadError
@@ -36,6 +38,8 @@ _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
+_CONSENTS_PATH = "/api/v1/consents"
+_CONSENT_REVOKE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/revoke$")
 _STATIC_FILES = {
     "/": "workspace.html",
     "/index.html": "workspace.html",
@@ -111,6 +115,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
         except (PersonaValidationError, ImportValidationError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, getattr(exc, "code", "validation_error"), str(exc))
+        except ConsentValidationError as exc:
+            status = {
+                "consent_exists": HTTPStatus.CONFLICT,
+                "consent_already_revoked": HTTPStatus.CONFLICT,
+                "consent_revoked": HTTPStatus.CONFLICT,
+                "consent_scope_mismatch": HTTPStatus.CONFLICT,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
+        except ConsentNotFoundError:
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
         except (PersonaNotFoundError, ImportNotFoundError):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
         except UploadError as exc:
@@ -170,6 +184,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
         elif path == "/api/v1/data-export":
             self._json(HTTPStatus.OK, self.server.application.export_data(self.owner_id))
+        elif path == _CONSENTS_PATH:
+            persona_id = query.get("persona_id", [None])[0]
+            self._json(HTTPStatus.OK, self.server.application.list_consents(self.owner_id, persona_id))
         elif match := _MISSING_CHUNKS_PATH.fullmatch(path):
             raw_expected = query.get("expected_chunks", [None])[0]
             expected_chunks = None
@@ -236,6 +253,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif path == _CONSENTS_PATH:
+            self._json(HTTPStatus.CREATED, self.server.application.create_consent(self.owner_id, self._json_body()))
         elif match := _CORRECTIONS_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -257,6 +276,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         elif match := _CANCEL_PATH.fullmatch(path):
             self._json_body()
             self._json(HTTPStatus.OK, self.server.application.cancel_import(self.owner_id, match.group(1)))
+        elif match := _CONSENT_REVOKE_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.revoke_consent(self.owner_id, match.group(1)))
         elif match := _COMPLETE_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.complete_import(self.owner_id, match.group(1), self._json_body()))
         else:

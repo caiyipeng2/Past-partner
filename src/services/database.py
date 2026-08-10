@@ -36,8 +36,9 @@ class Migration:
 
 
 # Version 1 establishes the durable migration ledger. Version 2 owns the
-# encrypted persona record table, version 3 owns import metadata, and version 4
-# owns local owner sessions. Business repositories add their own tables in later migrations so startup remains
+# encrypted persona record table, version 3 owns import metadata, version 4
+# owns local owner sessions, and version 5 owns encrypted media consents. Business
+# repositories add their own tables in later migrations so startup remains
 # transactional and history is auditable.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
@@ -95,6 +96,22 @@ DEFAULT_MIGRATIONS = (
             """,
             "ALTER TABLE personas ADD COLUMN owner_id TEXT REFERENCES local_users(id)",
             "ALTER TABLE imports ADD COLUMN owner_id TEXT REFERENCES local_users(id)",
+        ),
+    ),
+    Migration(
+        version=5,
+        name="media_consent_repository",
+        statements=(
+            """
+            CREATE TABLE consents (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "CREATE INDEX consents_owner_persona_idx ON consents(owner_id, persona_id)",
         ),
     ),
 )
