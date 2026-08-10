@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from src.providers.catalog import ProviderCatalog
+from src.providers.base import ProviderAdapter
+from src.providers.native import AnthropicAdapter, AnthropicConfig, GeminiAdapter, GeminiConfig
 from src.providers.openai_compatible import OpenAICompatibleAdapter, OpenAICompatibleConfig
 
 
@@ -28,6 +30,21 @@ _PROVIDERS = (
     _EnvironmentProvider("qwen", "PAST_PARTNER_QWEN", "https://dashscope.aliyuncs.com/compatible-mode/v1", ("DASHSCOPE_API_KEY",)),
     _EnvironmentProvider("ollama", "PAST_PARTNER_OLLAMA", "http://127.0.0.1:11434/v1", key_required=False, models_required=True),
     _EnvironmentProvider("custom_openai", "PAST_PARTNER_CUSTOM_OPENAI", None, models_required=True),
+)
+
+_NATIVE_PROVIDERS = (
+    _EnvironmentProvider(
+        "anthropic",
+        "PAST_PARTNER_ANTHROPIC",
+        "https://api.anthropic.com",
+        ("ANTHROPIC_API_KEY",),
+    ),
+    _EnvironmentProvider(
+        "gemini",
+        "PAST_PARTNER_GEMINI",
+        "https://generativelanguage.googleapis.com",
+        ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    ),
 )
 
 
@@ -65,6 +82,56 @@ def build_openai_compatible_adapters(
                 allowed_models=allowed_models,
             )
         )
+    return adapters
+
+
+def build_provider_adapters(
+    catalog: ProviderCatalog,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, ProviderAdapter]:
+    """Build all supported runtime adapters while keeping secrets at process scope."""
+
+    environment = os.environ if environ is None else environ
+    adapters: dict[str, ProviderAdapter] = dict(
+        build_openai_compatible_adapters(catalog, environment)
+    )
+    for definition in _NATIVE_PROVIDERS:
+        provider = catalog.find_provider(definition.provider_id)
+        if provider is None:
+            continue
+        api_key = _first_value(
+            environment,
+            f"{definition.prefix}_API_KEY",
+            *definition.key_aliases,
+        )
+        base_url = _first_value(environment, f"{definition.prefix}_BASE_URL") or definition.default_base_url
+        configured_models = _models(environment.get(f"{definition.prefix}_MODELS"))
+        allowed_models = configured_models or frozenset(model.id for model in provider.models)
+        if definition.key_required and not api_key:
+            continue
+        if definition.models_required and not configured_models:
+            continue
+        if not base_url or not allowed_models:
+            continue
+        _validate_base_url(base_url, definition.provider_id)
+        if definition.provider_id == "anthropic":
+            adapters[definition.provider_id] = AnthropicAdapter(
+                AnthropicConfig(
+                    provider_id=definition.provider_id,
+                    base_url=base_url,
+                    api_key=api_key or "",
+                    allowed_models=allowed_models,
+                )
+            )
+        else:
+            adapters[definition.provider_id] = GeminiAdapter(
+                GeminiConfig(
+                    provider_id=definition.provider_id,
+                    base_url=base_url,
+                    api_key=api_key or "",
+                    allowed_models=allowed_models,
+                )
+            )
     return adapters
 
 

@@ -3,6 +3,7 @@
 from .base import ChatMessage, ChatRequest, ChatResponse
 from .catalog import ProviderCatalog
 from .gateway import ProviderError, ProviderGateway
+from .native import AnthropicAdapter, GeminiAdapter
 
 __all__ = [
     "ChatMessage",
@@ -11,4 +12,6 @@ __all__ = [
     "ProviderCatalog",
     "ProviderError",
     "ProviderGateway",
+    "AnthropicAdapter",
+    "GeminiAdapter",
 ]

@@ -71,7 +71,10 @@ class PrivacyPolicyContractTests(unittest.TestCase):
             line for line in self.policy.splitlines() if "目前仅存在于供应商目录中" in line
         )
         catalog_ids = {provider.id for provider in ProviderCatalog.default().providers()}
-        runtime_ids = {definition.provider_id for definition in configuration._PROVIDERS}
+        runtime_ids = {
+            definition.provider_id
+            for definition in (*configuration._PROVIDERS, *configuration._NATIVE_PROVIDERS)
+        }
 
         self.assertEqual(catalog_ids, set(_PROVIDER_LABELS))
         self.assertLessEqual(runtime_ids, catalog_ids)
