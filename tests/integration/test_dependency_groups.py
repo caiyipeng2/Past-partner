@@ -41,6 +41,7 @@ class DependencyGroupContractTests(unittest.TestCase):
                 "jieba>=0.42.1",
                 "scikit-learn>=1.0.0",
                 "jsonlines>=3.1.0",
+                "pypdf>=5.0.0",
             ],
             self._entries("requirements-parsers.txt"),
         )
