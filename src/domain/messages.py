@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from src.domain.attachments import AttachmentValidationError, normalize_attachments
+
 
 class MessageValidationError(ValueError):
     """Raised when an imported message cannot be normalized safely."""
@@ -39,17 +41,11 @@ class NormalizedMessage:
         if message_type is None:
             message_type = _optional_text(value.get("type")) or "text"
 
-        raw_attachments = value.get("attachments", ())
-        if raw_attachments is None:
-            raw_attachments = ()
-        if not isinstance(raw_attachments, (list, tuple)):
-            raise MessageValidationError("attachments must be a list")
-
-        attachments: list[dict[str, Any]] = []
-        for attachment in raw_attachments:
-            if not isinstance(attachment, Mapping):
-                raise MessageValidationError("each attachment must be an object")
-            attachments.append(dict(attachment))
+        raw_attachments = value.get("attachments", value.get("media_refs", ()))
+        try:
+            attachments = normalize_attachments(raw_attachments, message_type=message_type)
+        except AttachmentValidationError as exc:
+            raise MessageValidationError(str(exc)) from exc
 
         record_id = _optional_record_id(value.get("record_id"))
 
@@ -62,7 +58,7 @@ class NormalizedMessage:
             content=content,
             timestamp=timestamp,
             message_type=message_type,
-            attachments=tuple(attachments),
+            attachments=attachments,
             record_id=record_id,
         )
 

@@ -477,12 +477,15 @@ class _HtmlMessageContext:
     message_type: str = "text"
     content_parts: list[str] | None = None
     active_fields: list[tuple[str, int]] | None = None
+    attachments: list[dict[str, str]] | None = None
 
     def __post_init__(self) -> None:
         if self.content_parts is None:
             self.content_parts = []
         if self.active_fields is None:
             self.active_fields = []
+        if self.attachments is None:
+            self.attachments = []
 
 
 class _WeChatHTMLDocumentParser(HTMLParser):
@@ -532,6 +535,9 @@ class _WeChatHTMLDocumentParser(HTMLParser):
             self.contexts.append(context)
             return
         if self.contexts:
+            attachment = _html_attachment(tag, normalized)
+            if attachment is not None:
+                self.contexts[-1].attachments.append(attachment)
             field = self._field_for_element(tag, normalized)
             if field:
                 self.contexts[-1].active_fields.append((field, self.depth))
@@ -618,7 +624,7 @@ class _WeChatHTMLDocumentParser(HTMLParser):
     def _finalize_context(self) -> None:
         context = self.contexts.pop()
         content = _normalize_html_text("".join(context.content_parts))
-        if not content:
+        if not content and not context.attachments:
             return
         sender_id = (context.sender_id or context.sender_name or "unknown").strip()
         sender_name = (context.sender_name or sender_id).strip()
@@ -631,6 +637,7 @@ class _WeChatHTMLDocumentParser(HTMLParser):
                     "content": content,
                     "timestamp": timestamp,
                     "message_type": context.message_type,
+                    "attachments": context.attachments,
                 }
             )
         )
@@ -1152,6 +1159,7 @@ _XML_FIELD_ALIASES: dict[str, frozenset[str]] = {
     "timestamp": frozenset({"timestamp", "time", "datetime", "date", "created_at", "created"}),
     "message_type": frozenset({"message_type", "type", "kind"}),
 }
+_XML_ATTACHMENT_TAGS = frozenset({"attachment", "media", "image", "audio", "video", "file", "document", "sticker"})
 
 
 def _iter_xml_records(path: Path) -> Iterator[NormalizedMessage]:
@@ -1190,7 +1198,7 @@ def _xml_record(element: ET.Element, index: int) -> NormalizedMessage:
         raise ParserError("invalid_record", f"XML message {index}: {exc}") from exc
 
 
-def _xml_record_values(element: ET.Element) -> dict[str, str]:
+def _xml_record_values(element: ET.Element) -> dict[str, Any]:
     fields: dict[str, str] = {}
     for name, value in element.attrib.items():
         canonical = _xml_field_name(name)
@@ -1199,6 +1207,8 @@ def _xml_record_values(element: ET.Element) -> dict[str, str]:
 
     for child in element.iter():
         if child is element:
+            continue
+        if _xml_local_name(child.tag) in _XML_ATTACHMENT_TAGS:
             continue
         canonical = _xml_field_name(child.tag)
         if not canonical:
@@ -1224,7 +1234,45 @@ def _xml_record_values(element: ET.Element) -> dict[str, str]:
         "content": content,
         "timestamp": fields.get("timestamp", ""),
         "message_type": fields.get("message_type") or "text",
+        "attachments": _xml_attachments(element),
     }
+
+
+def _xml_attachments(element: ET.Element) -> list[dict[str, str]]:
+    attachments: list[dict[str, str]] = []
+    for child in element.iter():
+        if child is element or _xml_local_name(child.tag) not in _XML_ATTACHMENT_TAGS:
+            continue
+        attributes = {
+            _xml_local_name(name): value.strip()
+            for name, value in child.attrib.items()
+            if isinstance(value, str) and value.strip()
+        }
+        reference = (
+            attributes.get("path")
+            or attributes.get("src")
+            or attributes.get("href")
+            or attributes.get("url")
+            or _xml_text(child)
+        )
+        if not reference:
+            continue
+        item: dict[str, str] = {
+            "path": reference,
+            "kind": _xml_local_name(child.tag),
+        }
+        for source, target in (
+            ("name", "name"),
+            ("filename", "name"),
+            ("mime", "media_type"),
+            ("media_type", "media_type"),
+            ("type", "media_type"),
+            ("size", "size"),
+        ):
+            if attributes.get(source):
+                item[target] = attributes[source]
+        attachments.append(item)
+    return attachments
 
 
 def _xml_field_name(value: object) -> str | None:
@@ -1424,6 +1472,24 @@ _CSV_HEADER_ALIASES: dict[str, frozenset[str]] = {
         }
     ),
     "message_type": frozenset({"message_type", "type", "kind", "类型", "消息类型"}),
+    "attachments": frozenset(
+        {
+            "attachment",
+            "attachments",
+            "media",
+            "media_ref",
+            "media_refs",
+            "file",
+            "file_path",
+            "attachment_path",
+            "附件",
+            "附件路径",
+            "媒体",
+            "文件",
+            "文件路径",
+            "图片",
+        }
+    ),
 }
 
 
@@ -1491,6 +1557,7 @@ def _csv_record_values(
         "content": value_for("content"),
         "timestamp": value_for("timestamp"),
         "message_type": value_for("message_type") or "text",
+        "attachments": value_for("attachments"),
     }
 
 
@@ -1531,6 +1598,38 @@ def _first_attr(attrs: Mapping[str, str], *names: str) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _html_attachment(tag: str, attrs: Mapping[str, str]) -> dict[str, str] | None:
+    """Capture a media element's logical reference without fetching its bytes."""
+    normalized_tag = tag.casefold()
+    if normalized_tag in {"img", "picture", "audio", "video", "source"}:
+        reference = _first_attr(attrs, "src", "data-src", "data-url", "href")
+        kind = {
+            "img": "image",
+            "picture": "image",
+            "audio": "audio",
+            "video": "video",
+            "source": "file",
+        }[normalized_tag]
+    elif normalized_tag == "a" and _first_attr(attrs, "download", "data-file", "data-attachment"):
+        reference = _first_attr(attrs, "href", "data-file", "data-url")
+        kind = "file"
+    else:
+        return None
+    if not reference:
+        return None
+    item: dict[str, str] = {"path": reference, "kind": kind}
+    name = _first_attr(attrs, "download", "data-name", "title", "alt")
+    media_type = _first_attr(attrs, "type", "media-type", "data-media-type")
+    size = _first_attr(attrs, "data-size", "size")
+    if name:
+        item["name"] = name
+    if media_type:
+        item["media_type"] = media_type
+    if size:
+        item["size"] = size
+    return item
 
 
 def _normalize_html_text(value: str) -> str:

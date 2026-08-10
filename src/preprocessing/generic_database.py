@@ -54,6 +54,11 @@ class _MessageSchema:
     message_id: str | None
     sender_name: str | None
     message_type: str | None
+    attachment: str | None
+    attachment_name: str | None
+    attachment_type: str | None
+    attachment_size: str | None
+    attachment_url: str | None
 
 
 _COLUMN_ALIASES = {
@@ -116,6 +121,23 @@ _COLUMN_ALIASES = {
         "kind",
         "type",
     ),
+    "attachment": (
+        "attachments",
+        "attachment",
+        "media",
+        "media_ref",
+        "media_refs",
+        "attachment_path",
+        "file_path",
+        "file",
+        "image_path",
+        "voice_path",
+        "video_path",
+    ),
+    "attachment_name": ("attachment_name", "filename", "file_name", "media_name"),
+    "attachment_type": ("attachment_type", "media_type", "mime_type", "mime", "file_type"),
+    "attachment_size": ("attachment_size", "media_size", "file_size", "size", "length"),
+    "attachment_url": ("attachment_url", "media_url", "file_url", "url"),
 }
 _MESSAGE_TABLE_HINTS = frozenset(
     {
@@ -333,6 +355,11 @@ def _discover_schemas(databases: Sequence[Path]) -> list[_MessageSchema]:
                         message_id=_find_column(normalized, "message_id"),
                         sender_name=_find_column(normalized, "sender_name"),
                         message_type=_find_column(normalized, "message_type"),
+                        attachment=_find_column(normalized, "attachment"),
+                        attachment_name=_find_column(normalized, "attachment_name"),
+                        attachment_type=_find_column(normalized, "attachment_type"),
+                        attachment_size=_find_column(normalized, "attachment_size"),
+                        attachment_url=_find_column(normalized, "attachment_url"),
                     )
                 )
     return schemas
@@ -349,6 +376,11 @@ def _iter_schema(schema: _MessageSchema, snapshot_root: Path) -> Iterator[Normal
         for alias, column in (
             ("__sender_name", schema.sender_name),
             ("__message_type", schema.message_type),
+            ("__attachment", schema.attachment),
+            ("__attachment_name", schema.attachment_name),
+            ("__attachment_type", schema.attachment_type),
+            ("__attachment_size", schema.attachment_size),
+            ("__attachment_url", schema.attachment_url),
         ):
             selected.append(
                 f"{_quote_identifier(column)} AS \"{alias}\"" if column else f"NULL AS \"{alias}\""
@@ -363,7 +395,8 @@ def _iter_schema(schema: _MessageSchema, snapshot_root: Path) -> Iterator[Normal
             for row in connection.execute(query):
                 sender_id = _text(row["__sender"])
                 content = _text(row["__content"])
-                if not sender_id or not content:
+                attachments = _database_attachments(row)
+                if not sender_id or (not content and not attachments):
                     continue
                 yield NormalizedMessage.from_mapping(
                     {
@@ -372,7 +405,7 @@ def _iter_schema(schema: _MessageSchema, snapshot_root: Path) -> Iterator[Normal
                         "content": content,
                         "timestamp": _timestamp(row["__timestamp"]),
                         "message_type": _message_type(row["__message_type"]),
-                        "attachments": (),
+                        "attachments": attachments,
                     }
                 )
         except (sqlite3.DatabaseError, MessageValidationError) as exc:
@@ -382,6 +415,32 @@ def _iter_schema(schema: _MessageSchema, snapshot_root: Path) -> Iterator[Normal
                 "corrupt_database",
                 "SQLite 数据库无法以只读方式读取，可能已损坏或不是受支持版本",
             ) from exc
+
+
+def _database_attachments(row: sqlite3.Row) -> object:
+    """Build one metadata-only reference from common attachment columns."""
+    raw = row["__attachment"]
+    if isinstance(raw, str) and raw.strip().startswith(("[", "{")):
+        return raw
+    reference = _text(raw)
+    name = _text(row["__attachment_name"])
+    media_type = _text(row["__attachment_type"])
+    size = row["__attachment_size"]
+    url = _text(row["__attachment_url"])
+    if not reference and not name and not url:
+        return ()
+    item: dict[str, object] = {}
+    if reference:
+        item["path"] = reference
+    if name:
+        item["name"] = name
+    if media_type:
+        item["media_type"] = media_type
+    if size not in (None, ""):
+        item["size"] = size
+    if url:
+        item["url"] = url
+    return (item,)
 
 
 def _database_paths(root: Path) -> list[Path]:
