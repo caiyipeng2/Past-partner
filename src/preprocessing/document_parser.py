@@ -169,11 +169,16 @@ def _read_docx_content(path: Path) -> _DocumentContent:
     for paragraph in root.iter():
         if _local_name(paragraph.tag) != "p":
             continue
-        text = "".join(
-            node.text or ""
-            for node in paragraph.iter()
-            if _local_name(node.tag) == "t"
-        ).strip()
+        text_parts: list[str] = []
+        for node in paragraph.iter():
+            name = _local_name(node.tag)
+            if name == "t":
+                text_parts.append(node.text or "")
+            elif name in {"br", "cr"}:
+                text_parts.append("\n")
+            elif name == "tab":
+                text_parts.append("\t")
+        text = "".join(text_parts).strip()
         if text:
             lines.append(text)
     return _DocumentContent(tuple(lines))
@@ -329,12 +334,21 @@ def _pdf_page_count(data: bytes) -> int | None:
 
 
 def _has_message_hint(lines: Sequence[str]) -> bool:
-    return any(_TEXT_LINE.match(line) or _SENDER_LINE.match(line) for line in lines)
+    return any(
+        _TEXT_LINE.match(line) or _SENDER_LINE.match(line)
+        for raw_line in lines
+        for line in (raw_line.splitlines() or [raw_line])
+    )
 
 
 def _records_from_lines(lines: Sequence[str], *, source_label: str) -> Iterator[NormalizedMessage]:
     pending: dict[str, str] | None = None
-    for line_number, raw_line in enumerate(lines, 1):
+    expanded_lines = (
+        line
+        for raw_line in lines
+        for line in (raw_line.splitlines() or [raw_line])
+    )
+    for line_number, raw_line in enumerate(expanded_lines, 1):
         line = raw_line.strip()
         if not line:
             continue

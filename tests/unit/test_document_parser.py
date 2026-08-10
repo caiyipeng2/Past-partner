@@ -102,6 +102,21 @@ class DocumentParserTests(unittest.TestCase):
 
         self.assertEqual("unsupported_format", raised.exception.code)
 
+    def test_preserves_docx_line_breaks_and_tabs_inside_message(self) -> None:
+        document_xml = (
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:body><w:p><w:r><w:t>2026-08-10 10:00:00 - u1: first</w:t>'
+            '<w:br/><w:t>second</w:t><w:tab/><w:t>column</w:t></w:r></w:p>'
+            '</w:body></w:document>'
+        ).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "line-breaks.docx"
+            self._write_docx(path, document_xml)
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("first\nsecond\tcolumn", result.records[0].content)
+
     @staticmethod
     def _write_docx(path: Path, document_xml: bytes) -> None:
         with zipfile.ZipFile(path, "w") as archive:
