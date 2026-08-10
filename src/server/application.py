@@ -97,6 +97,7 @@ class Application:
             if hasattr(adapter, "config")
         }
         catalog = catalog.with_configured(set(adapters) - {"test"}, runtime_models)
+        catalog = catalog.with_pricing_json(config.model_pricing_json)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
         return cls(personas, imports, uploads, consents, master_keys, encryption, catalog, gateway, auth)
 
@@ -309,6 +310,25 @@ class Application:
                 for model in provider.models
             ]
         }
+
+    def estimate_model_cost(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            provider_id = payload["provider_id"]
+            model_id = payload["model_id"]
+            input_tokens = payload["input_tokens"]
+            output_tokens = payload["output_tokens"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+        if not isinstance(provider_id, str) or not isinstance(model_id, str):
+            raise RequestValidationError("invalid_model_reference", "provider_id and model_id must be strings")
+        estimate = self.catalog.estimate_cost(
+            provider_id,
+            model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            media_units=payload.get("media_units", 0),
+        )
+        return estimate.to_dict()
 
     def chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
