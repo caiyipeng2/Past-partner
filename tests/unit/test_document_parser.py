@@ -1,4 +1,4 @@
-"""P1-06 DOCX/PDF conversation document parser contracts."""
+"""P1-08/P1-09 document conversation parser contracts."""
 
 from __future__ import annotations
 
@@ -78,6 +78,24 @@ class DocumentParserTests(unittest.TestCase):
         self.assertEqual(1, len(result.records))
         self.assertEqual("hello", result.records[0].content)
 
+    def test_decodes_utf16be_hex_pdf_text_in_fallback(self) -> None:
+        text = "2026-08-10 10:00:00 - 小明: 你好"
+        encoded = (b"FEFF" + text.encode("utf-16-be").hex().upper().encode("ascii"))
+        pdf = (
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Length 80 >>\nstream\n"
+            b"BT /F1 12 Tf 72 720 Td <" + encoded + b"> Tj ET\n"
+            b"endstream\nendobj\n%%EOF\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "utf16.pdf"
+            path.write_bytes(pdf)
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("小明", result.records[0].sender_id)
+        self.assertEqual("你好", result.records[0].content)
+
     def test_rejects_non_pdf_content_with_stable_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.pdf"
@@ -87,6 +105,33 @@ class DocumentParserTests(unittest.TestCase):
                 self.registry.parse(path)
 
         self.assertEqual("unsupported_format", raised.exception.code)
+
+    def test_rejects_encrypted_pdf_without_guessing_keys(self) -> None:
+        pdf = b"%PDF-1.4\n1 0 obj\n<< /Encrypt 2 0 R >>\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "encrypted.pdf"
+            path.write_bytes(pdf)
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("encrypted_document", raised.exception.code)
+
+    def test_rejects_pdf_over_page_limit(self) -> None:
+        pdf = (
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Count 513 /Length 62 >>\nstream\n"
+            b"BT /F1 12 Tf 72 720 Td (2026-08-10 10:00:00 - u1: hello) Tj ET\n"
+            b"endstream\nendobj\n%%EOF\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "too-many-pages.pdf"
+            path.write_bytes(pdf)
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("document_too_large", raised.exception.code)
 
     def test_rejects_docx_without_message_records(self) -> None:
         document_xml = (
