@@ -88,9 +88,9 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 P1-03 已增加通用 HTML 聊天记录解析，支持常见消息容器、发送者/时间/正文标记、HTML 实体、UTF-8/UTF-16/GB18030 编码，并忽略脚本、样式和模板内容。
 
-P1-04 已增加通用 SQLite schema 自动探测，支持用户主动选择的数据库目录、WAL/SHM 一致只读快照、常见消息表字段别名和稳定错误码；单个 `.db`、加密库和未知 schema 不会被伪装为成功解析。
-P1-05 已增加附件引用元数据标准化：JSON/JSONL、CSV、XML、HTML 和通用 SQLite 消息中的图片、音频、视频、文件、贴纸引用会统一为安全的相对路径或 URL、文件名、MIME、类型、大小和可选校验值；绝对路径、路径穿越、内嵌原始字节会被拒绝，解析器不会读取媒体内容。
-P1-06 已增加 DOCX/PDF 对话文档解析：DOCX 只读取受控 `word/document.xml`，PDF 优先使用可选 `pypdf` 并保留有界纯文本回退；文档扩展名优先于通用文本探测，损坏、加密、超限和无对话内容会返回明确错误。
+原始任务编号对齐：ZIP 安全边界已随 P0-32/P0-33 备份解析落地，对应原 P1-04；通用 SQLite schema 探测对应原 P1-05；微信/QQ 原生数据库目录解析对应原 P1-06/P1-07。当前 P1-07 已补充支持 `.db`、`.sqlite`、`.sqlite3` 及其 WAL/SHM sidecar，并保持只读快照、未知 schema 和密钥需求的明确错误。
+附件引用元数据标准化是额外补充能力（不占用原始 P1-05 编号）：JSON/JSONL、CSV、XML、HTML 和通用 SQLite 消息中的图片、音频、视频、文件、贴纸引用会统一为安全的相对路径或 URL、文件名、MIME、类型、大小和可选校验值；绝对路径、路径穿越、内嵌原始字节会被拒绝，解析器不会读取媒体内容。
+DOCX/PDF 对话文档解析已作为提前合并的补充实现落地，覆盖原始 P1-08/P1-09：DOCX 只读取受控 `word/document.xml`，PDF 优先使用可选 `pypdf` 并保留有界纯文本回退；文档扩展名优先于通用文本探测，损坏、加密、超限和无对话内容会返回明确错误。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。

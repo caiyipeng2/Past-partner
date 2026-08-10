@@ -71,6 +71,7 @@ _MESSAGE_TABLE_HINTS = frozenset(
         "records",
     }
 )
+_DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _COLUMN_ALIASES = {
     "sender": (
         "sender_id",
@@ -162,7 +163,7 @@ def create_qq_snapshot(
     if not source.is_dir():
         raise QqDatabaseError(
             "source_not_directory",
-            "QQ 数据库必须提供包含 .db 文件的目录，不能直接上传单个数据库文件",
+            "QQ 数据库必须提供包含 SQLite 数据库文件的目录，不能直接上传单个数据库文件",
         )
     cache = Path(cache_root).resolve()
     try:
@@ -179,7 +180,7 @@ def create_qq_snapshot(
         try:
             databases = _database_paths(source)
             if not databases:
-                raise QqDatabaseError("empty_source", "QQ 数据库目录中没有 .db 文件")
+                raise QqDatabaseError("empty_source", "QQ 数据库目录中没有 SQLite 数据库文件")
             sources = _with_sidecars(databases)
             _validate_source_files(source, sources)
             snapshot_root = cache / f"qq-{uuid.uuid4().hex}"
@@ -193,7 +194,7 @@ def create_qq_snapshot(
                 copied.append(SnapshotFile(source_file, destination))
             databases_after = _database_paths(source)
             if not databases_after:
-                raise QqDatabaseError("empty_source", "QQ 数据库目录中没有 .db 文件")
+                raise QqDatabaseError("empty_source", "QQ 数据库目录中没有 SQLite 数据库文件")
             sources_after = _with_sidecars(databases_after)
             _validate_source_files(source, sources_after)
             after = _capture_metadata(sources_after)
@@ -240,7 +241,7 @@ class QqDatabaseParser:
             return ParserProbe(self.source_type, 0.0, False, "目录没有明确的 QQ 数据库来源标识")
         databases = _database_paths(path)
         if not databases:
-            return ParserProbe(self.source_type, 0.0, False, "目录中没有 .db 数据库文件")
+            return ParserProbe(self.source_type, 0.0, False, "目录中没有 SQLite 数据库文件")
         confidence = 0.99 if explicit else 0.96
         return ParserProbe(self.source_type, confidence, True, "QQ 数据库目录已识别")
 
@@ -251,7 +252,7 @@ class QqDatabaseParser:
         if not source.path.is_dir():
             return ParserValidation(False, "source_not_directory", probe.reason)
         if not _database_paths(source.path):
-            return ParserValidation(False, "empty_source", "QQ 数据库目录中没有 .db 文件")
+            return ParserValidation(False, "empty_source", "QQ 数据库目录中没有 SQLite 数据库文件")
         return ParserValidation(True)
 
     def stream_records(self, source: "ParserSource") -> Iterator[NormalizedMessage]:
@@ -395,7 +396,7 @@ def _database_paths(root: Path) -> list[Path]:
         return []
     result: list[Path] = []
     for path in sorted(root.rglob("*")):
-        if path.suffix.casefold() != ".db" or not path.is_file():
+        if path.suffix.casefold() not in _DATABASE_SUFFIXES or not path.is_file():
             continue
         resolved = path.resolve()
         try:

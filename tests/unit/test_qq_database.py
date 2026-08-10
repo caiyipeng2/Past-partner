@@ -57,6 +57,26 @@ class QqDatabaseTests(unittest.TestCase):
         self.assertEqual("阿明", result.records[0].sender_name)
         self.assertEqual("别忘了带伞", result.records[0].content)
 
+    def test_parses_common_sqlite_database_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "QQData"
+            root.mkdir()
+            connection = sqlite3.connect(root / "messages.sqlite3")
+            with connection:
+                connection.execute(
+                    "CREATE TABLE messages (sender_id TEXT, content TEXT, timestamp INTEGER)"
+                )
+                connection.execute(
+                    "INSERT INTO messages VALUES (?, ?, ?)",
+                    ("30001", "sqlite3 扩展名", 1780000000),
+                )
+            connection.close()
+
+            result = self.registry.parse(root)
+
+        self.assertEqual("qq_database", result.source_type)
+        self.assertEqual("sqlite3 扩展名", result.records[0].content)
+
     def test_rejects_single_database_file_even_without_explicit_source_type(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "QQMessage.db"
@@ -135,6 +155,22 @@ class QqDatabaseTests(unittest.TestCase):
 
             with self.assertRaises(SnapshotChangedError):
                 create_qq_snapshot(source, cache, retries=1, copy_file=mutate_after_copy)
+
+    def test_snapshot_includes_sidecars_for_sqlite3_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "qq"
+            source.mkdir()
+            database = source / "messages.sqlite3"
+            database.write_bytes(b"SQLite format 3\x00fixture")
+            (source / "messages.sqlite3-wal").write_bytes(b"wal")
+            (source / "messages.sqlite3-shm").write_bytes(b"shm")
+
+            snapshot = create_qq_snapshot(source, Path(directory) / "cache")
+
+        self.assertEqual(
+            {"messages.sqlite3", "messages.sqlite3-wal", "messages.sqlite3-shm"},
+            {item.copied.relative_to(snapshot.root).as_posix() for item in snapshot.files},
+        )
 
     @staticmethod
     def _create_messages_fixture(root: Path) -> None:
