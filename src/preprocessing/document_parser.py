@@ -290,10 +290,7 @@ def _pdf_text_operators(block: bytes) -> list[str]:
         if literal.startswith(b"("):
             value = _decode_pdf_literal(literal[1:-1])
         else:
-            try:
-                value = bytes.fromhex(match.group(2).decode("ascii")).decode("utf-8", errors="replace")
-            except ValueError:
-                value = ""
+            value = _decode_pdf_hex(match.group(2))
         if value:
             parts.append(value.strip())
     for match in re.finditer(rb"\[(.*?)\]\s*TJ", block, re.DOTALL):
@@ -302,10 +299,7 @@ def _pdf_text_operators(block: bytes) -> list[str]:
             if value:
                 parts.append(value)
         for encoded in _PDF_HEX.findall(match.group(1)):
-            try:
-                value = bytes.fromhex(encoded.decode("ascii")).decode("utf-8", errors="replace")
-            except ValueError:
-                continue
+            value = _decode_pdf_hex(encoded)
             if value:
                 parts.append(value)
     return parts
@@ -325,6 +319,19 @@ def _decode_pdf_literal(value: bytes) -> str:
     for source, target in replacements.items():
         value = value.replace(source, target)
     value = re.sub(rb"\\([0-7]{1,3})", lambda match: bytes([int(match.group(1), 8)]), value)
+    return value.decode("utf-8", errors="replace").strip()
+
+
+def _decode_pdf_hex(encoded: bytes) -> str:
+    """Decode bounded PDF hex strings, including UTF-16 text with a BOM."""
+    try:
+        value = bytes.fromhex(encoded.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if value.startswith(b"\xfe\xff"):
+        return value[2:].decode("utf-16-be", errors="replace").strip()
+    if value.startswith(b"\xff\xfe"):
+        return value[2:].decode("utf-16-le", errors="replace").strip()
     return value.decode("utf-8", errors="replace").strip()
 
 
