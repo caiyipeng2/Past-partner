@@ -97,6 +97,8 @@ P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、
 
 P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商，当前仅在调用内存中生成，尚未持久化或提供独立画像 API。
 
+P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实、事件、关系、偏好和时间线候选，支持限定已接受的 `record_id`，对重复证据合并，并为每条候选提供稳定 ID、有限证据文本、来源、时间、置信度和 `needs_review` 审核状态。`ChatDataParser.generate_long_term_memory` 不调用模型、不上传原始内容；审核通过前候选不会被视为事实，当前尚未持久化或提供独立记忆 API。
+
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 错误响应统一返回稳定 `error.code` 和 UUID 格式的 `error.diagnostic_id`；诊断 ID 同时写入服务端日志，便于在不暴露内部异常细节的情况下定位请求。
