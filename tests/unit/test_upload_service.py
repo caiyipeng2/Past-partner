@@ -106,6 +106,27 @@ class UploadServiceTests(unittest.TestCase):
             ),
         )
 
+    def test_stale_training_source_cleanup_failure_blocks_training_reads(self) -> None:
+        """Known plaintext cleanup failures cannot be ignored by a training caller."""
+        directory = self.root / "training-source"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "orphan.bin").write_bytes(b"sensitive")
+
+        with patch(
+            "src.services.upload_service.PlaintextLeaseRegistry.delete_if_stale",
+            side_effect=OSError("locked"),
+        ):
+            blocked = UploadService(
+                self.uploads.storage,
+                self.imports,
+                self.encryption,
+                read_block_bytes=4,
+            )
+            with self.assertRaises(UploadError) as captured:
+                blocked.iter_training_records("owner", "missing-import")
+
+        self.assertEqual("training_dataset_cleanup_failed", captured.exception.code)
+
     def test_tampered_chunk_fails_completion_before_payload_replace(self) -> None:
         value = b"secret"
         filler = b"xxxxx"

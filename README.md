@@ -103,6 +103,8 @@ P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `
 
 P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
 
+P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 只在本地短暂构建并清除受限 JSONL，返回样本量、摘要和价格；创建任务要求独立的 `persona_text`、`fine_tuning`、`fine_tuning:{import_id}` 精确授权，且同一份成本授权只能提交一次。数据集只包含已接受的 `persona` 文本，用户、其他参与者、未审核或已拒绝记录不会作为目标样本。任务元数据（状态、进度、可重试性、诊断 ID、摘要、成本、Provider 工件和评测）以 AES-GCM 加密保存，不保存正文、临时路径、凭据或完整 Provider 响应；`GET /api/v1/training-jobs`、`GET /api/v1/training-jobs/{job_id}` 与 `POST /api/v1/training-jobs/{job_id}/cancel` 提供 owner 范围状态管理。外发前会加密保存 `submission_started` 意图；任何微调适配器都必须能按本地 job ID 对账，才能在 Provider 已接受而远端 ID 持久化失败后继续查询或取消。`local_cleanup_failure_code` 独立记录临时明文清理故障，不会把已验证的 Provider 完成结果改写为 `failed`。只有 Provider 返回非空工件 ID 和评测对象才会标记 `completed`。当前真实供应商适配器尚未声明 `fine_tuning` 能力，开发和生产环境会明确拒绝；确定性 Provider 仅在 `PAST_PARTNER_MODE=test` 下用于自动化合同测试，不能视为实际模型训练。
+
 媒体处理实测补充（不占用原路线图任务编号）：已完成上传的图片、音频或视频可调用 `GET /api/v1/imports/{import_id}/media-inspection` 获取本地验证的格式元数据。当前图片格式映射为 BMP、GIF、ICO、JPEG、PNG、TIFF、WebP；音频格式映射为 Ogg、WAV、MP3；视频格式映射为 WebM、MP4（其他格式会明确拒绝，不伪造成功）。图片返回格式和尺寸；音频/视频返回格式、时长、编码、采样率或画面尺寸。该接口仅在服务端受控临时路径中处理单个文件边界，响应不包含原始字节或本地路径，且明确返回 `provider_transfer: false`。它不执行 OCR、ASR、图片/视频语义理解，也不调用模型；图片检测需要 `requirements-parsers.txt` 中的 Pillow，音频和视频检测还需要本机 `ffprobe` 位于 `PATH`。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
@@ -124,7 +126,9 @@ P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准�
 
 P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片和合并对象接入该服务；P0-07 已将人物名称、关系等内容字段迁入加密 SQLite 仓储，P0-08 又将导入任务和上传清单迁入同一事务仓储，P0-09 增加本地 owner Bearer 会话并为人物、导入和上传接口执行 owner 归属校验，随机服务端 ID 仅作为非秘密索引。每个分片、人物记录、导入任务和清单记录使用独立随机数据密钥和 nonce，AAD 绑定对象身份；3 GiB 导入始终按有界分片处理。启动时会先加密迁移旧 `personas/*.json`、`imports/*.json` 和 `upload-manifests/*.json`，提交成功后才删除明文源文件。开发模式只允许回环地址初始化会话，生产模式需配置 `PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN`；OIDC/OAuth2、多用户账户和审计属于后续任务，具体限制见 `docs/privacy_policy.md`。
 
-模型供应商需要在服务端显式配置凭据和允许的模型。未配置时接口返回 `provider_not_configured`，不会生成模拟回复。微调能力同样遵循真实能力检查，不会返回伪造训练指标。
+模型供应商需要在服务端显式配置凭据和允许的模型。未配置时接口返回 `provider_not_configured`，不会生成模拟回复。微调能力同样遵循目录能力、适配器、精确训练授权和价格检查，不会返回伪造训练指标；在接入并验证真实供应商微调适配器前，默认目录不会把现有模型标记为可训练。
+
+P2-07 的媒体检测 `provider_transfer` 标记不适用于训练任务。只有目录 `fine_tuning` 能力、价格、配置的微调适配器和独立训练授权都满足时，Provider 网关才会接收训练文本；缺少能力会返回 `capability_not_supported`，绝不回退为聊天请求。任务只有收到非空 `artifact_id` 与非空 `evaluation` 后才进入 `completed`，两者仅是有限结果元数据。
 
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 

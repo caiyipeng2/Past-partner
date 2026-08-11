@@ -3,6 +3,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.preprocessing.parser_registry import ParserError, ParserRegistry
 from src.preprocessing.data_parser import ChatDataParser
@@ -38,6 +39,161 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual(1, result.summary["record_count"])
         self.assertEqual("wxid_1", result.records[0].sender_id)
         self.assertEqual("晚安", result.records[0].content)
+
+    def test_large_single_json_fails_closed_without_eager_loading(self) -> None:
+        """A single JSON document must not bypass the training memory boundary."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large-export.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "messages": [
+                            {
+                                "sender": "wxid_1",
+                                "message": "large exports need JSONL",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # The tiny threshold simulates a multi-gigabyte source without
+            # allocating one, while the mocked loader proves no eager decode occurs.
+            with patch("src.preprocessing.parser_registry.MAX_EAGER_JSON_BYTES", 1):
+                with patch(
+                    "src.preprocessing.parser_registry._load_json",
+                    side_effect=AssertionError("large JSON must not be loaded eagerly"),
+                ):
+                    with self.assertRaises(ParserError) as captured:
+                        list(self.registry.iter_records(path))
+
+        self.assertEqual("streaming_format_required", captured.exception.code)
+
+    def test_large_jsonl_remains_streamable_when_single_json_is_capped(self) -> None:
+        """The large-document guard must not reject a valid streaming export."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large-export.jsonl"
+            path.write_text(
+                "\n".join(
+                    (
+                        json.dumps(
+                            {
+                                "sender": "persona",
+                                "message": "第一条",
+                                "timestamp": "2026-08-11T10:00:00+08:00",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "sender": "persona",
+                                "message": "第二条",
+                                "timestamp": "2026-08-11T10:01:00+08:00",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("src.preprocessing.parser_registry.MAX_EAGER_JSON_BYTES", 1):
+                records = list(self.registry.iter_records(path))
+
+        self.assertEqual(["第一条", "第二条"], [record.content for record in records])
+
+    def test_jsonl_probe_ignores_a_truncated_final_sample_line(self) -> None:
+        """A bounded probe may end inside a later JSONL row on a large export."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.jsonl"
+            rows = (
+                json.dumps(
+                    {
+                        "sender": "persona",
+                        "message": "第一条",
+                        "timestamp": "2026-08-11T10:00:00+08:00",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "sender": "persona",
+                        "message": "第二条",
+                        "timestamp": "2026-08-11T10:01:00+08:00",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            with patch("src.preprocessing.parser_registry._PROBE_BYTES", len(rows[0]) + 10):
+                records = list(self.registry.iter_records(path))
+
+        self.assertEqual(["第一条", "第二条"], [record.content for record in records])
+
+    def test_jsonl_without_a_final_newline_remains_supported(self) -> None:
+        """A complete small export need not end with a newline character."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sender": "persona",
+                        "message": "没有末尾换行",
+                        "timestamp": "2026-08-11T10:00:00+08:00",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            records = list(self.registry.iter_records(path))
+
+        self.assertEqual(["没有末尾换行"], [record.content for record in records])
+
+    def test_training_jsonl_rejects_a_raw_line_over_its_byte_limit(self) -> None:
+        """The JSON decoder must not receive an unbounded training row."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sender": "persona",
+                        "message": "x" * 128,
+                        "timestamp": "2026-08-11T10:00:00+08:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as captured:
+                list(
+                    self.registry.iter_records(
+                        path,
+                        {"source_type": "generic_jsonl", "max_record_bytes": 32},
+                    )
+                )
+
+        self.assertEqual("training_record_too_large", captured.exception.code)
+
+    def test_training_text_rejects_continuations_over_its_byte_limit(self) -> None:
+        """Many harmless-looking text lines cannot grow one training record forever."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.txt"
+            path.write_text(
+                "[2026-08-11 10:00] persona: 第一条\n"
+                "继续的文本内容会超过限制\n"
+                "还有更多内容\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as captured:
+                list(self.registry.iter_records(path, {"max_record_bytes": 20}))
+
+        self.assertEqual("training_record_too_large", captured.exception.code)
 
     def test_streams_text_into_canonical_messages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -23,6 +23,7 @@ class ModelPricing:
 
     input_price_per_million_tokens: float | None = None
     output_price_per_million_tokens: float | None = None
+    training_price_per_million_tokens: float | None = None
     media_price_per_unit: float | None = None
     media_unit: str = "unit"
     currency: str = "USD"
@@ -51,6 +52,10 @@ class ModelPricing:
                 value.get("output_price_per_million_tokens", base.output_price_per_million_tokens),
                 "output_price_per_million_tokens",
             ),
+            training_price_per_million_tokens=_optional_price(
+                value.get("training_price_per_million_tokens", base.training_price_per_million_tokens),
+                "training_price_per_million_tokens",
+            ),
             media_price_per_unit=_optional_price(
                 value.get("media_price_per_unit", base.media_price_per_unit),
                 "media_price_per_unit",
@@ -69,6 +74,7 @@ class ModelPricing:
         return {
             "input_price_per_million_tokens": self.input_price_per_million_tokens,
             "output_price_per_million_tokens": self.output_price_per_million_tokens,
+            "training_price_per_million_tokens": self.training_price_per_million_tokens,
             "media_price_per_unit": self.media_price_per_unit,
             "media_unit": self.media_unit,
             "currency": self.currency,
@@ -103,6 +109,30 @@ class CostEstimate:
             "output_cost": self.output_cost,
             "media_cost": self.media_cost,
             "estimated_cost": self.total_cost,
+            "price_last_refreshed_at": self.price_last_refreshed_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingCostEstimate:
+    """A training-token estimate using explicitly supplied model metadata."""
+
+    provider_id: str
+    model_id: str
+    currency: str
+    training_tokens: int
+    training_price_per_million_tokens: float
+    estimated_cost: float
+    price_last_refreshed_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider_id": self.provider_id,
+            "model_id": self.model_id,
+            "currency": self.currency,
+            "training_tokens": self.training_tokens,
+            "training_price_per_million_tokens": self.training_price_per_million_tokens,
+            "estimated_cost": self.estimated_cost,
             "price_last_refreshed_at": self.price_last_refreshed_at,
         }
 
@@ -290,6 +320,33 @@ class ProviderCatalog:
             output_cost=output_cost,
             media_cost=media_cost,
             total_cost=input_cost + output_cost + media_cost,
+            price_last_refreshed_at=pricing.last_refreshed_at,
+        )
+
+    def estimate_training_cost(
+        self,
+        provider_id: str,
+        model_id: str,
+        *,
+        training_tokens: int,
+    ) -> TrainingCostEstimate:
+        provider = self.find_provider(provider_id)
+        if provider is None:
+            raise CatalogValidationError("unknown_provider", "provider does not exist")
+        model = self.find_model(provider_id, model_id)
+        if model is None:
+            raise CatalogValidationError("unknown_model", "model is not in the provider catalog")
+        training_tokens = _usage_int(training_tokens, "training_tokens")
+        pricing = model.pricing
+        if pricing.training_price_per_million_tokens is None:
+            raise CatalogValidationError("pricing_unavailable", "training price is unavailable")
+        return TrainingCostEstimate(
+            provider_id=provider_id,
+            model_id=model_id,
+            currency=pricing.currency,
+            training_tokens=training_tokens,
+            training_price_per_million_tokens=pricing.training_price_per_million_tokens,
+            estimated_cost=training_tokens / 1_000_000 * pricing.training_price_per_million_tokens,
             price_last_refreshed_at=pricing.last_refreshed_at,
         )
 

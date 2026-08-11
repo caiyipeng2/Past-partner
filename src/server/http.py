@@ -23,6 +23,7 @@ from src.services.import_service import ImportNotFoundError, ImportValidationErr
 from src.services.consent_service import ConsentNotFoundError
 from src.services.local_auth import LocalAuthError
 from src.services.persona_service import PersonaNotFoundError
+from src.services.training_service import TrainingServiceError
 from src.services.upload_service import UploadError
 
 
@@ -46,6 +47,10 @@ _CONSENTS_PATH = "/api/v1/consents"
 _CONSENT_REVOKE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/revoke$")
 _CONSENT_AUTHORIZE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/authorize$")
 _MODEL_COST_ESTIMATE_PATH = "/api/v1/models/cost-estimate"
+_TRAINING_JOBS_PATH = "/api/v1/training-jobs"
+_TRAINING_ESTIMATE_PATH = "/api/v1/training-jobs/estimate"
+_TRAINING_JOB_PATH = re.compile(r"^/api/v1/training-jobs/([A-Za-z0-9._-]+)$")
+_TRAINING_CANCEL_PATH = re.compile(r"^/api/v1/training-jobs/([A-Za-z0-9._-]+)/cancel$")
 _STATIC_FILES = {
     "/": "workspace.html",
     "/index.html": "workspace.html",
@@ -184,6 +189,40 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_provider_response": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
+        except TrainingServiceError as exc:
+            status = {
+                "training_job_not_found": HTTPStatus.NOT_FOUND,
+                "persona_not_found": HTTPStatus.NOT_FOUND,
+                "training_import_not_found": HTTPStatus.NOT_FOUND,
+                "consent_not_found": HTTPStatus.PRECONDITION_REQUIRED,
+                "consent_revoked": HTTPStatus.PRECONDITION_REQUIRED,
+                "consent_scope_mismatch": HTTPStatus.PRECONDITION_REQUIRED,
+                "training_consent_already_used": HTTPStatus.CONFLICT,
+                "training_job_conflict": HTTPStatus.CONFLICT,
+                "capability_not_supported": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "pricing_unavailable": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "training_cost_exceeds_consent": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "training_samples_insufficient": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "training_import_persona_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "training_dataset_too_large": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "training_record_too_large": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "provider_not_configured": HTTPStatus.SERVICE_UNAVAILABLE,
+                "test_provider_disabled": HTTPStatus.SERVICE_UNAVAILABLE,
+                "provider_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "training_dataset_storage_unavailable": HTTPStatus.INSUFFICIENT_STORAGE,
+                # Cleanup is a server-side plaintext-protection failure. It must
+                # never be represented as an invalid client training request.
+                "training_dataset_cleanup_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
+                "training_import_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "training_storage_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "training_service_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "invalid_provider_adapter": HTTPStatus.BAD_GATEWAY,
+                "provider_submission_invalid": HTTPStatus.BAD_GATEWAY,
+                "provider_submission_not_found": HTTPStatus.BAD_GATEWAY,
+                "provider_status_invalid": HTTPStatus.BAD_GATEWAY,
+                "provider_cancellation_unconfirmed": HTTPStatus.BAD_GATEWAY,
+            }.get(exc.code, HTTPStatus.UNPROCESSABLE_ENTITY)
+            self._error(status, exc.code, str(exc), diagnostic_id=exc.diagnostic_id)
         except Exception:
             diagnostic_id = str(uuid4())
             logger.exception("Unhandled request failure diagnostic_id=%s", diagnostic_id)
@@ -212,6 +251,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         elif path == _CONSENTS_PATH:
             persona_id = query.get("persona_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.list_consents(self.owner_id, persona_id))
+        elif path == _TRAINING_JOBS_PATH:
+            persona_id = query.get("persona_id", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.list_training_jobs(self.owner_id, persona_id),
+            )
+        elif match := _TRAINING_JOB_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.get_training_job(self.owner_id, match.group(1)),
+            )
         elif match := _MISSING_CHUNKS_PATH.fullmatch(path):
             raw_expected = query.get("expected_chunks", [None])[0]
             expected_chunks = None
@@ -285,6 +335,22 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
         elif path == _MODEL_COST_ESTIMATE_PATH:
             self._json(HTTPStatus.OK, self.server.application.estimate_model_cost(self._json_body()))
+        elif path == _TRAINING_ESTIMATE_PATH:
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.estimate_training_job(self.owner_id, self._json_body()),
+            )
+        elif path == _TRAINING_JOBS_PATH:
+            self._json(
+                HTTPStatus.ACCEPTED,
+                self.server.application.create_training_job(self.owner_id, self._json_body()),
+            )
+        elif match := _TRAINING_CANCEL_PATH.fullmatch(path):
+            self._json_body()
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.cancel_training_job(self.owner_id, match.group(1)),
+            )
         elif path == _CONSENTS_PATH:
             self._json(HTTPStatus.CREATED, self.server.application.create_consent(self.owner_id, self._json_body()))
         elif match := _CORRECTIONS_PATH.fullmatch(path):

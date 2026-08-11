@@ -82,6 +82,50 @@ class ProviderCatalogTests(unittest.TestCase):
 
         self.assertEqual("pricing_unavailable", captured.exception.code)
 
+    def test_training_cost_requires_model_training_price(self) -> None:
+        catalog = ProviderCatalog.default()
+
+        with self.assertRaises(CatalogValidationError) as captured:
+            catalog.estimate_training_cost(
+                "deepseek",
+                "deepseek-v4-flash",
+                training_tokens=12,
+            )
+
+        self.assertEqual("pricing_unavailable", captured.exception.code)
+
+    def test_training_cost_uses_configured_price_and_serializes_it(self) -> None:
+        catalog = ProviderCatalog.default().with_pricing(
+            {
+                "deepseek/deepseek-v4-flash": {
+                    "training_price_per_million_tokens": 1.2,
+                    "currency": "USD",
+                    "source": "admin",
+                    "last_refreshed_at": "2026-08-11T00:00:00+00:00",
+                }
+            }
+        )
+
+        estimate = catalog.estimate_training_cost(
+            "deepseek",
+            "deepseek-v4-flash",
+            training_tokens=500_000,
+        )
+        model = catalog.find_model("deepseek", "deepseek-v4-flash")
+
+        self.assertEqual(500_000, estimate.training_tokens)
+        self.assertAlmostEqual(0.6, estimate.estimated_cost)
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertEqual(1.2, model.to_dict()["pricing"]["training_price_per_million_tokens"])
+
+    def test_default_catalog_does_not_advertise_fine_tuning(self) -> None:
+        model = ProviderCatalog.default().find_model("deepseek", "deepseek-v4-flash")
+
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertNotIn("fine_tuning", model.capabilities)
+
     def test_runtime_model_can_receive_the_same_pricing_metadata(self) -> None:
         catalog = ProviderCatalog.default().with_configured(
             {"ollama"},

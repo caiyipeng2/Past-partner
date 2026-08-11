@@ -37,8 +37,10 @@ class Migration:
 
 # Version 1 establishes the durable migration ledger. Version 2 owns the
 # encrypted persona record table, version 3 owns import metadata, version 4
-# owns local owner sessions, and version 5 owns encrypted media consents. Business
-# repositories add their own tables in later migrations so startup remains
+# owns local owner sessions, version 5 owns encrypted media consents, and version 6
+# owns encrypted fine-tuning job metadata. Version 7 adds optimistic revisions for
+# those jobs so concurrent HTTP requests cannot overwrite durable lifecycle state.
+# Business repositories add their own tables in later migrations so startup remains
 # transactional and history is auditable.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
@@ -112,6 +114,29 @@ DEFAULT_MIGRATIONS = (
             )
             """,
             "CREATE INDEX consents_owner_persona_idx ON consents(owner_id, persona_id)",
+        ),
+    ),
+    Migration(
+        version=6,
+        name="training_job_repository",
+        statements=(
+            """
+            CREATE TABLE training_jobs (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "CREATE INDEX training_jobs_owner_persona_idx ON training_jobs(owner_id, persona_id)",
+        ),
+    ),
+    Migration(
+        version=7,
+        name="training_job_revisions",
+        statements=(
+            "ALTER TABLE training_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0)",
         ),
     ),
 )

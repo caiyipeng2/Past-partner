@@ -34,6 +34,11 @@ _WECHAT_TEXT_LINE = re.compile(
     r"(?:\s*[:：]\s*(?P<content>.*))?$"
 )
 _PROBE_BYTES = 64 * 1024
+# Standard-library JSON decoding materializes one document. Large imports remain
+# supported through JSONL/text/HTML/XML streaming parsers; this cap prevents a
+# 3 GiB single JSON export from bypassing the training path's memory bound.
+MAX_EAGER_JSON_BYTES = 64 * 1024**2
+MAX_TRAINING_STREAM_RECORD_BYTES = 64 * 1024
 _DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 
 
@@ -211,6 +216,50 @@ class ParserRegistry:
             summary=summary,
         )
 
+    def iter_records(
+        self,
+        path: str | Path,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Iterator[NormalizedMessage]:
+        """Stream validated records with the same stable IDs used by preview parsing.
+
+        The eager ``parse`` API intentionally builds a tuple for previews and parser
+        summaries. Training paths must not use that API because a completed import
+        can be several GiB; this method preserves the parser's validation and error
+        normalization while keeping only the current record in memory.
+        """
+
+        source = self._source(path, metadata)
+        parser = self.select(source.path, source.metadata)
+        validation = parser.validate(source)
+        if not validation.valid:
+            raise ParserError(validation.code, validation.message or "source validation failed")
+
+        namespace = _record_id_namespace(source)
+        yielded = False
+        try:
+            for index, record in enumerate(parser.stream_records(source)):
+                yielded = True
+                yield record.with_record_id(_stable_record_id(namespace, parser.source_type, index))
+        except ParserError:
+            raise
+        except MessageValidationError as exc:
+            raise ParserError("invalid_record", str(exc)) from exc
+        except WeChatDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except QqDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except WeChatBackupError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except QqBackupError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except GenericDatabaseError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        except DocumentParserError as exc:
+            raise ParserError(exc.code, str(exc)) from exc
+        if not yielded:
+            raise ParserError("empty_source", "parser produced no records")
+
     @staticmethod
     def _source(path: str | Path, metadata: Mapping[str, Any] | None) -> ParserSource:
         resolved = Path(path)
@@ -303,51 +352,65 @@ class GenericTextParser(_BaseParser):
         if encoding is None:
             raise ParserError("unsupported_format", "source is not a supported text encoding")
 
+        max_record_bytes = _stream_record_byte_limit(source)
         pending: dict[str, str] | None = None
-        with source.path.open("r", encoding=encoding) as handle:
-            for line_number, raw_line in enumerate(handle, 1):
-                line = raw_line.rstrip("\r\n")
-                if not line.strip():
-                    continue
-                stripped = line.strip()
-                match = _TEXT_LINE.match(stripped)
-                sender_match = _SENDER_LINE.match(stripped) if match is None else None
-                if match:
-                    if pending is not None:
-                        yield _text_record(pending)
-                    timestamp = match.group("bracket_timestamp") or match.group("bare_timestamp")
-                    pending = {
-                        "sender_id": match.group("sender").strip().lstrip("-| ").strip(),
-                        "sender_name": match.group("sender").strip().lstrip("-| ").strip(),
-                        "content": match.group("content").strip(),
-                        "timestamp": timestamp.strip(),
-                        "message_type": "text",
-                    }
-                elif sender_match:
-                    if pending is not None:
-                        yield _text_record(pending)
-                    values = {
-                        "sender_id": sender_match.group("sender").strip(),
-                        "sender_name": sender_match.group("sender").strip(),
-                        "content": sender_match.group("content").strip(),
-                        "timestamp": f"line:{line_number}",
-                        "message_type": "text",
-                    }
-                    pending = values
-                elif pending is not None:
-                    continuation = stripped
-                    if continuation:
-                        pending["content"] += f"\n{continuation}"
-                else:
-                    pending = {
-                        "sender_id": "unknown",
-                        "sender_name": "unknown",
-                        "content": stripped,
-                        "timestamp": f"line:{line_number}",
-                        "message_type": "text",
-                    }
-            if pending is not None:
-                yield _text_record(pending)
+        for line_number, raw_line in _iter_text_lines(
+            source.path,
+            encoding,
+            max_record_bytes=max_record_bytes,
+        ):
+            line = raw_line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            stripped = line.strip()
+            match = _TEXT_LINE.match(stripped)
+            sender_match = _SENDER_LINE.match(stripped) if match is None else None
+            if match:
+                if pending is not None:
+                    yield _text_record(pending)
+                timestamp = match.group("bracket_timestamp") or match.group("bare_timestamp")
+                content = match.group("content").strip()
+                _require_stream_record_bytes(content, max_record_bytes, line_number)
+                pending = {
+                    "sender_id": match.group("sender").strip().lstrip("-| ").strip(),
+                    "sender_name": match.group("sender").strip().lstrip("-| ").strip(),
+                    "content": content,
+                    "timestamp": timestamp.strip(),
+                    "message_type": "text",
+                }
+            elif sender_match:
+                if pending is not None:
+                    yield _text_record(pending)
+                content = sender_match.group("content").strip()
+                _require_stream_record_bytes(content, max_record_bytes, line_number)
+                values = {
+                    "sender_id": sender_match.group("sender").strip(),
+                    "sender_name": sender_match.group("sender").strip(),
+                    "content": content,
+                    "timestamp": f"line:{line_number}",
+                    "message_type": "text",
+                }
+                pending = values
+            elif pending is not None:
+                continuation = stripped
+                if continuation:
+                    _append_stream_text_continuation(
+                        pending,
+                        continuation,
+                        max_record_bytes=max_record_bytes,
+                        line_number=line_number,
+                    )
+            else:
+                _require_stream_record_bytes(stripped, max_record_bytes, line_number)
+                pending = {
+                    "sender_id": "unknown",
+                    "sender_name": "unknown",
+                    "content": stripped,
+                    "timestamp": f"line:{line_number}",
+                    "message_type": "text",
+                }
+        if pending is not None:
+            yield _text_record(pending)
 
 
 class WeChatTextParser(GenericTextParser):
@@ -402,63 +465,77 @@ class WeChatTextParser(GenericTextParser):
         if encoding is None:
             raise ParserError("unsupported_format", "source is not a supported text encoding")
 
+        max_record_bytes = _stream_record_byte_limit(source)
         pending: dict[str, str] | None = None
-        with source.path.open("r", encoding=encoding) as handle:
-            for line_number, raw_line in enumerate(handle, 1):
-                line = raw_line.rstrip("\r\n")
-                if not line.strip():
-                    continue
-                stripped = line.strip()
-                wechat_match = _WECHAT_TEXT_LINE.match(stripped)
-                generic_match = _TEXT_LINE.match(stripped)
-                sender_match = (
-                    _SENDER_LINE.match(stripped)
-                    if wechat_match is None and generic_match is None
-                    else None
+        for line_number, raw_line in _iter_text_lines(
+            source.path,
+            encoding,
+            max_record_bytes=max_record_bytes,
+        ):
+            line = raw_line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            stripped = line.strip()
+            wechat_match = _WECHAT_TEXT_LINE.match(stripped)
+            generic_match = _TEXT_LINE.match(stripped)
+            sender_match = (
+                _SENDER_LINE.match(stripped)
+                if wechat_match is None and generic_match is None
+                else None
+            )
+            if wechat_match or generic_match:
+                if pending is not None:
+                    yield _text_record(pending)
+                if wechat_match:
+                    timestamp = wechat_match.group("timestamp")
+                    sender = wechat_match.group("sender").strip().lstrip("-| ").strip()
+                    content = wechat_match.group("content") or ""
+                else:
+                    timestamp = generic_match.group("bracket_timestamp") or generic_match.group(
+                        "bare_timestamp"
+                    )
+                    sender = generic_match.group("sender").strip().lstrip("-| ").strip()
+                    content = generic_match.group("content")
+                content = content.strip()
+                _require_stream_record_bytes(content, max_record_bytes, line_number)
+                pending = {
+                    "sender_id": sender,
+                    "sender_name": sender,
+                    "content": content,
+                    "timestamp": timestamp.strip(),
+                    "message_type": "text",
+                }
+            elif sender_match:
+                if pending is not None:
+                    yield _text_record(pending)
+                sender = sender_match.group("sender").strip()
+                content = sender_match.group("content").strip()
+                _require_stream_record_bytes(content, max_record_bytes, line_number)
+                pending = {
+                    "sender_id": sender,
+                    "sender_name": sender,
+                    "content": content,
+                    "timestamp": f"line:{line_number}",
+                    "message_type": "text",
+                }
+            elif pending is not None:
+                _append_stream_text_continuation(
+                    pending,
+                    stripped,
+                    max_record_bytes=max_record_bytes,
+                    line_number=line_number,
                 )
-                if wechat_match or generic_match:
-                    if pending is not None:
-                        yield _text_record(pending)
-                    if wechat_match:
-                        timestamp = wechat_match.group("timestamp")
-                        sender = wechat_match.group("sender").strip().lstrip("-| ").strip()
-                        content = wechat_match.group("content") or ""
-                    else:
-                        timestamp = generic_match.group("bracket_timestamp") or generic_match.group(
-                            "bare_timestamp"
-                        )
-                        sender = generic_match.group("sender").strip().lstrip("-| ").strip()
-                        content = generic_match.group("content")
-                    pending = {
-                        "sender_id": sender,
-                        "sender_name": sender,
-                        "content": content.strip(),
-                        "timestamp": timestamp.strip(),
-                        "message_type": "text",
-                    }
-                elif sender_match:
-                    if pending is not None:
-                        yield _text_record(pending)
-                    sender = sender_match.group("sender").strip()
-                    pending = {
-                        "sender_id": sender,
-                        "sender_name": sender,
-                        "content": sender_match.group("content").strip(),
-                        "timestamp": f"line:{line_number}",
-                        "message_type": "text",
-                    }
-                elif pending is not None:
-                    pending["content"] += f"\n{stripped}"
-                elif not self._is_platform_header(stripped):
-                    pending = {
-                        "sender_id": "unknown",
-                        "sender_name": "unknown",
-                        "content": stripped,
-                        "timestamp": f"line:{line_number}",
-                        "message_type": "text",
-                    }
-            if pending is not None:
-                yield _text_record(pending)
+            elif not self._is_platform_header(stripped):
+                _require_stream_record_bytes(stripped, max_record_bytes, line_number)
+                pending = {
+                    "sender_id": "unknown",
+                    "sender_name": "unknown",
+                    "content": stripped,
+                    "timestamp": f"line:{line_number}",
+                    "message_type": "text",
+                }
+        if pending is not None:
+            yield _text_record(pending)
 
     def _is_platform_header(self, line: str) -> bool:
         normalized = line.strip().lower()
@@ -936,6 +1013,24 @@ class GenericJsonParser(_BaseParser):
     source_type = "generic_json"
 
     def probe(self, source: ParserSource) -> ParserProbe:
+        if _requires_streaming_json(source.path):
+            sample = _read_text_sample(source.path)
+            if sample is not None and _looks_like_json_sample(sample):
+                if _looks_like_jsonl_messages(sample):
+                    # A large JSONL export begins with ``{`` too. Let its streaming
+                    # parser win instead of classifying it as one eager document.
+                    return ParserProbe(
+                        self.source_type,
+                        0.0,
+                        False,
+                        "large JSONL message records are handled by the streaming parser",
+                    )
+                return ParserProbe(
+                    self.source_type,
+                    0.99,
+                    True,
+                    "large JSON conversation requires a streaming export format",
+                )
         try:
             data = _load_json(source.path)
             _message_items(data)
@@ -946,6 +1041,12 @@ class GenericJsonParser(_BaseParser):
         return ParserProbe(self.source_type, 0.98, True, "JSON conversation structure recognized")
 
     def validate(self, source: ParserSource) -> ParserValidation:
+        if _requires_streaming_json(source.path):
+            return ParserValidation(
+                False,
+                "streaming_format_required",
+                "large JSON imports require JSONL or another streaming conversation export",
+            )
         try:
             data = _load_json(source.path)
             items = _message_items(data)
@@ -972,7 +1073,10 @@ class GenericJsonLinesParser(_BaseParser):
         sample = _read_text_sample(source.path)
         if sample is None:
             return ParserProbe(self.source_type, 0.0, False, "source is not valid UTF-8 text")
-        lines = [line.strip() for line in sample.splitlines() if line.strip()]
+        lines = _complete_jsonl_sample_lines(
+            sample,
+            final_line_complete=_probe_covers_source(source.path),
+        )
         if not lines:
             return ParserProbe(self.source_type, 0.0, False, "source is empty")
         valid = 0
@@ -996,18 +1100,23 @@ class GenericJsonLinesParser(_BaseParser):
         encoding = _detect_text_encoding(source.path)
         if encoding is None:
             raise ParserError("unsupported_format", "source is not a supported text encoding")
-        with source.path.open("r", encoding=encoding) as handle:
-            for line_number, raw_line in enumerate(handle, 1):
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    value = json.loads(line)
-                    if not isinstance(value, Mapping):
-                        raise TypeError("JSONL record must be an object")
-                    yield NormalizedMessage.from_mapping(value)
-                except (json.JSONDecodeError, MessageValidationError, TypeError) as exc:
-                    raise ParserError("invalid_record", f"JSONL line {line_number}: {exc}") from exc
+        max_record_bytes = _stream_record_byte_limit(source)
+        for line_number, raw_line in _iter_text_lines(
+            source.path,
+            encoding,
+            max_record_bytes=max_record_bytes,
+        ):
+            line = raw_line.strip()
+            if not line:
+                continue
+            _require_stream_record_bytes(line, max_record_bytes, line_number)
+            try:
+                value = json.loads(line)
+                if not isinstance(value, Mapping):
+                    raise TypeError("JSONL record must be an object")
+                yield NormalizedMessage.from_mapping(value)
+            except (json.JSONDecodeError, MessageValidationError, TypeError) as exc:
+                raise ParserError("invalid_record", f"JSONL line {line_number}: {exc}") from exc
 
 
 class GenericXmlParser(_BaseParser):
@@ -1410,6 +1519,102 @@ class _SecureXmlReader:
         return chunk
 
 
+def _requires_streaming_json(path: Path) -> bool:
+    """Keep a single standard-library JSON document below the eager-load budget."""
+    try:
+        return path.is_file() and path.stat().st_size > MAX_EAGER_JSON_BYTES
+    except OSError:
+        # Let the parser's existing validation surface inaccessible sources as a
+        # stable parser error instead of masking that reason during probing.
+        return False
+
+
+def _stream_record_byte_limit(source: ParserSource) -> int | None:
+    """Read an optional training-only record limit from trusted service metadata."""
+    value = source.metadata.get("max_record_bytes")
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > MAX_TRAINING_STREAM_RECORD_BYTES
+    ):
+        raise ParserError(
+            "invalid_stream_limit",
+            "training record byte limit must be a positive bounded integer",
+        )
+    return value
+
+
+def _iter_text_lines(
+    path: Path,
+    encoding: str,
+    *,
+    max_record_bytes: int | None,
+) -> Iterator[tuple[int, str]]:
+    """Yield lines without allowing a no-newline source record to grow unbounded.
+
+    ``TextIOWrapper`` normally reads an entire physical line before returning it.
+    Training imports can be up to 3 GiB, so a malicious or damaged export without a
+    newline would otherwise allocate that whole line before later validation runs.
+    The bounded character read is conservative for multibyte text; the subsequent
+    UTF-8 byte check is the authoritative limit for the emitted training record.
+    """
+    character_limit = None if max_record_bytes is None else max_record_bytes + 1
+    with path.open("r", encoding=encoding) as handle:
+        line_number = 0
+        while True:
+            raw_line = handle.readline() if character_limit is None else handle.readline(character_limit)
+            if not raw_line:
+                return
+            line_number += 1
+            if max_record_bytes is not None:
+                if (
+                    len(raw_line) >= character_limit
+                    and not raw_line.endswith(("\n", "\r"))
+                ):
+                    raise ParserError(
+                        "training_record_too_large",
+                        f"training source line {line_number} exceeds the configured byte limit",
+                    )
+                _require_stream_record_bytes(raw_line, max_record_bytes, line_number)
+            yield line_number, raw_line
+
+
+def _require_stream_record_bytes(
+    value: str,
+    max_record_bytes: int | None,
+    line_number: int,
+) -> None:
+    if max_record_bytes is None:
+        return
+    if len(value.encode("utf-8")) > max_record_bytes:
+        raise ParserError(
+            "training_record_too_large",
+            f"training source record at line {line_number} exceeds the configured byte limit",
+        )
+
+
+def _append_stream_text_continuation(
+    pending: dict[str, str],
+    continuation: str,
+    *,
+    max_record_bytes: int | None,
+    line_number: int,
+) -> None:
+    """Append one bounded continuation after checking the accumulated record size."""
+    content = pending["content"]
+    if max_record_bytes is not None:
+        added_bytes = len("\n".encode("utf-8")) + len(continuation.encode("utf-8"))
+        if len(content.encode("utf-8")) + added_bytes > max_record_bytes:
+            raise ParserError(
+                "training_record_too_large",
+                f"training source record at line {line_number} exceeds the configured byte limit",
+            )
+    pending["content"] = f"{content}\n{continuation}"
+
+
 def _read_text_sample(path: Path) -> str | None:
     try:
         with path.open("rb") as handle:
@@ -1577,6 +1782,43 @@ def _looks_like_json_sample(sample: str) -> bool:
     return stripped.startswith("[") and len(stripped) > 1 and not stripped[1].isdigit()
 
 
+def _complete_jsonl_sample_lines(
+    sample: str,
+    *,
+    final_line_complete: bool = False,
+) -> list[str]:
+    """Return only complete JSONL rows from a bounded text probe."""
+    lines = sample.splitlines()
+    if sample and not final_line_complete and not sample.endswith(("\n", "\r")):
+        # The final row may have been cut by the fixed-size probe. Treating that
+        # partial JSON as invalid would reject otherwise streamable multi-GB files.
+        lines = lines[:-1]
+    return [line.strip() for line in lines if line.strip()]
+
+
+def _looks_like_jsonl_messages(sample: str) -> bool:
+    """Recognize complete JSONL message rows without decoding the whole source."""
+    lines = _complete_jsonl_sample_lines(sample)
+    if not lines:
+        return False
+    for line in lines[:32]:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(value, Mapping) or not _looks_like_message(value):
+            return False
+    return True
+
+
+def _probe_covers_source(path: Path) -> bool:
+    """Tell whether a fixed-size probe necessarily reached the end of a file."""
+    try:
+        return path.is_file() and path.stat().st_size <= _PROBE_BYTES
+    except OSError:
+        return False
+
+
 def _platform_marker(
     source: ParserSource,
     sample: str,
@@ -1694,18 +1936,22 @@ def _assign_record_ids(
     source_type: str,
 ) -> tuple[NormalizedMessage, ...]:
     """Attach server-stable IDs before parsed records reach preview or storage."""
-    namespace = source.metadata.get("record_id_namespace")
-    if not isinstance(namespace, str) or not namespace.strip():
-        namespace = source.metadata.get("source_name")
-    if not isinstance(namespace, str) or not namespace.strip():
-        namespace = source.path.name
-    namespace = namespace.strip()
+    namespace = _record_id_namespace(source)
 
     normalized: list[NormalizedMessage] = []
     for index, record in enumerate(records):
         record_id = _stable_record_id(namespace, source_type, index)
         normalized.append(record.with_record_id(record_id))
     return tuple(normalized)
+
+
+def _record_id_namespace(source: ParserSource) -> str:
+    namespace = source.metadata.get("record_id_namespace")
+    if not isinstance(namespace, str) or not namespace.strip():
+        namespace = source.metadata.get("source_name")
+    if not isinstance(namespace, str) or not namespace.strip():
+        namespace = source.path.name
+    return namespace.strip()
 
 
 def _stable_record_id(namespace: str, source_type: str, index: int) -> str:

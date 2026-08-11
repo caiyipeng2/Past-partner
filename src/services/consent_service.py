@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
+import threading
+from typing import Iterator
 
 from src.domain.consents import ConsentValidationError, MediaConsent
 from src.services.consent_repository import ConsentRepository
@@ -17,6 +20,11 @@ class ConsentService:
     def __init__(self, repository: ConsentRepository, personas: PersonaService):
         self.repository = repository
         self.personas = personas
+        # Fine-tuning invokes a remote provider after local authorization. A shared
+        # lock lets the service hold only that short handoff window while revoke()
+        # waits, so a consent cannot become revoked between its final check and the
+        # sensitive transfer.
+        self._provider_handoff_lock = threading.RLock()
 
     def create(
         self,
@@ -66,10 +74,18 @@ class ConsentService:
         return self.repository.list(owner_id, persona_id)
 
     def revoke(self, owner_id: str, consent_id: str) -> MediaConsent:
-        consent = self.get(owner_id, consent_id)
-        revoked = consent.revoke(datetime.now(UTC).isoformat())
-        self.repository.save(owner_id, revoked)
-        return revoked
+        with self.provider_handoff_guard():
+            consent = self.get(owner_id, consent_id)
+            revoked = consent.revoke(datetime.now(UTC).isoformat())
+            self.repository.save(owner_id, revoked)
+            return revoked
+
+    @contextmanager
+    def provider_handoff_guard(self) -> Iterator[None]:
+        """Serialize consent revocation with the final third-party data handoff."""
+
+        with self._provider_handoff_lock:
+            yield
 
     def authorize(
         self,

@@ -1649,6 +1649,44 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(503, status)
         self.assertEqual("provider_not_configured", payload["error"]["code"])
 
+    def test_training_route_rejects_default_model_without_declared_capability(self) -> None:
+        status, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        self.assertEqual(201, status)
+        import_id = "unread-import"
+        status, _, consent = self.request(
+            "POST",
+            "/api/v1/consents",
+            {
+                "persona_id": persona["id"],
+                "provider_id": "deepseek",
+                "model_id": "deepseek-v4-flash",
+                "data_category": "persona_text",
+                "estimated_cost": 1.0,
+                "purpose": "fine_tuning",
+                "authorization_scope": f"fine_tuning:{import_id}",
+            },
+        )
+        self.assertEqual(201, status)
+
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/training-jobs",
+            {
+                "persona_id": persona["id"],
+                "import_id": import_id,
+                "provider_id": "deepseek",
+                "model_id": "deepseek-v4-flash",
+                "consent_id": consent["id"],
+            },
+        )
+
+        self.assertEqual(422, status)
+        self.assertEqual("capability_not_supported", payload["error"]["code"])
+
     def test_cors_preflight_only_echoes_allowed_origin(self) -> None:
         status, headers, _ = self.request(
             "OPTIONS",

@@ -101,6 +101,23 @@ class PrivacyPolicyContractTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, self.policy)
 
+    def test_policy_discloses_fine_tuning_transfer_and_result_boundaries(self) -> None:
+        required_boundaries = (
+            "fine_tuning",
+            "persona_text",
+            "accepted",
+            "provider_transfer",
+            "capability_not_supported",
+            "artifact",
+            "evaluation",
+            "submission_started",
+            "local_cleanup_failure_code",
+        )
+
+        for boundary in required_boundaries:
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, self.policy)
+
 
 if __name__ == "__main__":
     unittest.main()

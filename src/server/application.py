@@ -12,7 +12,7 @@ from src.providers.base import ChatMessage, ChatRequest
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_provider_adapters
 from src.providers.gateway import ProviderGateway
-from src.providers.testing import DeterministicTestAdapter
+from src.providers.testing import DeterministicTestAdapter, deterministic_test_provider_definition
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.consent_repository import ConsentRepository
@@ -27,6 +27,9 @@ from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
 from src.services.storage import StorageLayout
+from src.services.training_dataset import TrainingDatasetBuilder
+from src.services.training_repository import TrainingJobRepository
+from src.services.training_service import FineTuningService
 from src.services.upload_service import UploadService
 
 
@@ -48,6 +51,7 @@ class Application:
         catalog: ProviderCatalog,
         gateway: ProviderGateway,
         auth: LocalAuthService,
+        training: FineTuningService,
     ):
         self.personas = personas
         self.imports = imports
@@ -58,6 +62,7 @@ class Application:
         self.catalog = catalog
         self.gateway = gateway
         self.auth = auth
+        self.training = training
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -98,15 +103,36 @@ class Application:
         adapters = build_provider_adapters(catalog)
         if config.mode == "test":
             adapters["test"] = DeterministicTestAdapter()
+            catalog = ProviderCatalog((*catalog.providers(), deterministic_test_provider_definition()))
         runtime_models = {
             provider_id: adapter.config.allowed_models
             for provider_id, adapter in adapters.items()
             if hasattr(adapter, "config")
         }
-        catalog = catalog.with_configured(set(adapters) - {"test"}, runtime_models)
+        catalog = catalog.with_configured(set(adapters), runtime_models)
         catalog = catalog.with_pricing_json(config.model_pricing_json)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
-        return cls(personas, imports, uploads, consents, master_keys, encryption, catalog, gateway, auth)
+        datasets = TrainingDatasetBuilder(storage, uploads)
+        training = FineTuningService(
+            TrainingJobRepository(storage.database_path(), encryption),
+            datasets,
+            consents,
+            catalog,
+            gateway,
+            personas,
+        )
+        return cls(
+            personas,
+            imports,
+            uploads,
+            consents,
+            master_keys,
+            encryption,
+            catalog,
+            gateway,
+            auth,
+            training,
+        )
 
     def issue_session(self, remote_address: str, presented_bootstrap_token: str | None) -> dict[str, Any]:
         return self.auth.issue_session(remote_address, presented_bootstrap_token)
@@ -155,6 +181,7 @@ class Application:
     def delete_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
         with self._persona_lifecycle_lock:
             self.personas.get(owner_id, persona_id)
+            training_cleanup = self.training.delete_for_persona(owner_id, persona_id)
             deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
             deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
             self.personas.delete(owner_id, persona_id)
@@ -163,6 +190,7 @@ class Application:
                 "deleted": True,
                 "deleted_imports": deleted_imports,
                 "deleted_consents": deleted_consents,
+                **training_cleanup,
             }
 
     def export_data(self, owner_id: str) -> dict[str, Any]:
@@ -183,6 +211,7 @@ class Application:
             "personas": [persona.to_dict() for persona in self.personas.list(owner_id)],
             "imports": imports,
             "consents": [consent.to_dict() for consent in self.consents.list(owner_id)],
+            "training_jobs": [job.to_dict() for job in self.training.list(owner_id)],
         }
 
     def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -363,6 +392,31 @@ class Application:
         )
         return estimate.to_dict()
 
+    def estimate_training_job(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        arguments = self._training_arguments(payload)
+        return self.training.estimate(owner_id, **arguments)
+
+    def create_training_job(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        arguments = self._training_arguments(payload, require_consent=True)
+        # Deleting a persona must not race an accepted-data handoff. This lock is
+        # intentionally held through submission so the dependent job, consent, and
+        # import graph either all remain valid or persona deletion runs first.
+        with self._persona_lifecycle_lock:
+            return self.training.create(owner_id, **arguments).to_dict()
+
+    def list_training_jobs(self, owner_id: str, persona_id: str | None = None) -> dict[str, Any]:
+        return {
+            "training_jobs": [
+                job.to_dict() for job in self.training.list(owner_id, persona_id)
+            ]
+        }
+
+    def get_training_job(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        return self.training.refresh(owner_id, job_id).to_dict()
+
+    def cancel_training_job(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        return self.training.cancel(owner_id, job_id).to_dict()
+
     def chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             raw_messages = payload["messages"]
@@ -378,6 +432,20 @@ class Application:
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
         return asdict(self.gateway.chat(request))
+
+    @staticmethod
+    def _training_arguments(
+        payload: Mapping[str, Any],
+        *,
+        require_consent: bool = False,
+    ) -> dict[str, str]:
+        fields = ("persona_id", "import_id", "provider_id", "model_id")
+        if require_consent:
+            fields += ("consent_id",)
+        try:
+            return {field: _required_text(payload[field], field) for field in fields}
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
 
 
 def _chat_message(value: object) -> ChatMessage:

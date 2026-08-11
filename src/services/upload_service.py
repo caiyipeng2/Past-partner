@@ -24,11 +24,13 @@ from src.services.import_repository import ImportRepositoryError
 from src.services.import_service import ImportJob, ImportService, ImportState
 from src.preprocessing.media_inspector import MediaInspectionError, MediaInspector
 from src.preprocessing.parser_registry import ParserError, ParserRegistry
+from src.services.plaintext_lease import PlaintextLeaseRegistry
 from src.services.storage import StorageLayout
 
 
 DEFAULT_CHUNK_BYTES = 8 * 1024**2
 DEFAULT_READ_BLOCK_BYTES = 64 * 1024
+DEFAULT_TRAINING_RECORD_BYTES = 64 * 1024
 DEFAULT_PREVIEW_RECORDS = 20
 MAX_PREVIEW_RECORDS = 100
 PARTICIPANT_ROLES = frozenset({"persona", "user", "other", "unknown"})
@@ -94,6 +96,7 @@ class UploadService:
         # serializing unrelated uploads behind the service-wide manifest lock.
         self._payload_access_locks: dict[str, _PayloadAccessEntry] = {}
         self._cleanup_stale_media_inspection_files()
+        self._stale_training_source_cleanup_failures = self._cleanup_stale_training_source_files()
 
     def put_chunk(
         self,
@@ -647,6 +650,195 @@ class UploadService:
             finally:
                 pending = b""
 
+    def iter_training_records(
+        self,
+        owner_id: str,
+        import_id: str,
+        *,
+        max_record_bytes: int = DEFAULT_TRAINING_RECORD_BYTES,
+    ) -> Iterator[dict[str, str]]:
+        """Yield corrected, mapped records without buffering a completed import.
+
+        A training dataset is allowed to read only a completed import belonging to a
+        caller already scoped by the service layer. The per-import lease keeps the
+        encrypted payload from being deleted while each parser consumes one temporary
+        source file, while unrelated uploads can still acquire the global manifest
+        lock between individual operations.
+        """
+
+        self._require_stale_training_source_cleanup()
+        if (
+            isinstance(max_record_bytes, bool)
+            or not isinstance(max_record_bytes, int)
+            or max_record_bytes <= 0
+            or max_record_bytes > DEFAULT_TRAINING_RECORD_BYTES
+        ):
+            raise UploadError(
+                "invalid_training_limit",
+                "training record byte limit must be a positive value within the safe maximum",
+            )
+
+        def iterator() -> Iterator[dict[str, str]]:
+            with self._payload_access(import_id):
+                with self._lock:
+                    job = self.imports.get(owner_id, import_id)
+                    payload_path = self.payload_path(import_id)
+                    if job.state is not ImportState.UPLOADED or not payload_path.is_file():
+                        raise UploadError(
+                            "training_dataset_unavailable",
+                            "training data requires a completed uploaded import",
+                        )
+                    file_specs = [
+                        {
+                            "file_id": item.file_id if len(job.files) > 1 else None,
+                            "source_name": item.source_name,
+                            "media_type": item.media_type,
+                            "total_bytes": item.total_bytes,
+                        }
+                        for item in job.files
+                    ]
+                    if not file_specs:
+                        file_specs = [
+                            {
+                                "file_id": None,
+                                "source_name": job.source_name,
+                                "media_type": job.media_type,
+                                "total_bytes": job.total_bytes,
+                            }
+                        ]
+                    manifest = self._load_manifest(owner_id, import_id)
+                    participant_mapping = _normalize_participant_mapping(
+                        manifest.get("participant_mapping")
+                    )
+                    corrections = _normalize_corrections(manifest.get("corrections"))
+
+                # Missing mappings must fail before any encrypted payload is opened:
+                # unknown authors can never be upgraded to a training target by a
+                # fallback role or by the dataset builder.
+                if not participant_mapping:
+                    raise UploadError(
+                        "training_mapping_unavailable",
+                        "training data requires an explicit participant mapping",
+                    )
+                if "persona" not in participant_mapping.values():
+                    raise UploadError(
+                        "training_persona_mapping_unavailable",
+                        "training data requires an explicit target persona mapping",
+                    )
+
+                training_id = uuid4().hex
+                payload = iter(
+                    self._iter_completed_payload_while_leased(
+                        owner_id,
+                        import_id,
+                        unavailable_code="training_dataset_unavailable",
+                        unavailable_message="completed encrypted payload is unavailable for training",
+                    )
+                )
+                pending = b""
+                try:
+                    for index, file_spec in enumerate(file_specs):
+                        destination = self.storage.object_path(
+                            "training-source", f"{training_id}-{index}", ".bin"
+                        )
+                        remaining_bytes = int(file_spec["total_bytes"])
+                        self._prepare_training_source_destination(destination, remaining_bytes)
+                        try:
+                            try:
+                                with destination.open("xb") as output:
+                                    while remaining_bytes:
+                                        if not pending:
+                                            try:
+                                                pending = next(payload)
+                                            except StopIteration as exc:
+                                                raise UploadError(
+                                                    "payload_corrupt",
+                                                    "payload ended before the manifest file boundary",
+                                                ) from exc
+                                        take = min(remaining_bytes, len(pending))
+                                        output.write(pending[:take])
+                                        pending = pending[take:]
+                                        remaining_bytes -= take
+                                    output.flush()
+                                    os.fsync(output.fileno())
+                            except OSError as exc:
+                                raise UploadError(
+                                    "training_dataset_storage_unavailable",
+                                    "temporary training source storage is unavailable",
+                                ) from exc
+
+                            namespace = job.id
+                            if len(file_specs) > 1:
+                                namespace = f"{job.id}:{file_spec['file_id']}"
+                            try:
+                                for record in self.parsers.iter_records(
+                                    destination,
+                                    {
+                                        "source_name": file_spec["source_name"],
+                                        "media_type": file_spec["media_type"],
+                                        "record_id_namespace": namespace,
+                                        "max_record_bytes": max_record_bytes,
+                                    },
+                                ):
+                                    record_id = record.record_id
+                                    if record_id is None:
+                                        raise UploadError(
+                                            "training_dataset_invalid",
+                                            "parser record is missing a stable identifier",
+                                        )
+                                    # Corrections may improve imported display fields, but
+                                    # the immutable parsed sender is the only identity that
+                                    # can be matched to the user-confirmed participant map.
+                                    # Otherwise a user message could be relabelled as persona
+                                    # text solely by editing its sender_id correction.
+                                    mapped_sender_id = record.sender_id
+                                    values = record.to_dict()
+                                    correction = corrections.get(record_id)
+                                    review_state = "needs_review"
+                                    if correction is not None:
+                                        values.update(correction["fields"])
+                                        review_state = correction["review_state"]
+                                        try:
+                                            values = NormalizedMessage.from_mapping(values).to_dict()
+                                        except MessageValidationError as exc:
+                                            raise UploadError(
+                                                "correction_corrupt",
+                                                "a stored correction is not a valid message",
+                                            ) from exc
+                                    sender_id = values["sender_id"]
+                                    content = values["content"]
+                                    if not isinstance(sender_id, str) or not isinstance(content, str):
+                                        raise UploadError(
+                                            "training_dataset_invalid",
+                                            "normalized training record fields are invalid",
+                                        )
+                                    yield {
+                                        "record_id": record_id,
+                                        "sender_role": participant_mapping.get(
+                                            mapped_sender_id, "unknown"
+                                        ),
+                                        "review_state": review_state,
+                                        "content": content,
+                                    }
+                            except ParserError as exc:
+                                raise UploadError(
+                                    exc.code,
+                                    f"a completed import could not be parsed for training: {exc}",
+                                ) from exc
+                        finally:
+                            self._remove_training_source_destination(destination)
+
+                    if pending or next(payload, None) is not None:
+                        raise UploadError(
+                            "payload_corrupt",
+                            "payload contains bytes outside the manifest file boundaries",
+                        )
+                finally:
+                    pending = b""
+                    payload.close()
+
+        return iterator()
+
     def inspect_media(self, owner_id: str, import_id: str) -> dict[str, Any]:
         with self._lock:
             job = self.imports.get(owner_id, import_id)
@@ -747,71 +939,97 @@ class UploadService:
     def _iter_media_payload(self, owner_id: str, import_id: str) -> Iterator[bytes]:
         """Yield an immutable completed payload without holding the service-wide lock."""
 
+        return self._iter_completed_payload(
+            owner_id,
+            import_id,
+            unavailable_code="media_inspection_unavailable",
+            unavailable_message="completed encrypted payload is unavailable",
+        )
+
+    def _iter_completed_payload(
+        self,
+        owner_id: str,
+        import_id: str,
+        *,
+        unavailable_code: str,
+        unavailable_message: str,
+    ) -> Iterator[bytes]:
+        """Lease one completed import while callers stream decrypted chunks."""
+
         def iterator() -> Iterator[bytes]:
             # The per-import lock prevents deletion of an open Windows file while the
-            # global lock is released for decryption, temporary-file I/O and ffprobe.
+            # global lock is released for decryption and temporary-file I/O.
             with self._payload_access(import_id):
-                with self._lock:
-                    job = self.imports.get(owner_id, import_id)
-                    payload_path = self.payload_path(import_id)
-                    if job.state is not ImportState.UPLOADED or not payload_path.is_file():
-                        raise UploadError(
-                            "media_inspection_unavailable",
-                            "inspection requires a completed uploaded import",
-                        )
-                    manifest = self._load_manifest(owner_id, import_id)
-                    chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
-                    indexes = sorted(int(value) for value in chunks)
-                    entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
-                    if indexes != list(range(len(indexes))):
-                        raise UploadError("manifest_corrupt", "encrypted chunk indexes are not contiguous")
-                    final_length = self._encrypted_length_value(
-                        manifest.get("final_encrypted_length")
-                    )
-
-                try:
-                    with payload_path.open("rb") as source:
-                        for index in indexes:
-                            entry = entries[index]
-                            encrypted = self._read_exact(
-                                source, self._encrypted_length(entry), "payload_corrupt"
-                            )
-                            try:
-                                plaintext = self.encryption.decrypt(
-                                    encrypted, self.chunk_aad(import_id, index, final=False)
-                                )
-                            except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
-                                raise UploadError(
-                                    "payload_authentication_failed",
-                                    "payload chunk authentication failed",
-                                ) from exc
-                            if len(plaintext) != int(entry["length"]):
-                                raise UploadError("payload_corrupt", "payload chunk length is invalid")
-                            if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
-                                raise UploadError("payload_corrupt", "payload chunk digest is invalid")
-                            yield plaintext
-
-                        final = self._read_exact(source, final_length, "payload_corrupt")
-                        try:
-                            sentinel = self.encryption.decrypt(
-                                final, self.chunk_aad(import_id, len(indexes), final=True)
-                            )
-                        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
-                            raise UploadError(
-                                "payload_authentication_failed",
-                                "payload end marker authentication failed",
-                            ) from exc
-                        if sentinel:
-                            raise UploadError("payload_corrupt", "payload end marker is not empty")
-                        if source.read(1):
-                            raise UploadError("payload_corrupt", "payload has trailing bytes")
-                except OSError as exc:
-                    raise UploadError(
-                        "media_inspection_unavailable",
-                        "completed encrypted payload is unavailable",
-                    ) from exc
+                yield from self._iter_completed_payload_while_leased(
+                    owner_id,
+                    import_id,
+                    unavailable_code=unavailable_code,
+                    unavailable_message=unavailable_message,
+                )
 
         return iterator()
+
+    def _iter_completed_payload_while_leased(
+        self,
+        owner_id: str,
+        import_id: str,
+        *,
+        unavailable_code: str,
+        unavailable_message: str,
+    ) -> Iterator[bytes]:
+        """Read a verified payload after the caller has acquired its payload lease."""
+
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            payload_path = self.payload_path(import_id)
+            if job.state is not ImportState.UPLOADED or not payload_path.is_file():
+                raise UploadError(unavailable_code, unavailable_message)
+            manifest = self._load_manifest(owner_id, import_id)
+            chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
+            indexes = sorted(int(value) for value in chunks)
+            entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
+            if indexes != list(range(len(indexes))):
+                raise UploadError("manifest_corrupt", "encrypted chunk indexes are not contiguous")
+            final_length = self._encrypted_length_value(manifest.get("final_encrypted_length"))
+
+        try:
+            with payload_path.open("rb") as source:
+                for index in indexes:
+                    entry = entries[index]
+                    encrypted = self._read_exact(
+                        source, self._encrypted_length(entry), "payload_corrupt"
+                    )
+                    try:
+                        plaintext = self.encryption.decrypt(
+                            encrypted, self.chunk_aad(import_id, index, final=False)
+                        )
+                    except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                        raise UploadError(
+                            "payload_authentication_failed",
+                            "payload chunk authentication failed",
+                        ) from exc
+                    if len(plaintext) != int(entry["length"]):
+                        raise UploadError("payload_corrupt", "payload chunk length is invalid")
+                    if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                        raise UploadError("payload_corrupt", "payload chunk digest is invalid")
+                    yield plaintext
+
+                final = self._read_exact(source, final_length, "payload_corrupt")
+                try:
+                    sentinel = self.encryption.decrypt(
+                        final, self.chunk_aad(import_id, len(indexes), final=True)
+                    )
+                except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                    raise UploadError(
+                        "payload_authentication_failed",
+                        "payload end marker authentication failed",
+                    ) from exc
+                if sentinel:
+                    raise UploadError("payload_corrupt", "payload end marker is not empty")
+                if source.read(1):
+                    raise UploadError("payload_corrupt", "payload has trailing bytes")
+        except OSError as exc:
+            raise UploadError(unavailable_code, unavailable_message) from exc
 
     @contextmanager
     def _payload_access(self, import_id: str) -> Iterator[None]:
@@ -855,6 +1073,35 @@ class UploadService:
                 "temporary media inspection data could not be removed",
             ) from exc
 
+    def _prepare_training_source_destination(self, destination: Path, required_bytes: int) -> None:
+        PlaintextLeaseRegistry.reserve(destination)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(destination.parent).free < required_bytes:
+                raise UploadError(
+                    "training_dataset_storage_unavailable",
+                    "temporary training source storage is insufficient",
+                )
+        except OSError as exc:
+            PlaintextLeaseRegistry.abandon(destination)
+            raise UploadError(
+                "training_dataset_storage_unavailable",
+                "temporary training source storage is unavailable",
+            ) from exc
+        except UploadError:
+            PlaintextLeaseRegistry.abandon(destination)
+            raise
+
+    @staticmethod
+    def _remove_training_source_destination(destination: Path) -> None:
+        try:
+            PlaintextLeaseRegistry.delete_and_release(destination)
+        except OSError as exc:
+            raise UploadError(
+                "training_dataset_cleanup_failed",
+                "temporary training source data could not be removed",
+            ) from exc
+
     def _cleanup_stale_media_inspection_files(self) -> None:
         directory = self.storage.object_path("media-inspection", "sentinel").parent
         if not directory.is_dir():
@@ -866,6 +1113,31 @@ class UploadService:
                 # A locked stale file is retried by the next service startup instead of
                 # preventing a local development server from becoming available.
                 continue
+
+    def _require_stale_training_source_cleanup(self) -> None:
+        if not self._stale_training_source_cleanup_failures:
+            return
+        self._stale_training_source_cleanup_failures = self._cleanup_stale_training_source_files()
+        if self._stale_training_source_cleanup_failures:
+            raise UploadError(
+                "training_dataset_cleanup_failed",
+                "stale plaintext training source data could not be removed",
+            )
+
+    def _cleanup_stale_training_source_files(self) -> tuple[Path, ...]:
+        directory = self.storage.object_path("training-source", "sentinel").parent
+        if not directory.is_dir():
+            return ()
+        failures: list[Path] = []
+        for candidate in directory.glob("*.bin"):
+            try:
+                PlaintextLeaseRegistry.delete_if_stale(candidate)
+            except OSError:
+                # Training reads retry this cleanup before decrypting another import;
+                # a known plaintext leftover is a privacy failure, not background
+                # noise that may be ignored while a provider handoff proceeds.
+                failures.append(candidate)
+        return tuple(failures)
 
     def save_corrections(
         self,

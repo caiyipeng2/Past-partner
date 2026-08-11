@@ -85,6 +85,24 @@ class DependencyGroupContractTests(unittest.TestCase):
             with self.subTest(requirements_file=requirements_file):
                 self.assertIn(f"python -m pip install -r {requirements_file}", readme)
 
+    def test_readme_discloses_fine_tuning_is_capability_gated(self) -> None:
+        readme = (self.root / "README.md").read_text(encoding="utf-8")
+        required_boundaries = (
+            "P2-07",
+            "persona_text",
+            "fine_tuning",
+            "capability_not_supported",
+            "artifact_id",
+            "evaluation",
+            "submission_started",
+            "local_cleanup_failure_code",
+            "PAST_PARTNER_MODE=test",
+        )
+
+        for boundary in required_boundaries:
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, readme)
+
 
 if __name__ == "__main__":
     unittest.main()
