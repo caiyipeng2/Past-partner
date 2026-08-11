@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterable
 from typing import List, Dict, Any
 
+from src.learning.long_term_memory import LongTermMemoryExtractor
 from src.learning.style_profile import StyleProfileExtractor
 from src.preprocessing.parser_registry import ParserRegistry
 
@@ -97,6 +98,34 @@ class ChatDataParser:
         ).to_dict()
         profile["source_type"] = result.source_type
         return profile
+
+    def generate_long_term_memory(
+        self,
+        file_path: str,
+        persona_sender_ids: Iterable[str],
+        *,
+        format_type: str = "auto",
+        accepted_record_ids: Iterable[str] | None = None,
+        user_sender_ids: Iterable[str] = (),
+        relationship_type: str | None = None,
+        relationship_label: str | None = None,
+        max_candidates: int = 500,
+    ) -> Dict[str, Any]:
+        """Extract reviewable memory candidates from canonical parser output."""
+
+        metadata = self._format_metadata(format_type)
+        result = self.registry.parse(file_path, metadata)
+        memory = LongTermMemoryExtractor().extract(
+            result.records,
+            accepted_record_ids=accepted_record_ids,
+            persona_sender_ids=persona_sender_ids,
+            user_sender_ids=user_sender_ids,
+            relationship_type=relationship_type,
+            relationship_label=relationship_label,
+            max_candidates=max_candidates,
+        ).to_dict()
+        memory["source_type"] = result.source_type
+        return memory
 
     def _parse_legacy(self, file_path: str, source_type: str) -> List[Dict[str, Any]]:
         result = self.registry.parse(file_path, {"source_type": source_type})
