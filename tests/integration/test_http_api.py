@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import http.client
 import json
@@ -5,8 +6,11 @@ import shutil
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
+from src.preprocessing.media_inspector import MediaInspectionError
 from src.server.application import Application
 from src.server.config import ServerConfig
 from src.server.http import create_server
@@ -98,6 +102,69 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual("你", persona["preferred_address"])
         self.assertEqual(["温和", "不说教"], persona["tone_boundaries"])
         self.assertEqual(["家庭隐私"], persona["forbidden_topics"])
+
+    def test_persona_delete_serializes_concurrent_import_creation(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        application = self.server.application
+        original_delete_imports = application.uploads.delete_persona_imports
+        deletion_entered = threading.Event()
+        release_deletion = threading.Event()
+        deletion_done = threading.Event()
+        creation_done = threading.Event()
+        outcomes: dict[str, object] = {}
+
+        def block_persona_import_delete(owner_id: str, persona_id: str) -> int:
+            deletion_entered.set()
+            if not release_deletion.wait(timeout=5):
+                raise AssertionError("persona delete test did not release")
+            return original_delete_imports(owner_id, persona_id)
+
+        application.uploads.delete_persona_imports = block_persona_import_delete
+
+        def delete_persona() -> None:
+            try:
+                outcomes["deleted"] = application.delete_persona(self.owner_id, persona["id"])
+            except BaseException as exc:  # Preserve a worker failure for the assertion thread.
+                outcomes["delete_error"] = exc
+            finally:
+                deletion_done.set()
+
+        def create_import() -> None:
+            try:
+                outcomes["created"] = application.create_import(
+                    self.owner_id,
+                    {
+                        "persona_id": persona["id"],
+                        "source_name": "chat.txt",
+                        "total_bytes": 1,
+                        "media_type": "text/plain",
+                    },
+                )
+            except BaseException as exc:  # Preserve a worker failure for the assertion thread.
+                outcomes["create_error"] = exc
+            finally:
+                creation_done.set()
+
+        delete_thread = threading.Thread(target=delete_persona)
+        delete_thread.start()
+        self.assertTrue(deletion_entered.wait(timeout=1), "persona deletion did not start")
+        create_thread = threading.Thread(target=create_import)
+        create_thread.start()
+        self.assertFalse(creation_done.wait(timeout=0.3), "import creation bypassed persona deletion")
+        release_deletion.set()
+        delete_thread.join(timeout=2)
+        create_thread.join(timeout=2)
+
+        self.assertFalse(delete_thread.is_alive())
+        self.assertFalse(create_thread.is_alive())
+        self.assertNotIn("delete_error", outcomes)
+        self.assertTrue(outcomes["deleted"]["deleted"])
+        self.assertNotIn("created", outcomes)
+        self.assertEqual("persona_not_found", outcomes["create_error"].code)
 
     def test_persona_can_be_read_and_partially_updated(self) -> None:
         _, _, created = self.request(
@@ -285,6 +352,157 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(1, limited["summary"]["record_count"])
         self.assertTrue(limited["summary"]["truncated"])
+
+    def test_media_inspection_reports_local_image_metadata_and_cleans_temporary_file(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "photo.bin",
+                "total_bytes": len(content),
+                "media_type": "image/png",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, inspection = self.request(
+            "GET", f"/api/v1/imports/{job['id']}/media-inspection"
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(job["id"], inspection["import_id"])
+        self.assertEqual("uploaded", inspection["state"])
+        self.assertEqual("local_metadata", inspection["processing_mode"])
+        self.assertFalse(inspection["provider_transfer"])
+        self.assertEqual("image", inspection["files"][0]["kind"])
+        self.assertEqual("image/png", inspection["files"][0]["detected_media_type"])
+        self.assertEqual({"width": 1, "height": 1}, inspection["files"][0]["dimensions"])
+        self.assertFalse(list((self.data_root / "media-inspection").glob("*")))
+
+    def test_media_inspection_requires_a_completed_upload(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "photo.png",
+                "total_bytes": 1,
+                "media_type": "image/png",
+            },
+        )
+
+        status, _, payload = self.request("GET", f"/api/v1/imports/{job['id']}/media-inspection")
+
+        self.assertEqual(409, status)
+        self.assertEqual("media_inspection_unavailable", payload["error"]["code"])
+
+    def test_media_inspection_reports_insufficient_temporary_storage(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+        )
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "photo.bin",
+                "total_bytes": len(content),
+                "media_type": "image/png",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+
+        with patch(
+            "src.services.upload_service.shutil.disk_usage",
+            return_value=SimpleNamespace(free=0),
+        ):
+            status, _, payload = self.request(
+                "GET", f"/api/v1/imports/{job['id']}/media-inspection"
+            )
+
+        self.assertEqual(507, status)
+        self.assertEqual("media_inspection_storage_unavailable", payload["error"]["code"])
+
+    def test_media_inspection_maps_processor_and_type_errors(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "小雨", "relationship_type": "friend"},
+        )
+        content = b"audio fixture"
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "voice.ogg",
+                "total_bytes": len(content),
+                "media_type": "audio/ogg",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.request("POST", f"/api/v1/imports/{job['id']}/complete", {"sha256": digest})
+
+        for code, expected_status in (
+            ("media_processor_unavailable", 503),
+            ("media_type_mismatch", 422),
+        ):
+            with self.subTest(code=code):
+                def fail_inspection(_source, _declared_media_type, failure_code=code):
+                    raise MediaInspectionError(failure_code, "expected test failure")
+
+                self.server.application.uploads.media_inspector.inspect = fail_inspection
+                status, _, payload = self.request(
+                    "GET", f"/api/v1/imports/{job['id']}/media-inspection"
+                )
+
+                self.assertEqual(expected_status, status)
+                self.assertEqual(code, payload["error"]["code"])
 
     def test_import_preview_detects_wechat_text_export(self) -> None:
         _, _, persona = self.request(

@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +22,7 @@ from src.services.authenticated_encryption import (
 )
 from src.services.import_repository import ImportRepositoryError
 from src.services.import_service import ImportJob, ImportService, ImportState
+from src.preprocessing.media_inspector import MediaInspectionError, MediaInspector
 from src.preprocessing.parser_registry import ParserError, ParserRegistry
 from src.services.storage import StorageLayout
 
@@ -54,6 +57,12 @@ class ChunkReceipt:
     total_bytes: int
 
 
+@dataclass(slots=True)
+class _PayloadAccessEntry:
+    lock: threading.RLock
+    leases: int = 0
+
+
 class UploadService:
     def __init__(
         self,
@@ -63,6 +72,7 @@ class UploadService:
         max_chunk_bytes: int = DEFAULT_CHUNK_BYTES,
         read_block_bytes: int = DEFAULT_READ_BLOCK_BYTES,
         parsers: ParserRegistry | None = None,
+        media_inspector: MediaInspector | None = None,
     ):
         if max_chunk_bytes <= 0 or read_block_bytes <= 0:
             raise ValueError("chunk and read block limits must be positive")
@@ -74,10 +84,16 @@ class UploadService:
         self.max_chunk_bytes = max_chunk_bytes
         self.read_block_bytes = min(read_block_bytes, max_chunk_bytes)
         self.parsers = parsers or ParserRegistry.with_builtins()
+        self.media_inspector = media_inspector or MediaInspector()
         # The development runtime is one process. The lock prevents two request
         # threads from racing the same JSON manifest; production will replace
         # this with transactional metadata storage.
         self._lock = threading.RLock()
+        # Media inspection can legitimately run for seconds against a large completed
+        # import. Per-import locks keep its immutable encrypted payload alive without
+        # serializing unrelated uploads behind the service-wide manifest lock.
+        self._payload_access_locks: dict[str, _PayloadAccessEntry] = {}
+        self._cleanup_stale_media_inspection_files()
 
     def put_chunk(
         self,
@@ -294,50 +310,82 @@ class UploadService:
         if import_id is None:
             import_id = owner_id
             owner_id = None
-        with self._lock:
-            job = self.imports.get(owner_id, import_id)
-            if job.state is ImportState.PROCESSING:
-                raise UploadError(
-                    "deletion_unavailable",
-                    "processing imports cannot be deleted",
-                )
-            manifest = self._load_manifest(owner_id, import_id)
-            indexes = self._manifest_indexes(manifest)
-            try:
-                for index in indexes:
-                    self._chunk_path(import_id, index).unlink(missing_ok=True)
-                self.payload_path(import_id).unlink(missing_ok=True)
-            except OSError as exc:
-                raise UploadError(
-                    "deletion_failed",
-                    "import files could not be removed",
-                ) from exc
-
-            try:
-                deleted = self.imports.delete(owner_id, import_id)
-            except ImportRepositoryError as exc:
-                raise UploadError(
-                    "deletion_failed",
-                    "import metadata could not be removed",
-                ) from exc
-            if not deleted:
-                raise UploadError("deletion_failed", "import metadata could not be removed")
-            return {
-                "import_id": job.id,
-                "deleted": True,
-            }
+        # Acquire the import-specific lock before the global lock. A media reader uses
+        # the same order, so deletion waits only for that import rather than blocking
+        # all uploads while a large file is inspected.
+        with self._payload_access(import_id):
+            with self._lock:
+                return self._delete_import_locked(owner_id, import_id)
 
     def delete_persona_imports(self, owner_id: str, persona_id: str) -> int:
-        with self._lock:
-            jobs = self.imports.list_for_persona(owner_id, persona_id)
-            if any(job.state is ImportState.PROCESSING for job in jobs):
-                raise UploadError(
-                    "deletion_unavailable",
-                    "processing imports cannot be deleted",
-                )
-            for job in jobs:
-                self.delete_import(owner_id, job.id)
-            return len(jobs)
+        # A competing individual deletion can remove a child after the first list.
+        # Acquire all per-import leases in a stable order, re-read under the global
+        # lock, and retry before deleting anything if the set changed.
+        for _ in range(3):
+            with self._lock:
+                jobs = self.imports.list_for_persona(owner_id, persona_id)
+                self._require_persona_imports_deletable(jobs)
+                job_ids = tuple(sorted(job.id for job in jobs))
+
+            with ExitStack() as leases:
+                for import_id in job_ids:
+                    leases.enter_context(self._payload_access(import_id))
+                with self._lock:
+                    current_jobs = self.imports.list_for_persona(owner_id, persona_id)
+                    self._require_persona_imports_deletable(current_jobs)
+                    current_ids = tuple(sorted(job.id for job in current_jobs))
+                    if current_ids != job_ids:
+                        continue
+                    for job in sorted(current_jobs, key=lambda item: item.id):
+                        self._delete_import_locked(owner_id, job.id)
+                    return len(current_jobs)
+        raise UploadError(
+            "deletion_unavailable",
+            "persona imports changed while deletion was being prepared",
+        )
+
+    @staticmethod
+    def _require_persona_imports_deletable(jobs: list[ImportJob]) -> None:
+        if any(job.state is ImportState.PROCESSING for job in jobs):
+            raise UploadError(
+                "deletion_unavailable",
+                "persona has processing imports that cannot be deleted",
+            )
+
+    def _delete_import_locked(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        """Delete one import while its caller holds both ordering-compatible locks."""
+
+        job = self.imports.get(owner_id, import_id)
+        if job.state is ImportState.PROCESSING:
+            raise UploadError(
+                "deletion_unavailable",
+                "processing imports cannot be deleted",
+            )
+        manifest = self._load_manifest(owner_id, import_id)
+        indexes = self._manifest_indexes(manifest)
+        try:
+            for index in indexes:
+                self._chunk_path(import_id, index).unlink(missing_ok=True)
+            self.payload_path(import_id).unlink(missing_ok=True)
+        except OSError as exc:
+            raise UploadError(
+                "deletion_failed",
+                "import files could not be removed",
+            ) from exc
+
+        try:
+            deleted = self.imports.delete(owner_id, import_id)
+        except ImportRepositoryError as exc:
+            raise UploadError(
+                "deletion_failed",
+                "import metadata could not be removed",
+            ) from exc
+        if not deleted:
+            raise UploadError("deletion_failed", "import metadata could not be removed")
+        return {
+            "import_id": job.id,
+            "deleted": True,
+        }
 
     def payload_path(self, import_id: str) -> Path:
         return self.storage.object_path("payloads", import_id, ".bin")
@@ -598,6 +646,226 @@ class UploadService:
                 }
             finally:
                 pending = b""
+
+    def inspect_media(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self.imports.get(owner_id, import_id)
+            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+                raise UploadError(
+                    "media_inspection_unavailable",
+                    "inspection requires a completed uploaded import",
+                )
+            file_specs = [
+                {
+                    "file_id": item.file_id if len(job.files) > 1 else None,
+                    "source_name": item.source_name,
+                    "media_type": item.media_type,
+                    "total_bytes": item.total_bytes,
+                }
+                for item in job.files
+            ]
+            if not file_specs:
+                file_specs = [
+                    {
+                        "file_id": None,
+                        "source_name": job.source_name,
+                        "media_type": job.media_type,
+                        "total_bytes": job.total_bytes,
+                    }
+                ]
+
+        inspection_id = uuid4().hex
+        payload = iter(self._iter_media_payload(owner_id, import_id))
+        pending = b""
+        files: list[dict[str, Any]] = []
+        try:
+            for index, file_spec in enumerate(file_specs):
+                destination = self.storage.object_path(
+                    "media-inspection", f"{inspection_id}-{index}", ".bin"
+                )
+                remaining_bytes = int(file_spec["total_bytes"])
+                self._prepare_media_inspection_destination(destination, remaining_bytes)
+                try:
+                    # ffprobe and Pillow need a seekable file. Materialize only the
+                    # current manifest boundary, never a client-controlled path, then
+                    # remove the plaintext before this request can return.
+                    try:
+                        with destination.open("xb") as output:
+                            while remaining_bytes:
+                                if not pending:
+                                    try:
+                                        pending = next(payload)
+                                    except StopIteration as exc:
+                                        raise UploadError(
+                                            "payload_corrupt",
+                                            "payload ended before the manifest file boundary",
+                                        ) from exc
+                                take = min(remaining_bytes, len(pending))
+                                output.write(pending[:take])
+                                pending = pending[take:]
+                                remaining_bytes -= take
+                            output.flush()
+                            os.fsync(output.fileno())
+                    except OSError as exc:
+                        raise UploadError(
+                            "media_inspection_storage_unavailable",
+                            "temporary media inspection storage is unavailable",
+                        ) from exc
+                    try:
+                        inspection = self.media_inspector.inspect(
+                            destination, str(file_spec["media_type"])
+                        )
+                    except MediaInspectionError as exc:
+                        raise UploadError(exc.code, str(exc)) from exc
+                    files.append(
+                        {
+                            "file_id": file_spec["file_id"],
+                            "source_name": file_spec["source_name"],
+                            "declared_media_type": file_spec["media_type"],
+                            **inspection,
+                        }
+                    )
+                finally:
+                    self._remove_media_inspection_destination(destination)
+
+            if pending or next(payload, None) is not None:
+                raise UploadError(
+                    "payload_corrupt",
+                    "payload contains bytes outside the manifest file boundaries",
+                )
+            return {
+                "import_id": job.id,
+                "state": job.state.value,
+                "processing_mode": "local_metadata",
+                "provider_transfer": False,
+                "files": files,
+            }
+        finally:
+            pending = b""
+            payload.close()
+
+    def _iter_media_payload(self, owner_id: str, import_id: str) -> Iterator[bytes]:
+        """Yield an immutable completed payload without holding the service-wide lock."""
+
+        def iterator() -> Iterator[bytes]:
+            # The per-import lock prevents deletion of an open Windows file while the
+            # global lock is released for decryption, temporary-file I/O and ffprobe.
+            with self._payload_access(import_id):
+                with self._lock:
+                    job = self.imports.get(owner_id, import_id)
+                    payload_path = self.payload_path(import_id)
+                    if job.state is not ImportState.UPLOADED or not payload_path.is_file():
+                        raise UploadError(
+                            "media_inspection_unavailable",
+                            "inspection requires a completed uploaded import",
+                        )
+                    manifest = self._load_manifest(owner_id, import_id)
+                    chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
+                    indexes = sorted(int(value) for value in chunks)
+                    entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
+                    if indexes != list(range(len(indexes))):
+                        raise UploadError("manifest_corrupt", "encrypted chunk indexes are not contiguous")
+                    final_length = self._encrypted_length_value(
+                        manifest.get("final_encrypted_length")
+                    )
+
+                try:
+                    with payload_path.open("rb") as source:
+                        for index in indexes:
+                            entry = entries[index]
+                            encrypted = self._read_exact(
+                                source, self._encrypted_length(entry), "payload_corrupt"
+                            )
+                            try:
+                                plaintext = self.encryption.decrypt(
+                                    encrypted, self.chunk_aad(import_id, index, final=False)
+                                )
+                            except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                                raise UploadError(
+                                    "payload_authentication_failed",
+                                    "payload chunk authentication failed",
+                                ) from exc
+                            if len(plaintext) != int(entry["length"]):
+                                raise UploadError("payload_corrupt", "payload chunk length is invalid")
+                            if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                                raise UploadError("payload_corrupt", "payload chunk digest is invalid")
+                            yield plaintext
+
+                        final = self._read_exact(source, final_length, "payload_corrupt")
+                        try:
+                            sentinel = self.encryption.decrypt(
+                                final, self.chunk_aad(import_id, len(indexes), final=True)
+                            )
+                        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                            raise UploadError(
+                                "payload_authentication_failed",
+                                "payload end marker authentication failed",
+                            ) from exc
+                        if sentinel:
+                            raise UploadError("payload_corrupt", "payload end marker is not empty")
+                        if source.read(1):
+                            raise UploadError("payload_corrupt", "payload has trailing bytes")
+                except OSError as exc:
+                    raise UploadError(
+                        "media_inspection_unavailable",
+                        "completed encrypted payload is unavailable",
+                    ) from exc
+
+        return iterator()
+
+    @contextmanager
+    def _payload_access(self, import_id: str) -> Iterator[None]:
+        with self._lock:
+            entry = self._payload_access_locks.get(import_id)
+            if entry is None:
+                entry = _PayloadAccessEntry(lock=threading.RLock())
+                self._payload_access_locks[import_id] = entry
+            entry.leases += 1
+        entry.lock.acquire()
+        try:
+            yield
+        finally:
+            entry.lock.release()
+            with self._lock:
+                entry.leases -= 1
+                if entry.leases == 0 and self._payload_access_locks.get(import_id) is entry:
+                    del self._payload_access_locks[import_id]
+
+    def _prepare_media_inspection_destination(self, destination: Path, required_bytes: int) -> None:
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(destination.parent).free < required_bytes:
+                raise UploadError(
+                    "media_inspection_storage_unavailable",
+                    "temporary media inspection storage is insufficient",
+                )
+        except OSError as exc:
+            raise UploadError(
+                "media_inspection_storage_unavailable",
+                "temporary media inspection storage is unavailable",
+            ) from exc
+
+    @staticmethod
+    def _remove_media_inspection_destination(destination: Path) -> None:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError as exc:
+            raise UploadError(
+                "media_inspection_cleanup_failed",
+                "temporary media inspection data could not be removed",
+            ) from exc
+
+    def _cleanup_stale_media_inspection_files(self) -> None:
+        directory = self.storage.object_path("media-inspection", "sentinel").parent
+        if not directory.is_dir():
+            return
+        for candidate in directory.glob("*.bin"):
+            try:
+                candidate.unlink()
+            except OSError:
+                # A locked stale file is retried by the next service startup instead of
+                # preventing a local development server from becoming available.
+                continue
 
     def save_corrections(
         self,

@@ -56,13 +56,13 @@ python -m pip install -r requirements.txt
 按实际用途选择一个扩展清单。解析组自动包含核心组，模型组自动包含解析组和核心组：
 
 ```powershell
-# 聊天文件解析、数值和文本处理
+# 聊天文件解析、数值、文本处理和本地图像元数据检测
 python -m pip install -r requirements-parsers.txt
 
 # 模型与训练，同时包含解析和核心依赖
 python -m pip install -r requirements-models.txt
 
-# 核心服务的开发测试工具
+# 完整开发测试工具（包含本地解析与媒体检查依赖）
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -102,6 +102,8 @@ P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实�
 P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商，也不持久化向量索引。
 
 P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
+
+媒体处理实测补充（不占用原路线图任务编号）：已完成上传的图片、音频或视频可调用 `GET /api/v1/imports/{import_id}/media-inspection` 获取本地验证的格式元数据。当前图片格式映射为 BMP、GIF、ICO、JPEG、PNG、TIFF、WebP；音频格式映射为 Ogg、WAV、MP3；视频格式映射为 WebM、MP4（其他格式会明确拒绝，不伪造成功）。图片返回格式和尺寸；音频/视频返回格式、时长、编码、采样率或画面尺寸。该接口仅在服务端受控临时路径中处理单个文件边界，响应不包含原始字节或本地路径，且明确返回 `provider_transfer: false`。它不执行 OCR、ASR、图片/视频语义理解，也不调用模型；图片检测需要 `requirements-parsers.txt` 中的 Pillow，音频和视频检测还需要本机 `ffprobe` 位于 `PATH`。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。

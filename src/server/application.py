@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
@@ -58,6 +59,10 @@ class Application:
         self.gateway = gateway
         self.auth = auth
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
+        # Keep create/delete operations that change a persona's child graph atomic in
+        # the current single-process runtime. Upload I/O itself remains outside this
+        # gate, so active chunks and media inspection can continue independently.
+        self._persona_lifecycle_lock = threading.RLock()
 
     @classmethod
     def from_config(cls, config: ServerConfig) -> "Application":
@@ -148,16 +153,17 @@ class Application:
         return persona.to_dict()
 
     def delete_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
-        self.personas.get(owner_id, persona_id)
-        deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
-        deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
-        self.personas.delete(owner_id, persona_id)
-        return {
-            "persona_id": persona_id,
-            "deleted": True,
-            "deleted_imports": deleted_imports,
-            "deleted_consents": deleted_consents,
-        }
+        with self._persona_lifecycle_lock:
+            self.personas.get(owner_id, persona_id)
+            deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
+            deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
+            self.personas.delete(owner_id, persona_id)
+            return {
+                "persona_id": persona_id,
+                "deleted": True,
+                "deleted_imports": deleted_imports,
+                "deleted_consents": deleted_consents,
+            }
 
     def export_data(self, owner_id: str) -> dict[str, Any]:
         imports = [
@@ -181,16 +187,17 @@ class Application:
 
     def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
-            consent = self.consents.create(
-                owner_id=owner_id,
-                persona_id=payload["persona_id"],
-                provider_id=payload["provider_id"],
-                model_id=payload["model_id"],
-                data_category=payload["data_category"],
-                estimated_cost=payload["estimated_cost"],
-                purpose=payload["purpose"],
-                authorization_scope=payload["authorization_scope"],
-            )
+            with self._persona_lifecycle_lock:
+                consent = self.consents.create(
+                    owner_id=owner_id,
+                    persona_id=payload["persona_id"],
+                    provider_id=payload["provider_id"],
+                    model_id=payload["model_id"],
+                    data_category=payload["data_category"],
+                    estimated_cost=payload["estimated_cost"],
+                    purpose=payload["purpose"],
+                    authorization_scope=payload["authorization_scope"],
+                )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
         return consent.to_dict()
@@ -222,22 +229,23 @@ class Application:
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
-            arguments: dict[str, Any] = {
-                "owner_id": owner_id,
-                "persona_id": payload["persona_id"],
-            }
-            if "files" in payload:
-                arguments["files"] = payload["files"]
-                arguments["source_name"] = payload.get("source_name")
-                arguments["total_bytes"] = payload.get("total_bytes")
-                arguments["media_type"] = payload.get("media_type")
-            else:
-                arguments.update(
-                    source_name=payload["source_name"],
-                    total_bytes=payload["total_bytes"],
-                    media_type=payload["media_type"],
-                )
-            job = self.imports.create(**arguments)
+            with self._persona_lifecycle_lock:
+                arguments: dict[str, Any] = {
+                    "owner_id": owner_id,
+                    "persona_id": payload["persona_id"],
+                }
+                if "files" in payload:
+                    arguments["files"] = payload["files"]
+                    arguments["source_name"] = payload.get("source_name")
+                    arguments["total_bytes"] = payload.get("total_bytes")
+                    arguments["media_type"] = payload.get("media_type")
+                else:
+                    arguments.update(
+                        source_name=payload["source_name"],
+                        total_bytes=payload["total_bytes"],
+                        media_type=payload["media_type"],
+                    )
+                job = self.imports.create(**arguments)
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
         return job.to_dict()
@@ -246,7 +254,8 @@ class Application:
         return self.imports.get(owner_id, import_id).to_dict()
 
     def delete_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
-        return self.uploads.delete_import(owner_id, import_id)
+        with self._persona_lifecycle_lock:
+            return self.uploads.delete_import(owner_id, import_id)
 
     def get_missing_chunks(
         self,
@@ -266,6 +275,9 @@ class Application:
         max_records: int = 20,
     ) -> dict[str, Any]:
         return self.uploads.preview(owner_id, import_id, max_records)
+
+    def inspect_import_media(self, owner_id: str, import_id: str) -> dict[str, Any]:
+        return self.uploads.inspect_media(owner_id, import_id)
 
     def set_participant_mapping(
         self,

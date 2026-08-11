@@ -1,15 +1,20 @@
 import base64
+from contextlib import contextmanager
 import hashlib
 import io
 import shutil
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_repository import ImportRepository
-from src.services.import_service import ImportService, ImportState
+from src.preprocessing.media_inspector import MediaInspectionError
+from src.services.import_service import ImportNotFoundError, ImportService, ImportState
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.persona_repository import PersonaRepository
 from src.services.persona_service import PersonaService
@@ -25,6 +30,25 @@ class RecordingReader(io.BytesIO):
     def read(self, size: int = -1) -> bytes:
         self.requested_sizes.append(size)
         return super().read(size)
+
+
+class BlockingMediaInspector:
+    def __init__(self, started: threading.Event, release: threading.Event) -> None:
+        self.started = started
+        self.release = release
+
+    def inspect(self, source: Path, declared_media_type: str) -> dict[str, object]:
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise AssertionError("media inspection test did not release")
+        return {
+            "kind": "image",
+            "detected_media_type": declared_media_type,
+            "format": "PNG",
+            "dimensions": {"width": 1, "height": 1},
+            "size_bytes": source.stat().st_size,
+            "provider_transfer": False,
+        }
 
 
 class UploadServiceTests(unittest.TestCase):
@@ -278,6 +302,171 @@ class UploadServiceTests(unittest.TestCase):
 
         self.assertGreater(len(reader.requested_sizes), 1)
         self.assertLessEqual(max(reader.requested_sizes), 4)
+
+    def test_media_inspection_does_not_block_another_import_upload(self) -> None:
+        content = b"media"
+        media_job = self.imports.create(self.job.persona_id, "photo.png", len(content), "image/png")
+        self.uploads.put_chunk(
+            media_job.id, 0, len(content), self.digest(content), io.BytesIO(content)
+        )
+        self.uploads.complete(media_job.id, self.digest(content))
+        started = threading.Event()
+        release = threading.Event()
+        self.uploads.media_inspector = BlockingMediaInspector(started, release)
+        failures: list[BaseException] = []
+
+        def inspect() -> None:
+            try:
+                self.uploads.inspect_media(None, media_job.id)
+            except BaseException as exc:  # Preserve a worker failure for the assertion thread.
+                failures.append(exc)
+
+        inspection_thread = threading.Thread(target=inspect)
+        inspection_thread.start()
+        self.assertTrue(started.wait(timeout=1), "media inspection did not start")
+
+        other_content = b"next"
+        other_job = self.imports.create(
+            self.job.persona_id, "other.txt", len(other_content), "text/plain"
+        )
+        uploaded = threading.Event()
+
+        def upload_other_import() -> None:
+            try:
+                self.uploads.put_chunk(
+                    other_job.id,
+                    0,
+                    len(other_content),
+                    self.digest(other_content),
+                    io.BytesIO(other_content),
+                )
+            except BaseException as exc:  # Preserve a worker failure for the assertion thread.
+                failures.append(exc)
+            finally:
+                uploaded.set()
+
+        upload_thread = threading.Thread(target=upload_other_import)
+        upload_thread.start()
+        completed_while_inspecting = uploaded.wait(timeout=0.5)
+        release.set()
+        inspection_thread.join(timeout=2)
+        upload_thread.join(timeout=2)
+
+        self.assertTrue(completed_while_inspecting, "media inspection held the global upload lock")
+        self.assertFalse(inspection_thread.is_alive())
+        self.assertFalse(upload_thread.is_alive())
+        self.assertEqual([], failures)
+
+    def test_media_inspection_rejects_insufficient_temporary_storage(self) -> None:
+        content = b"media"
+        job = self.imports.create(self.job.persona_id, "photo.png", len(content), "image/png")
+        self.uploads.put_chunk(job.id, 0, len(content), self.digest(content), io.BytesIO(content))
+        self.uploads.complete(job.id, self.digest(content))
+        self.uploads.media_inspector = BlockingMediaInspector(threading.Event(), threading.Event())
+
+        with patch(
+            "src.services.upload_service.shutil.disk_usage",
+            return_value=SimpleNamespace(free=0),
+        ):
+            with self.assertRaises(UploadError) as captured:
+                self.uploads.inspect_media(None, job.id)
+
+        self.assertEqual("media_inspection_storage_unavailable", captured.exception.code)
+
+    def test_media_inspection_reports_a_failed_temporary_file_cleanup(self) -> None:
+        content = b"media"
+        job = self.imports.create(self.job.persona_id, "photo.png", len(content), "image/png")
+        self.uploads.put_chunk(job.id, 0, len(content), self.digest(content), io.BytesIO(content))
+        self.uploads.complete(job.id, self.digest(content))
+        completed = threading.Event()
+        completed.set()
+        self.uploads.media_inspector = BlockingMediaInspector(completed, completed)
+        original_unlink = Path.unlink
+
+        def fail_only_media_temp_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            if path.parent.name == "media-inspection":
+                raise OSError("test cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        with patch("src.services.upload_service.Path.unlink", new=fail_only_media_temp_cleanup):
+            with self.assertRaises(UploadError) as captured:
+                self.uploads.inspect_media(None, job.id)
+
+        self.assertEqual("media_inspection_cleanup_failed", captured.exception.code)
+        for temporary in (self.root / "media-inspection").glob("*.bin"):
+            temporary.unlink()
+
+    def test_constructor_removes_stale_media_inspection_plaintext(self) -> None:
+        stale = self.uploads.storage.object_path("media-inspection", "stale", ".bin")
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"temporary plaintext")
+
+        UploadService(self.uploads.storage, self.imports, self.encryption, read_block_bytes=4)
+
+        self.assertFalse(stale.exists())
+
+    def test_media_inspection_releases_its_payload_lease_after_a_failure(self) -> None:
+        content = b"media"
+        job = self.imports.create(self.job.persona_id, "photo.png", len(content), "image/png")
+        self.uploads.put_chunk(job.id, 0, len(content), self.digest(content), io.BytesIO(content))
+        self.uploads.complete(job.id, self.digest(content))
+
+        def fail_inspection(_source: Path, _declared_media_type: str) -> dict[str, object]:
+            raise MediaInspectionError("media_metadata_invalid", "expected test failure")
+
+        self.uploads.media_inspector.inspect = fail_inspection
+        with self.assertRaises(UploadError) as captured:
+            self.uploads.inspect_media(None, job.id)
+
+        self.assertEqual("media_metadata_invalid", captured.exception.code)
+        self.assertEqual({}, self.uploads._payload_access_locks)
+
+    def test_payload_lock_registry_does_not_keep_unknown_delete_requests(self) -> None:
+        with self.assertRaises(ImportNotFoundError):
+            self.uploads.delete_import(None, "not-real")
+
+        self.assertEqual({}, self.uploads._payload_access_locks)
+
+    def test_persona_delete_retries_when_a_child_disappears_while_acquiring_locks(self) -> None:
+        other = self.imports.create(self.job.persona_id, "other.txt", 1, "text/plain")
+        first_id, second_id = sorted((self.job.id, other.id))
+        original_access = self.uploads._payload_access
+        first_lock_reached = threading.Event()
+        release_first_lock = threading.Event()
+        failures: list[BaseException] = []
+        result: dict[str, int] = {}
+
+        @contextmanager
+        def delay_first_access(import_id: str):
+            if import_id == first_id and not first_lock_reached.is_set():
+                first_lock_reached.set()
+                if not release_first_lock.wait(timeout=5):
+                    raise AssertionError("persona deletion test did not release the first lock")
+            with original_access(import_id):
+                yield
+
+        self.uploads._payload_access = delay_first_access
+
+        def delete_persona_imports() -> None:
+            try:
+                result["count"] = self.uploads.delete_persona_imports(None, self.job.persona_id)
+            except BaseException as exc:  # Preserve a worker failure for the assertion thread.
+                failures.append(exc)
+
+        deletion_thread = threading.Thread(target=delete_persona_imports)
+        deletion_thread.start()
+        try:
+            self.assertTrue(first_lock_reached.wait(timeout=1), "persona deletion did not begin lock acquisition")
+            self.uploads.delete_import(None, second_id)
+        finally:
+            release_first_lock.set()
+            deletion_thread.join(timeout=2)
+
+        self.assertFalse(deletion_thread.is_alive())
+        self.assertEqual([], failures)
+        self.assertEqual(1, result["count"])
+        self.assertIsNone(self.imports.repository.get(first_id))
+        self.assertIsNone(self.imports.repository.get(second_id))
 
 
 if __name__ == "__main__":
