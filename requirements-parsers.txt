@@ -10,3 +10,5 @@ jsonlines>=3.1.0
 # Optional high-fidelity PDF extraction; the built-in parser keeps a bounded
 # plain-text fallback when this dependency is not installed.
 pypdf>=5.0.0
+# Local image metadata inspection; loaded lazily so core-only installations still start.
+Pillow>=10.0.0

@@ -1,4 +1,4 @@
-# 核心服务和可选的开发测试工具。
--r requirements-core.txt
+# 完整测试所需的解析依赖和开发工具。
+-r requirements-parsers.txt
 
 pytest>=7.1.0

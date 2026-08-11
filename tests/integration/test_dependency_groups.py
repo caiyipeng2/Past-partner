@@ -42,6 +42,7 @@ class DependencyGroupContractTests(unittest.TestCase):
                 "scikit-learn>=1.0.0",
                 "jsonlines>=3.1.0",
                 "pypdf>=5.0.0",
+                "Pillow>=10.0.0",
             ],
             self._entries("requirements-parsers.txt"),
         )
@@ -55,7 +56,7 @@ class DependencyGroupContractTests(unittest.TestCase):
             self._entries("requirements-models.txt"),
         )
         self.assertEqual(
-            ["-r requirements-core.txt", "pytest>=7.1.0"],
+            ["-r requirements-parsers.txt", "pytest>=7.1.0"],
             self._entries("requirements-dev.txt"),
         )
 

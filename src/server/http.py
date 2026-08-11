@@ -31,6 +31,9 @@ _IMPORT_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)$")
 _MISSING_CHUNKS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/missing-chunks$")
 _PROGRESS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/progress$")
 _PREVIEW_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/preview$")
+_MEDIA_INSPECTION_PATH = re.compile(
+    r"^/api/v1/imports/([A-Za-z0-9._-]+)/media-inspection$"
+)
 _PARTICIPANT_MAPPING_PATH = re.compile(
     r"^/api/v1/imports/([A-Za-z0-9._-]+)/participant-mapping$"
 )
@@ -153,8 +156,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "upload_incomplete": HTTPStatus.CONFLICT,
                 "upload_closed": HTTPStatus.CONFLICT,
                 "preview_unavailable": HTTPStatus.CONFLICT,
+                "media_inspection_unavailable": HTTPStatus.CONFLICT,
                 "unsupported_format": HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type": HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                 "invalid_record": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "media_type_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "media_metadata_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "media_processor_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "media_inspection_storage_unavailable": HTTPStatus.INSUFFICIENT_STORAGE,
+                "media_inspection_cleanup_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
                 "empty_source": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "invalid_participant_mapping": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "mapping_unavailable": HTTPStatus.CONFLICT,
@@ -240,6 +250,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 self.server.application.preview_import(self.owner_id, match.group(1), max_records),
+            )
+        elif match := _MEDIA_INSPECTION_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.inspect_import_media(self.owner_id, match.group(1)),
             )
         elif match := _PARTICIPANT_MAPPING_PATH.fullmatch(path):
             self._json(
