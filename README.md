@@ -95,6 +95,8 @@ P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商�
 P2-01 已扩展模型目录元数据，提供能力、上下文长度、区域、隐私标签、结构化价格和价格刷新时间；可通过 `PAST_PARTNER_MODEL_PRICING_JSON` 配置供应商/管理员价格。`POST /api/v1/models/cost-estimate` 按输入/输出 token 和媒体单位返回可复核估算，未配置价格时明确返回 `pricing_unavailable`，不生成伪造成本。价格是估算值，不替代供应商最终账单。
 P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义 OpenAI-compatible 继续使用兼容协议；Anthropic Messages 与 Google Gemini `generateContent` 使用原生请求/响应适配器。所有网络调用都经过统一 JSON 传输边界，未配置凭据时仍返回 `provider_not_configured`；本任务不实现流式、Embedding、媒体分析或微调。
 
+P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商，当前仅在调用内存中生成，尚未持久化或提供独立画像 API。
+
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 错误响应统一返回稳定 `error.code` 和 UUID 格式的 `error.diagnostic_id`；诊断 ID 同时写入服务端日志，便于在不暴露内部异常细节的情况下定位请求。
