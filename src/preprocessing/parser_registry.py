@@ -12,6 +12,7 @@ from itertools import islice
 from pathlib import Path
 import re
 from typing import Any, Iterator, Mapping, Protocol, Sequence
+import xml.etree.ElementTree as ET
 
 from src.domain.messages import MessageValidationError, NormalizedMessage
 from src.preprocessing.qq_backup import QqBackupError, QqBackupParser
@@ -113,6 +114,7 @@ class ParserRegistry:
                 WeChatTextParser(),
                 QqHtmlParser(),
                 QqTextParser(),
+                GenericXmlParser(),
                 GenericCsvParser(),
                 GenericTextParser(),
             )
@@ -778,6 +780,65 @@ class GenericJsonLinesParser(_BaseParser):
                     raise ParserError("invalid_record", f"JSONL line {line_number}: {exc}") from exc
 
 
+class GenericXmlParser(_BaseParser):
+    """Parse generic XML conversation records without buffering the document."""
+
+    source_type = "generic_xml"
+
+    def probe(self, source: ParserSource) -> ParserProbe:
+        sample = _read_text_sample(source.path)
+        if sample is None or "\x00" in sample:
+            return ParserProbe(self.source_type, 0.0, False, "source is not valid text")
+        explicit = source.metadata.get("source_type") == self.source_type
+        xml_like = _looks_like_xml_sample(sample)
+        extension_hint = source.path.suffix.casefold() == ".xml"
+        if _xml_security_violation(sample):
+            if xml_like or extension_hint or explicit:
+                return ParserProbe(
+                    self.source_type,
+                    0.9,
+                    True,
+                    "XML DOCTYPE/ENTITY declarations are not supported",
+                )
+            return ParserProbe(self.source_type, 0.0, False, "XML security declaration not recognized")
+        if _xml_message_hint(sample):
+            return ParserProbe(self.source_type, 0.97, True, "XML conversation message elements recognized")
+        if xml_like:
+            return ParserProbe(self.source_type, 0.8, True, "XML document structure recognized")
+        if extension_hint or explicit:
+            return ParserProbe(self.source_type, 0.8, True, "XML source selected by extension or metadata")
+        return ParserProbe(self.source_type, 0.0, False, "XML conversation message elements not recognized")
+
+    def validate(self, source: ParserSource) -> ParserValidation:
+        probe = self.probe(source)
+        if not probe.supported:
+            return ParserValidation(False, "unsupported_format", probe.reason)
+        sample = _read_text_sample(source.path)
+        if sample is None:
+            return ParserValidation(False, "unsupported_format", "source is not a supported text encoding")
+        if _xml_security_violation(sample):
+            return ParserValidation(
+                False,
+                "unsupported_format",
+                "XML DOCTYPE/ENTITY declarations are not supported",
+            )
+        if not _looks_like_xml_sample(sample) and not (
+            source.path.suffix.casefold() == ".xml"
+            or source.metadata.get("source_type") == self.source_type
+        ):
+            return ParserValidation(False, "invalid_record", "XML document must start with an element")
+        try:
+            record_count = sum(1 for _ in _iter_xml_records(source.path))
+        except ParserError as exc:
+            return ParserValidation(False, exc.code, str(exc))
+        if record_count == 0:
+            return ParserValidation(False, "unsupported_format", "XML document contains no message records")
+        return ParserValidation(True)
+
+    def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        yield from _iter_xml_records(source.path)
+
+
 class GenericCsvParser(_BaseParser):
     """Parse delimited conversation exports into canonical messages."""
 
@@ -854,6 +915,199 @@ class GenericCsvParser(_BaseParser):
                         raise ParserError("invalid_record", f"CSV row {row_number}: {exc}") from exc
         except csv.Error as exc:
             raise ParserError("invalid_record", f"CSV parsing failed: {exc}") from exc
+
+
+_XML_MESSAGE_TAGS = frozenset({"message", "msg", "record", "item", "entry", "chat", "utterance"})
+_XML_FIELD_ALIASES: dict[str, frozenset[str]] = {
+    "sender_id": frozenset(
+        {
+            "sender",
+            "sender_id",
+            "senderid",
+            "from",
+            "from_id",
+            "speaker",
+            "author",
+            "user",
+            "user_id",
+            "uid",
+        }
+    ),
+    "sender_name": frozenset({"sender_name", "sendername", "nickname", "display_name"}),
+    "content": frozenset({"content", "message", "message_text", "msg", "text", "body"}),
+    "timestamp": frozenset({"timestamp", "time", "datetime", "date", "created_at", "created"}),
+    "message_type": frozenset({"message_type", "type", "kind"}),
+}
+
+
+def _iter_xml_records(path: Path) -> Iterator[NormalizedMessage]:
+    encoding = _detect_text_encoding(path)
+    if encoding is None:
+        raise ParserError("unsupported_format", "source is not a supported text encoding")
+    stack: list[ET.Element] = []
+    record_index = 0
+    try:
+        with path.open("r", encoding=encoding, newline="") as handle:
+            reader = _SecureXmlReader(handle)
+            for event, element in ET.iterparse(reader, events=("start", "end")):
+                if event == "start":
+                    stack.append(element)
+                    continue
+                if _xml_is_message_element(element):
+                    record_index += 1
+                    record = _xml_record(element, record_index)
+                    yield record
+                    if len(stack) > 1:
+                        stack[-2].remove(element)
+                stack.pop()
+    except _XmlSecurityError as exc:
+        raise ParserError("unsupported_format", str(exc)) from exc
+    except ET.ParseError as exc:
+        raise ParserError("invalid_record", f"XML parsing failed: {exc}") from exc
+    except OSError as exc:
+        raise ParserError("unsupported_format", f"XML source could not be read: {exc}") from exc
+
+
+def _xml_record(element: ET.Element, index: int) -> NormalizedMessage:
+    values = _xml_record_values(element)
+    try:
+        return NormalizedMessage.from_mapping(values)
+    except MessageValidationError as exc:
+        raise ParserError("invalid_record", f"XML message {index}: {exc}") from exc
+
+
+def _xml_record_values(element: ET.Element) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for name, value in element.attrib.items():
+        canonical = _xml_field_name(name)
+        if canonical and isinstance(value, str) and value.strip():
+            fields.setdefault(canonical, value.strip())
+
+    for child in element.iter():
+        if child is element:
+            continue
+        canonical = _xml_field_name(child.tag)
+        if not canonical:
+            continue
+        value = _xml_text(child)
+        if canonical == "sender_id":
+            sender_attr = _xml_attribute(child, "id", "sender_id", "value")
+            if sender_attr:
+                fields.setdefault("sender_id", sender_attr)
+                if value:
+                    fields.setdefault("sender_name", value)
+            elif value:
+                fields.setdefault(canonical, value)
+        elif value:
+            fields.setdefault(canonical, value)
+
+    content = fields.get("content") or _xml_message_text(element)
+    sender_id = fields.get("sender_id") or fields.get("sender_name") or ""
+    sender_name = fields.get("sender_name") or sender_id
+    return {
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "content": content,
+        "timestamp": fields.get("timestamp", ""),
+        "message_type": fields.get("message_type") or "text",
+    }
+
+
+def _xml_field_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    local = value.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+    normalized = re.sub(r"[^\w]+", "_", local.casefold()).strip("_")
+    for canonical, aliases in _XML_FIELD_ALIASES.items():
+        if normalized in {_normalize_xml_alias(alias) for alias in aliases}:
+            return canonical
+    return None
+
+
+def _normalize_xml_alias(value: str) -> str:
+    return re.sub(r"[^\w]+", "_", value.casefold()).strip("_")
+
+
+def _xml_attribute(element: ET.Element, *names: str) -> str | None:
+    normalized = {
+        name.rsplit("}", 1)[-1].rsplit(":", 1)[-1].casefold(): value
+        for name, value in element.attrib.items()
+    }
+    for name in names:
+        value = normalized.get(name.casefold())
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _xml_text(element: ET.Element) -> str:
+    return _normalize_xml_text("".join(element.itertext()))
+
+
+def _xml_message_text(element: ET.Element) -> str:
+    parts: list[str] = []
+    if element.text:
+        parts.append(element.text)
+    for child in element:
+        if _xml_field_name(child.tag) or _xml_is_message_element(child):
+            continue
+        text = _xml_text(child)
+        if text:
+            parts.append(text)
+    return _normalize_xml_text(" ".join(parts))
+
+
+def _normalize_xml_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _xml_local_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.rsplit("}", 1)[-1].rsplit(":", 1)[-1].casefold()
+
+
+def _xml_is_message_element(element: ET.Element) -> bool:
+    return _xml_local_name(element.tag) in _XML_MESSAGE_TAGS
+
+
+def _looks_like_xml_sample(sample: str) -> bool:
+    return sample.lstrip().startswith("<")
+
+
+def _xml_message_hint(sample: str) -> bool:
+    return bool(
+        re.search(
+            r"<\s*(?:[\w.-]+:)?(?:message|msg|record|item|entry|chat|utterance)(?:\s|/?>)",
+            sample,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _xml_security_violation(sample: str) -> bool:
+    normalized = sample.casefold()
+    return "<!doctype" in normalized or "<!entity" in normalized
+
+
+class _XmlSecurityError(ValueError):
+    pass
+
+
+class _SecureXmlReader:
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+        self._tail = ""
+
+    def read(self, size: int = -1) -> str:
+        chunk = self._handle.read(size)
+        if not chunk:
+            return chunk
+        combined = self._tail + chunk.casefold()
+        if "<!doctype" in combined or "<!entity" in combined:
+            raise _XmlSecurityError("XML DOCTYPE/ENTITY declarations are not supported")
+        self._tail = combined[-16:]
+        return chunk
 
 
 def _read_text_sample(path: Path) -> str | None:

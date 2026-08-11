@@ -350,6 +350,114 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("invalid_record", raised.exception.code)
         self.assertIn("CSV", str(raised.exception))
 
+    def test_parses_xml_message_elements_by_content_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat-export.data"
+            path.write_text(
+                "<conversation><messages>"
+                '<message sender_id="wxid_1" sender_name="小雨" '
+                'timestamp="2026-08-05T21:00:00+08:00"><content>你好</content></message>'
+                "<message><sender>我</sender><time>2026-08-05T21:01:00+08:00</time>"
+                "<text>收到</text></message>"
+                "</messages></conversation>",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_xml", result.source_type)
+        self.assertEqual(["wxid_1", "我"], [record.sender_id for record in result.records])
+        self.assertEqual(["你好", "收到"], [record.content for record in result.records])
+        self.assertEqual("小雨", result.records[0].sender_name)
+
+    def test_parses_utf16_xml_with_record_alias_and_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.xml"
+            path.write_text(
+                "<export><record><author>qq_1</author>"
+                "<datetime>2026-08-05 21:00:00</datetime><body>第一条</body></record>"
+                '<item sender="qq_2" time="2026-08-05 21:01:00">第二条</item></export>',
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path, max_records=1)
+
+        self.assertEqual("generic_xml", result.source_type)
+        self.assertEqual(1, len(result.records))
+        self.assertTrue(result.summary["truncated"])
+        self.assertEqual("第一条", result.records[0].content)
+
+    def test_rejects_xml_without_message_elements(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contacts.xml"
+            path.write_text("<contacts><contact><name>小雨</name></contact></contacts>", encoding="utf-8")
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+        self.assertIn("XML", str(raised.exception))
+
+    def test_rejects_xml_without_message_elements_even_without_xml_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contacts.data"
+            path.write_text("<contacts><contact><name>小雨</name></contact></contacts>", encoding="utf-8")
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+        self.assertIn("XML", str(raised.exception))
+
+    def test_rejects_xml_with_doctype_declarations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.xml"
+            path.write_text(
+                "<!DOCTYPE conversation [<!ENTITY secret \"blocked\">]>"
+                "<conversation><message sender=\"u1\" timestamp=\"2026-08-05\">"
+                "<content>&secret;</content></message></conversation>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+        self.assertIn("DOCTYPE", str(raised.exception))
+
+    def test_rejects_doctype_after_the_probe_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.xml"
+            prefix = " " * (64 * 1024)
+            path.write_text(
+                prefix
+                + "<!DOCTYPE conversation [<!ENTITY secret \"blocked\">]>"
+                + "<conversation><message sender=\"u1\" timestamp=\"2026-08-05\">"
+                + "<content>&secret;</content></message></conversation>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+        self.assertIn("DOCTYPE", str(raised.exception))
+
+    def test_reports_malformed_xml_as_invalid_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.xml"
+            path.write_text(
+                "<conversation><message sender=\"u1\" timestamp=\"2026-08-05\">"
+                "<content>未闭合</content></conversation>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("invalid_record", raised.exception.code)
+        self.assertIn("XML", str(raised.exception))
+
     def test_decodes_utf16_json_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.json"
