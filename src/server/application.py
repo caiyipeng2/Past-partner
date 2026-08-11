@@ -16,6 +16,7 @@ from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
+from src.services.multimodal_consent import MultimodalConsentGate
 from src.services.database import SQLiteMigrator
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
@@ -56,6 +57,7 @@ class Application:
         self.catalog = catalog
         self.gateway = gateway
         self.auth = auth
+        self.multimodal_consents = MultimodalConsentGate(consents, catalog)
 
     @classmethod
     def from_config(cls, config: ServerConfig) -> "Application":
@@ -198,6 +200,25 @@ class Application:
 
     def revoke_consent(self, owner_id: str, consent_id: str) -> dict[str, Any]:
         return self.consents.revoke(owner_id, consent_id).to_dict()
+
+    def authorize_consent(
+        self,
+        owner_id: str,
+        consent_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            decision = self.multimodal_consents.authorize(
+                owner_id=owner_id,
+                consent_id=consent_id,
+                provider_id=payload["provider_id"],
+                model_id=payload["model_id"],
+                data_category=payload["data_category"],
+                authorization_scope=payload["authorization_scope"],
+            )
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+        return decision.to_dict()
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:

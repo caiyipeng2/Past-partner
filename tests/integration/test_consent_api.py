@@ -133,6 +133,64 @@ class ConsentApiTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("missing_field", payload["error"]["code"])
 
+    def test_authorize_endpoint_enforces_provider_model_media_capability(self) -> None:
+        status, _, vision_consent = self.request(
+            "POST",
+            "/api/v1/consents",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "openai",
+                "model_id": "gpt-4.1-mini",
+                "data_category": "image",
+                "estimated_cost": 0,
+                "purpose": "图片理解",
+                "authorization_scope": "persona-image-analysis",
+            },
+        )
+        self.assertEqual(201, status)
+
+        status, _, decision = self.request(
+            "POST",
+            f"/api/v1/consents/{vision_consent['id']}/authorize",
+            {
+                "provider_id": "openai",
+                "model_id": "gpt-4.1-mini",
+                "data_category": "image",
+                "authorization_scope": "persona-image-analysis",
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(decision["authorized"])
+        self.assertEqual("vision", decision["required_capability"])
+
+        status, _, unsupported_consent = self.request(
+            "POST",
+            "/api/v1/consents",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "deepseek",
+                "model_id": "deepseek-v4-flash",
+                "data_category": "image",
+                "estimated_cost": 0,
+                "purpose": "图片理解",
+                "authorization_scope": "persona-image-analysis",
+            },
+        )
+        self.assertEqual(201, status)
+
+        status, _, payload = self.request(
+            "POST",
+            f"/api/v1/consents/{unsupported_consent['id']}/authorize",
+            {
+                "provider_id": "deepseek",
+                "model_id": "deepseek-v4-flash",
+                "data_category": "image",
+                "authorization_scope": "persona-image-analysis",
+            },
+        )
+        self.assertEqual(422, status)
+        self.assertEqual("model_capability_missing", payload["error"]["code"])
+
 
 if __name__ == "__main__":
     unittest.main()
