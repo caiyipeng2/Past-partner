@@ -101,6 +101,8 @@ P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实�
 
 P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商，也不持久化向量索引。
 
+P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
+
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 错误响应统一返回稳定 `error.code` 和 UUID 格式的 `error.diagnostic_id`；诊断 ID 同时写入服务端日志，便于在不暴露内部异常细节的情况下定位请求。

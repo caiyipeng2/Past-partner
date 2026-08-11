@@ -41,6 +41,7 @@ _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
 _CONSENTS_PATH = "/api/v1/consents"
 _CONSENT_REVOKE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/revoke$")
+_CONSENT_AUTHORIZE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/authorize$")
 _MODEL_COST_ESTIMATE_PATH = "/api/v1/models/cost-estimate"
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -123,6 +124,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "consent_already_revoked": HTTPStatus.CONFLICT,
                 "consent_revoked": HTTPStatus.CONFLICT,
                 "consent_scope_mismatch": HTTPStatus.CONFLICT,
+                "model_capability_missing": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "provider_capability_missing": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "unknown_provider": HTTPStatus.NOT_FOUND,
+                "unknown_model": HTTPStatus.NOT_FOUND,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except ConsentNotFoundError:
@@ -290,6 +295,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.application.cancel_import(self.owner_id, match.group(1)))
         elif match := _CONSENT_REVOKE_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.revoke_consent(self.owner_id, match.group(1)))
+        elif match := _CONSENT_AUTHORIZE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.authorize_consent(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif match := _COMPLETE_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.complete_import(self.owner_id, match.group(1), self._json_body()))
         else:
