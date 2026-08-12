@@ -88,6 +88,8 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 模拟器或 Android ADB reverse/port-forward 联调可以继续使用回环 HTTP，不发送设备配对 header；真机直连才需要受控私有 LAN TLS 配置。
 
+移动端代码位于 `mobile/`，包含端点白名单、设备配对会话、Secure Storage 会话恢复，以及简化/活泼两套静态对话预览。生成 Android/iOS runner、执行 `flutter pub get`、`flutter analyze`、`flutter test` 和 APK 构建前，需要先安装 Flutter SDK；未安装 SDK 的环境不能将该目录宣称为已构建的 Android/iOS 应用。
+
 导入任务默认允许最多 3 GiB（3,221,225,472 字节）。该限制按一次任务中所有文件大小之和计算；可通过 `PAST_PARTNER_MAX_IMPORT_BYTES` 在服务端调整，单文件不能绕过任务总量限制。
 
 P1-03 已增加通用 HTML 聊天记录解析，支持常见消息容器、发送者/时间/正文标记、HTML 实体、UTF-8/UTF-16/GB18030 编码，并忽略脚本、样式和模板内容。
