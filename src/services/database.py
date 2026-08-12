@@ -40,6 +40,8 @@ class Migration:
 # owns local owner sessions, version 5 owns encrypted media consents, and version 6
 # owns encrypted fine-tuning job metadata. Version 7 adds optimistic revisions for
 # those jobs so concurrent HTTP requests cannot overwrite durable lifecycle state.
+# Version 8 distinguishes loopback sessions from development device-pairing sessions
+# and stores only the configured device-token fingerprint for rotation revocation.
 # Business repositories add their own tables in later migrations so startup remains
 # transactional and history is auditable.
 DEFAULT_MIGRATIONS = (
@@ -137,6 +139,14 @@ DEFAULT_MIGRATIONS = (
         name="training_job_revisions",
         statements=(
             "ALTER TABLE training_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0)",
+        ),
+    ),
+    Migration(
+        version=8,
+        name="device_pairing_sessions",
+        statements=(
+            "ALTER TABLE local_sessions ADD COLUMN session_origin TEXT NOT NULL DEFAULT 'loopback' CHECK (session_origin IN ('loopback', 'device'))",
+            "ALTER TABLE local_sessions ADD COLUMN pairing_token_fingerprint BLOB CHECK (pairing_token_fingerprint IS NULL OR length(pairing_token_fingerprint) = 32)",
         ),
     ),
 )

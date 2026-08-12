@@ -81,6 +81,7 @@ class Application:
             encryption,
             mode=config.mode,
             bootstrap_token=config.owner_bootstrap_token,
+            device_pairing=config.device_pairing_settings,
         )
         persona_repository = PersonaRepository(storage.database_path(), encryption)
         persona_repository.assign_unowned(auth.owner_id)
@@ -134,8 +135,17 @@ class Application:
             training,
         )
 
-    def issue_session(self, remote_address: str, presented_bootstrap_token: str | None) -> dict[str, Any]:
-        return self.auth.issue_session(remote_address, presented_bootstrap_token)
+    def issue_session(
+        self,
+        remote_address: str,
+        presented_bootstrap_token: str | None,
+        presented_device_bootstrap_token: str | None = None,
+    ) -> dict[str, Any]:
+        return self.auth.issue_session(
+            remote_address,
+            presented_bootstrap_token,
+            presented_device_bootstrap_token,
+        )
 
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)

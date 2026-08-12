@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import mimetypes
 import re
+import socket
+import ssl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -66,16 +69,52 @@ class ApplicationServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.config = config
         self.application = application
+        self.tls_context: ssl.SSLContext | None = None
+        self.is_tls = False
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        if self.tls_context is None:
+            return request, client_address
+        try:
+            request = self.tls_context.wrap_socket(request, server_side=True)
+        except OSError:
+            request.close()
+            raise
+        return request, client_address
+
+
+class IPv6ApplicationServer(ApplicationServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
+
+
+def build_tls_context(config: ServerConfig) -> ssl.SSLContext:
+    settings = config.device_pairing_settings
+    if settings is None:
+        raise ValueError("TLS context requires device pairing settings")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(settings.tls_cert_file, settings.tls_key_file)
+    return context
 
 
 def create_server(config: ServerConfig, application: Application | None = None) -> ApplicationServer:
     validated = config.validated()
-    return ApplicationServer(
+    server_class = IPv6ApplicationServer if ":" in validated.host else ApplicationServer
+    server = server_class(
         (validated.host, validated.port),
         ApiRequestHandler,
         validated,
         application or Application.from_config(validated),
     )
+    if validated.device_pairing_enabled:
+        server.tls_context = build_tls_context(validated)
+        server.is_tls = True
+    return server
 
 
 class ApiRequestHandler(BaseHTTPRequestHandler):
@@ -85,6 +124,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def do_OPTIONS(self) -> None:
+        self._diagnostic_id = str(uuid4())
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         self.send_header(
@@ -110,6 +150,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         self._dispatch(self._handle_delete)
 
     def _dispatch(self, operation) -> None:
+        self._diagnostic_id = str(uuid4())
         try:
             path, _ = self._request_target()
             if self._requires_auth(path):
@@ -225,7 +266,6 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._error(status, exc.code, str(exc), diagnostic_id=exc.diagnostic_id)
         except Exception:
             diagnostic_id = str(uuid4())
-            logger.exception("Unhandled request failure diagnostic_id=%s", diagnostic_id)
             self._error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -324,7 +364,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.CREATED,
                 self.server.application.issue_session(
-                    self.client_address[0], self.headers.get("X-Local-Owner-Token")
+                    self.client_address[0],
+                    self.headers.get("X-Local-Owner-Token"),
+                    self.headers.get("X-Dev-Device-Bootstrap-Token"),
                 ),
             )
         elif path == "/api/v1/personas":
@@ -528,8 +570,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         *,
         diagnostic_id: str | None = None,
     ) -> None:
-        diagnostic_id = diagnostic_id or str(uuid4())
-        logger.info("Request error code=%s diagnostic_id=%s", code, diagnostic_id)
+        diagnostic_id = diagnostic_id or getattr(self, "_diagnostic_id", None) or str(uuid4())
+        self._diagnostic_id = diagnostic_id
         self._json(
             status,
             {
@@ -548,5 +590,66 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         super().end_headers()
 
+    def log_request(self, code: str | int, size: str | int = "-") -> None:
+        logger.info(
+            "request method=%s route=%s status=%s peer_class=%s diagnostic_id=%s",
+            self.command,
+            _route_template(self.path),
+            code,
+            _peer_class(self.client_address[0]),
+            getattr(self, "_diagnostic_id", "-"),
+        )
+
     def log_message(self, format: str, *args: object) -> None:
-        logger.info("%s - %s", self.address_string(), format % args)
+        # BaseHTTPRequestHandler can call this for parser errors. Never log the
+        # raw request target, headers, body, or exception text.
+        return
+
+
+def _route_template(target: str) -> str:
+    path = urlsplit(target).path
+    if path.startswith("/api/"):
+        if _PERSONA_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}"
+        if _IMPORT_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}"
+        if _MISSING_CHUNKS_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/missing-chunks"
+        if _PROGRESS_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/progress"
+        if _PREVIEW_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/preview"
+        if _MEDIA_INSPECTION_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/media-inspection"
+        if _PARTICIPANT_MAPPING_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/participant-mapping"
+        if _CORRECTIONS_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/corrections"
+        if _CHUNK_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/chunks/{index}"
+        if _COMPLETE_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/complete"
+        if _CANCEL_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/cancel"
+        if _CONSENT_REVOKE_PATH.fullmatch(path):
+            return "/api/v1/consents/{consent_id}/revoke"
+        if _CONSENT_AUTHORIZE_PATH.fullmatch(path):
+            return "/api/v1/consents/{consent_id}/authorize"
+        if _TRAINING_JOB_PATH.fullmatch(path):
+            return "/api/v1/training-jobs/{job_id}"
+        if _TRAINING_CANCEL_PATH.fullmatch(path):
+            return "/api/v1/training-jobs/{job_id}/cancel"
+        return "/api/*"
+    return "/static"
+
+
+def _peer_class(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return "unknown"
+    if address.is_loopback:
+        return "loopback"
+    if address.is_private:
+        return "private_lan"
+    return "other"
