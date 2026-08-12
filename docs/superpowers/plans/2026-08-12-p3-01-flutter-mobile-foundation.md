@@ -23,13 +23,13 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `src/server/config.py` | Parse and fail-closed validate device-pairing environment configuration, private addresses, allowed CIDRs, token entropy, and TLS certificate IP SAN. |
+| `src/server/config.py` | Own the typed device-pairing configuration, parse and fail-closed validate environment values, private addresses, allowed CIDRs, decoded token entropy, and TLS certificate IP SAN. |
 | `src/services/local_auth.py` | Authorize loopback versus device-pairing session issue, hash device-token fingerprint, enforce one-hour device TTL, validate device session rotation, and apply in-memory pairing limits. |
 | `src/services/database.py` | Add an append-only migration for `local_sessions.session_origin` and `local_sessions.pairing_token_fingerprint`. |
 | `src/server/application.py` | Assemble validated device-pairing configuration and pass both bootstrap credentials to local auth without changing owner-bootstrap semantics. |
 | `src/server/http.py` | Wrap a pairing-enabled LAN listener with application TLS, forward only direct peer address plus separate headers, preserve CORS, and emit redacted structured request logging. |
 | `src/server/__main__.py` | Display the actual serving scheme without printing sensitive configuration. |
-| `.env.example` and `README.md` | Document development-only direct-TLS pairing, strict IP/CIDR examples, token generation, certificate requirements, and port-forwarding option. |
+| `.env.example`, `README.md`, and `docs/privacy_policy.md` | Document development-only direct-TLS pairing, strict IP/CIDR examples, token generation, certificate requirements, port-forwarding option, and the current transport-data boundary. |
 | `tests/support/__init__.py` | Makes test-only TLS helpers importable through `unittest` discovery. |
 | `tests/support/tls_fixtures.py` | Generate ephemeral local CA/server test certificates containing an IP SAN; do not commit a test private key. |
 | `tests/unit/test_server_config.py` | Cover all configuration allow/deny branches and no-secret errors. |
@@ -127,7 +127,7 @@ Expected: FAIL because `ServerConfig` has no device pairing fields or validation
 
 - [ ] **Step 3: Implement the exact configuration model and helpers**
 
-Add these immutable fields to `ServerConfig` and parse their environment values in `from_env`:
+Define a configuration-owned immutable `DevicePairingSettings` in `src/server/config.py`, so `ServerConfig` does not import `local_auth.py` and create a dependency cycle. It holds the canonical host IP, tuple of parsed `ipaddress` networks, decoded device-token bytes, SHA-256 token fingerprint, and resolved certificate/key paths. Add these raw environment-backed fields to `ServerConfig` and parse all four as one atomic group in `from_env`:
 
 ```python
 device_bootstrap_token: str | None = None
@@ -149,7 +149,7 @@ def _decode_device_token(value: str) -> bytes: ...
 def _certificate_has_ip_san(certificate_path: Path, host: ipaddress._BaseAddress) -> bool: ...
 ```
 
-`_parse_private_host` accepts only RFC1918 IPv4 or ULA IPv6 literals, rejects hostnames and every non-private category, and rejects IPv4-mapped IPv6 and zone-indexed values before parsing. `_parse_allowed_network` uses `ipaddress.ip_network(..., strict=True)`, requires the same family, accepts only RFC1918/ULA address space, rejects every forbidden category/catch-all, and requires prefix length at least `/24` for IPv4 or `/64` for IPv6. `_decode_device_token` uses strict Base64 decoding and requires at least 32 bytes. `_certificate_has_ip_san` reads `x509.SubjectAlternativeName` through `cryptography` and requires the exact parsed IP. Require all four device fields together; only then allow a non-loopback development listener. Reject device fields outside development and use `hmac.compare_digest` to reject device and owner tokens with equal values.
+`_parse_private_host` accepts only exact RFC1918 IPv4 ranges (`10/8`, `172.16/12`, `192.168/16`) or IPv6 ULA (`fc00::/7`) literals, not `is_private` alone; it rejects hostnames and every special/public category, `%` zone suffix, IPv4-mapped IPv6, and zone-indexed input before parsing. `_parse_allowed_network` uses `ipaddress.ip_network(..., strict=True)`, requires the same family, accepts only those exact RFC1918/ULA ranges, rejects every forbidden category/catch-all, and requires prefix length at least `/24` for IPv4 or `/64` for IPv6. `_decode_device_token` uses strict Base64 decoding and requires at least 32 bytes. `_certificate_has_ip_san` reads `x509.SubjectAlternativeName` through `cryptography` and requires the exact parsed IP. Certificate/key paths must be readable regular files. Require all four device fields together; only then allow a non-loopback development listener. Reject device fields outside development and use `hmac.compare_digest` against decoded values to reject equal device and owner tokens without including either token or path in an error.
 
 `tests/support/__init__.py` must be an empty package marker. `tests/support/tls_fixtures.py` must create a temporary CA, issue a server certificate with `x509.IPAddress(ipaddress.ip_address(host))`, and return the PEM certificate and key paths under the test runtime directory. It must never log or commit generated key material.
 
@@ -230,7 +230,7 @@ Migration(
 )
 ```
 
-In `local_auth.py`, define immutable `DevicePairingSettings` with canonical host, parsed allowed networks, raw device token, and `token_fingerprint = sha256(token.encode("utf-8")).digest()`. Add an injected monotonic clock and a lock-protected `PairingAttemptLimiter` with `record_attempt(peer, now)` and `record_failure(peer, now)`. The limiter must prune stale timestamp deques before enforcing the five-failure/ten-minute and twenty-attempt/one-minute thresholds.
+Import the configuration-owned `DevicePairingSettings` into `local_auth.py`; do not define a second settings type. Use its decoded token bytes and stored `token_fingerprint`, rather than hashing the Base64 spelling. Add an injected monotonic clock and a lock-protected `PairingAttemptLimiter` with `record_attempt(peer, now)` and `record_failure(peer, now)`. The limiter must prune stale timestamp deques before enforcing the five-failure/ten-minute and twenty-attempt/one-minute thresholds.
 
 Change the public method boundary exactly once:
 
@@ -243,7 +243,7 @@ def issue_session(
 ) -> dict[str, str]:
 ```
 
-For development/test loopback, retain the current 24-hour branch. For development plus settings, parse the direct peer IP, require a canonical same-family allowed network and constant-time matching device token, record attempts/failures, then create a `device` session with `min(self.session_ttl, timedelta(hours=1))` and the fingerprint. All denied pairing paths use the same `LocalAuthError("auth_bootstrap_forbidden", "device pairing is unavailable")`. Authentication selects `session_origin` and fingerprint, rejecting a device row unless `hmac.compare_digest(stored_fingerprint, current_fingerprint)` succeeds. Existing loopback rows require no fingerprint.
+For development/test loopback, retain the current 24-hour branch. For development plus settings, parse the direct peer IP, require a canonical same-family allowed network and constant-time matching decoded device token, record attempts/failures, then create a `device` session with `min(self.session_ttl, timedelta(hours=1))` and the settings fingerprint. All denied pairing paths use the same `LocalAuthError("auth_bootstrap_forbidden", "device pairing is unavailable")`. Authentication selects `session_origin` and fingerprint, rejecting a device row when settings are absent, mode is not development, the stored fingerprint is malformed, or `hmac.compare_digest(stored_fingerprint, current_fingerprint)` fails. Existing loopback rows require no fingerprint. This prevents a legacy device session from becoming valid in production after a configuration change.
 
 - [ ] **Step 4: Run local-auth and migration tests to green**
 
@@ -337,7 +337,7 @@ server.is_tls = True
 
 Set `is_tls = False` for ordinary loopback servers. Do not introduce proxy protocol or forwarded-header processing. In the session route, pass `self.client_address[0]`, `self.headers.get("X-Local-Owner-Token")`, and `self.headers.get("X-Dev-Device-Bootstrap-Token")` separately. Keep `Access-Control-Allow-Headers` unchanged.
 
-Replace `log_message` and generic exception logging with a private structured logger that receives only `method=self.command`, a normalized path with query removed, `status`, `peer_class` (`loopback`, `private_lan`, or `other`), and generated `diagnostic_id`. Do not interpolate exception objects, `self.path`, request headers, request bodies, or `address_string()` into log messages. Update `_error` to emit the same allowlisted fields and response diagnostic ID. Update `__main__` to print only `http` or `https`, host, port, and no certificate/token path.
+Allocate one diagnostic ID at `_dispatch` entry and retain it for the eventual response. Override `log_request(code, size)` because `BaseHTTPRequestHandler.send_response()` calls it with the raw request line before `log_message`; have it emit only `method=self.command`, a canonical route template, `status`, `peer_class` (`loopback`, `private_lan`, or `other`), and that request diagnostic ID. Make `log_message` a no-op so no raw request line is reconstructed. Implement `_route_template` with the existing route regular expressions: known persona and import IDs become placeholders such as `/api/v1/personas/{persona_id}` and `/api/v1/imports/{import_id}`; unknown API paths become `/api/*`; recognized static files become `/static`. Do not interpolate exception objects, `self.path`, raw path segments, request headers, request bodies, `address_string()`, error codes/messages, or tracebacks into log messages. Replace generic `logger.exception` with the same structured logger and response diagnostic ID. Update `_error` to reuse the same diagnostic ID. Update `__main__` to print only `http` or `https`, host, port, and no certificate/token path.
 
 - [ ] **Step 4: Run focused transport, logging, and existing HTTP regression tests to green**
 
@@ -361,6 +361,7 @@ git commit -m "feat: add direct TLS development device pairing"
 **Files:**
 - Modify: `.env.example`
 - Modify: `README.md`
+- Modify: `docs/privacy_policy.md`
 - Test: `tests/unit/test_server_config.py`
 
 - [ ] **Step 1: Write failing template assertions**
@@ -394,7 +395,7 @@ Simulator/USB: only http://127.0.0.1 or http://[::1] through forwarding that pre
 Never use a reverse proxy, public address, broad CIDR, production mode, HTTP physical-device URL, or a Release mobile build for pairing.
 ```
 
-Include a token-generation example that writes only to the developer terminal, such as `python -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"`, and state that the device token must differ from the owner bootstrap token. Do not document CORS changes or suggest putting a token in query parameters.
+Include a token-generation example that writes only to the developer terminal, such as `python -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"`, and state that the device token must differ from the owner bootstrap token. Update `docs/privacy_policy.md` so it distinguishes default loopback HTTP from the new direct private-LAN TLS pairing flow, says Release mobile builds do not use pairing, and does not claim that proxy deployment is an equivalent transport. Do not document CORS changes or suggest putting a token in query parameters.
 
 - [ ] **Step 4: Run documentation-adjacent tests to green**
 
@@ -409,7 +410,7 @@ Expected: PASS, with no token present in either changed document.
 - [ ] **Step 5: Commit pairing documentation**
 
 ```powershell
-git add .env.example README.md tests/unit/test_server_config.py
+git add .env.example README.md docs/privacy_policy.md tests/unit/test_server_config.py
 git commit -m "docs: explain secure development device pairing"
 ```
 
