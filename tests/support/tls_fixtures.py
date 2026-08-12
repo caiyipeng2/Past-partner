@@ -23,6 +23,21 @@ def create_server_certificate(root: Path, host: str) -> tuple[Path, Path, Path]:
         .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
         .not_valid_after(datetime.now(UTC) + timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -37,6 +52,23 @@ def create_server_certificate(root: Path, host: str) -> tuple[Path, Path, Path]:
         .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
         .not_valid_after(datetime.now(UTC) + timedelta(days=1))
         .add_extension(x509.SubjectAlternativeName([x509.IPAddress(server_ip)]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(server_key.public_key()), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     cert_path = root / "server-cert.pem"

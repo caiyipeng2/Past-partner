@@ -138,10 +138,19 @@ class ServerConfig:
         if token_text is None or cert_file is None or key_file is None:
             raise ValueError("device pairing configuration must include all fields")
         token_bytes = _decode_device_token(token_text)
-        if self.owner_bootstrap_token is not None and hmac.compare_digest(
-            self.owner_bootstrap_token.encode("utf-8"), token_text.encode("utf-8")
-        ):
-            raise ValueError("device and owner bootstrap tokens must differ")
+        if self.owner_bootstrap_token is not None:
+            owner_bytes = self.owner_bootstrap_token.encode("utf-8")
+            same_spelling = hmac.compare_digest(owner_bytes, token_text.encode("utf-8"))
+            same_decoded_value = False
+            try:
+                decoded_owner = base64.b64decode(owner_bytes, validate=True)
+                same_decoded_value = len(decoded_owner) == len(token_bytes) and hmac.compare_digest(
+                    decoded_owner, token_bytes
+                )
+            except (binascii.Error, ValueError):
+                pass
+            if same_spelling or same_decoded_value:
+                raise ValueError("device and owner bootstrap tokens must differ")
         networks = tuple(_parse_allowed_network(value, host) for value in self.device_allowed_networks)
         if not networks:
             raise ValueError("device pairing allowed network must not be empty")

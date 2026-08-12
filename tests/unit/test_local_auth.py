@@ -1,14 +1,17 @@
 import base64
+import hashlib
+import ipaddress
 import shutil
 import sqlite3
 import unittest
 from contextlib import closing
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.local_auth import LocalAuthError, LocalAuthService
+from src.server.config import DevicePairingSettings
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 
 
@@ -89,6 +92,100 @@ class LocalAuthTests(unittest.TestCase):
 
         session = auth.issue_session("0.0.0.0", "bootstrap-secret")
         self.assertEqual(auth.owner_id, auth.authenticate(f"Bearer {session['access_token']}").user_id)
+
+    def _auth_with_device_pairing(self, token: bytes = b"d" * 32, *, clock=None) -> LocalAuthService:
+        settings = DevicePairingSettings(
+            host=ipaddress.ip_address("192.168.50.7"),
+            allowed_networks=(ipaddress.ip_network("192.168.50.42/32"),),
+            token_bytes=token,
+            token_fingerprint=hashlib.sha256(token).digest(),
+            tls_cert_file=Path("cert.pem"),
+            tls_key_file=Path("key.pem"),
+        )
+        return LocalAuthService(
+            self.database_path,
+            self.encryption,
+            mode="development",
+            device_pairing=settings,
+            monotonic_clock=clock,
+        )
+
+    def test_device_pairing_issues_one_hour_fingerprinted_session(self) -> None:
+        token = b"d" * 32
+        auth = self._auth_with_device_pairing(token)
+        session = auth.issue_session("192.168.50.42", presented_device_bootstrap_token=token)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            row = connection.execute(
+                "SELECT session_origin, pairing_token_fingerprint, expires_at FROM local_sessions WHERE token_hash = ?",
+                (sqlite3.Binary(hashlib.sha256(session["access_token"].encode()).digest()),),
+            ).fetchone()
+
+        self.assertEqual("device", row[0])
+        self.assertEqual(hashlib.sha256(token).digest(), row[1])
+        expires_at = datetime.fromisoformat(row[2])
+        self.assertLessEqual(expires_at - datetime.now(UTC), timedelta(hours=1, seconds=1))
+        self.assertNotIn(token, self.database_path.read_bytes())
+
+    def test_rotating_device_token_invalidates_only_device_session(self) -> None:
+        original = b"d" * 32
+        auth = self._auth_with_device_pairing(original)
+        loopback = auth.issue_session("127.0.0.1")
+        device = auth.issue_session("192.168.50.42", presented_device_bootstrap_token=original)
+
+        restarted = self._auth_with_device_pairing(b"e" * 32)
+        restarted.authenticate(f"Bearer {loopback['access_token']}")
+        with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
+            restarted.authenticate(f"Bearer {device['access_token']}")
+
+        production = LocalAuthService(
+            self.database_path,
+            self.encryption,
+            mode="production",
+            bootstrap_token="production-secret",
+        )
+        production.authenticate(f"Bearer {loopback['access_token']}")
+        with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
+            production.authenticate(f"Bearer {device['access_token']}")
+
+    def test_pairing_failures_are_generic_and_rate_limited(self) -> None:
+        now = [100.0]
+        auth = self._auth_with_device_pairing(clock=lambda: now[0])
+
+        for _ in range(5):
+            with self.assertRaises(LocalAuthError) as captured:
+                auth.issue_session("192.168.50.42", presented_device_bootstrap_token=b"x" * 32)
+            self.assertEqual("auth_bootstrap_forbidden", captured.exception.code)
+        with self.assertRaises(LocalAuthError) as throttled:
+            auth.issue_session("192.168.50.42", presented_device_bootstrap_token=b"x" * 32)
+        self.assertEqual("auth_bootstrap_forbidden", throttled.exception.code)
+
+    def test_pairing_rejects_non_allowlisted_peer_and_does_not_accept_owner_header(self) -> None:
+        auth = self._auth_with_device_pairing()
+        for peer, device_token, owner_token in (
+            ("192.168.50.43", b"d" * 32, None),
+            ("192.168.50.42", None, b"d" * 32),
+        ):
+            with self.subTest(peer=peer, owner_token=owner_token):
+                with self.assertRaises(LocalAuthError) as captured:
+                    auth.issue_session(
+                        peer,
+                        presented_bootstrap_token=owner_token,
+                        presented_device_bootstrap_token=device_token,
+                    )
+            self.assertEqual("auth_bootstrap_forbidden", captured.exception.code)
+
+    def test_malformed_persisted_device_session_fails_closed(self) -> None:
+        token = b"d" * 32
+        auth = self._auth_with_device_pairing(token)
+        session = auth.issue_session("192.168.50.42", presented_device_bootstrap_token=token)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE local_sessions SET session_origin = 'device', pairing_token_fingerprint = NULL"
+            )
+            connection.commit()
+        with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
+            auth.authenticate(f"Bearer {session['access_token']}")
 
 
 if __name__ == "__main__":

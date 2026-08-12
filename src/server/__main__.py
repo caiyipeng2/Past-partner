@@ -31,7 +31,8 @@ def main() -> None:
     ).validated()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     server = create_server(config, Application.from_config(config))
-    logging.getLogger(__name__).info("Serving on http://%s:%s", config.host, server.server_address[1])
+    scheme = "https" if server.is_tls else "http"
+    logging.getLogger(__name__).info("Serving on %s://%s:%s", scheme, config.host, server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
