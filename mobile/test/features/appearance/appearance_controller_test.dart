@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../lib/features/appearance/appearance_controller.dart';
-import '../../../lib/features/appearance/appearance_store.dart';
-import '../../../lib/features/appearance/conversation_appearance.dart';
+import 'package:past_partner/features/appearance/appearance_controller.dart';
+import 'package:past_partner/features/appearance/appearance_store.dart';
+import 'package:past_partner/features/appearance/conversation_appearance.dart';
 
 class MemoryAppearanceStore implements AppearanceStore {
   ConversationAppearance value = ConversationAppearance.simplified;

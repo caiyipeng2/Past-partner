@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../lib/core/session/session.dart';
+import 'package:past_partner/core/session/session.dart';
 
 void main() {
   test('session parses only bounded response metadata', () {

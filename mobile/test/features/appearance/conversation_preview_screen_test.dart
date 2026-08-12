@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../lib/features/appearance/widgets/bright_conversation_scaffold.dart';
-import '../../../lib/features/appearance/widgets/calm_conversation_scaffold.dart';
+import 'package:past_partner/features/appearance/widgets/bright_conversation_scaffold.dart';
+import 'package:past_partner/features/appearance/widgets/calm_conversation_scaffold.dart';
 
 void main() {
   testWidgets('calm preview exposes expandable generic actions', (WidgetTester tester) async {

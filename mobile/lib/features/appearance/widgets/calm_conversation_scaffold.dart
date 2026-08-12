@@ -115,6 +115,8 @@ class _CalmComposerState extends State<_CalmComposer> {
             ),
             if (expanded)
               Semantics(
+                container: true,
+                explicitChildNodes: true,
                 label: 'More actions panel',
                 child: const Padding(
                   padding: EdgeInsets.only(top: 10),

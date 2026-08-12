@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../lib/core/config/api_endpoint.dart';
+import 'package:past_partner/core/config/api_endpoint.dart';
 
 void main() {
   test('debug accepts private HTTPS and loopback forwarding', () {
