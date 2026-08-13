@@ -8,5 +8,6 @@ void main() {
   runApp(PastPartnerApp(
     sessionController: dependencies.sessionController,
     appearanceController: dependencies.appearanceController,
+    personaController: dependencies.personaController,
   ));
 }
