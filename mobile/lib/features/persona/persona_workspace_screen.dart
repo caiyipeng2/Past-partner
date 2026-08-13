@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 
 import 'persona.dart';
 import 'persona_controller.dart';
+import '../imports/import_controller.dart';
+import '../imports/import_workspace_screen.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
-  const PersonaWorkspaceScreen({required this.controller, super.key});
+  const PersonaWorkspaceScreen(
+      {required this.controller, this.importControllerFactory, super.key});
 
   final PersonaController controller;
+  final ImportController Function(Persona persona)? importControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -28,6 +32,18 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
     );
     if (!mounted || draft == null) return;
     await widget.controller.create(draft);
+  }
+
+  void _openImports(Persona persona) {
+    final ImportController Function(Persona persona)? factory =
+        widget.importControllerFactory;
+    if (factory == null) return;
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (BuildContext context) => ImportWorkspaceScreen(
+        persona: persona,
+        controller: factory(persona),
+      ),
+    ));
   }
 
   @override
@@ -74,8 +90,12 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
                                           .onSurfaceVariant)),
                               const SizedBox(height: 16),
                               ...widget.controller.personas.map(
-                                  (Persona persona) =>
-                                      _PersonaCard(persona: persona)),
+                                  (Persona persona) => _PersonaCard(
+                                      persona: persona,
+                                      onTap:
+                                          widget.importControllerFactory == null
+                                              ? null
+                                              : () => _openImports(persona))),
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: saving ? null : _openCreateForm,
@@ -146,9 +166,10 @@ class _EmptyPersonaState extends StatelessWidget {
 }
 
 class _PersonaCard extends StatelessWidget {
-  const _PersonaCard({required this.persona});
+  const _PersonaCard({required this.persona, this.onTap});
 
   final Persona persona;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -161,6 +182,7 @@ class _PersonaCard extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(persona.relationshipLabel),
         trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: onTap,
       ),
     );
   }

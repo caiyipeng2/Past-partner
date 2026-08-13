@@ -292,6 +292,13 @@ class Application:
     def get_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.imports.get(owner_id, import_id).to_dict()
 
+    def list_imports(self, owner_id: str, persona_id: str | None = None) -> dict[str, Any]:
+        if persona_id is None:
+            jobs = self.imports.list(owner_id)
+        else:
+            jobs = self.imports.list_for_persona(owner_id, persona_id)
+        return {"imports": [job.to_dict() for job in jobs]}
+
     def delete_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
         with self._persona_lifecycle_lock:
             return self.uploads.delete_import(owner_id, import_id)

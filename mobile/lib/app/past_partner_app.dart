@@ -4,6 +4,7 @@ import '../features/appearance/appearance_controller.dart';
 import '../features/connection/connection_screen.dart';
 import '../features/persona/persona_controller.dart';
 import '../features/persona/persona_workspace_screen.dart';
+import '../features/imports/import_controller.dart';
 import '../core/session/session_controller.dart';
 
 class PastPartnerApp extends StatefulWidget {
@@ -43,7 +44,13 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                   ColorScheme.fromSeed(seedColor: const Color(0xff3275c5)),
               useMaterial3: true),
           home: connected
-              ? PersonaWorkspaceScreen(controller: widget.personaController)
+              ? PersonaWorkspaceScreen(
+                  controller: widget.personaController,
+                  importControllerFactory: (persona) => ImportController(
+                    widget.sessionController,
+                    personaId: persona.id,
+                  ),
+                )
               : ConnectionScreen(controller: widget.sessionController),
         );
       },

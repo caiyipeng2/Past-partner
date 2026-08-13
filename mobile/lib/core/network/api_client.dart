@@ -72,6 +72,46 @@ class ApiClient {
     return _jsonObject(response);
   }
 
+  Future<List<Map<String, dynamic>>> listImports(
+      ApiEndpoint endpoint, Session session, String personaId) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint
+          .path('/api/v1/imports')
+          .replace(queryParameters: <String, String>{'persona_id': personaId}),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    final Map<String, dynamic> body = _jsonObject(response);
+    final dynamic imports = body['imports'];
+    if (imports is! List) {
+      throw const ApiFailure('invalid_response',
+          'The local service returned an invalid response.');
+    }
+    return imports.map((dynamic value) {
+      if (value is! Map) {
+        throw const ApiFailure('invalid_response',
+            'The local service returned an invalid response.');
+      }
+      return Map<String, dynamic>.from(value);
+    }).toList(growable: false);
+  }
+
+  Future<Map<String, dynamic>> createImport(
+    ApiEndpoint endpoint,
+    Session session,
+    Map<String, dynamic> payload,
+  ) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/imports'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      payload,
+    );
+    if (response.statusCode != 201) throw _failure(response);
+    return _jsonObject(response);
+  }
+
   Future<http.Response> _send(
       String method, Uri uri, Map<String, String>? headers) async {
     final http.Request request = http.Request(method, uri)
