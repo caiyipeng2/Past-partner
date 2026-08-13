@@ -279,6 +279,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"status": "healthy", "service": "past-partner-api", "version": "v1"})
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
+        elif path == "/api/v1/imports":
+            persona_id = query.get("persona_id", [None])[0]
+            self._json(HTTPStatus.OK, self.server.application.list_imports(self.owner_id, persona_id))
         elif match := _PERSONA_PATH.fullmatch(path):
             self._json(HTTPStatus.OK, self.server.application.get_persona(self.owner_id, match.group(1)))
         elif path == "/api/v1/providers":
@@ -613,6 +616,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/personas/{persona_id}"
         if _IMPORT_PATH.fullmatch(path):
             return "/api/v1/imports/{import_id}"
+        if path == "/api/v1/imports":
+            return "/api/v1/imports"
         if _MISSING_CHUNKS_PATH.fullmatch(path):
             return "/api/v1/imports/{import_id}/missing-chunks"
         if _PROGRESS_PATH.fullmatch(path):
