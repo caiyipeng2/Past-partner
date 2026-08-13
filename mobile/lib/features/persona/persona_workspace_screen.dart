@@ -3,14 +3,24 @@ import 'package:flutter/material.dart';
 import 'persona.dart';
 import 'persona_controller.dart';
 import '../imports/import_controller.dart';
+import '../imports/import_file.dart';
+import '../imports/import_job.dart';
+import '../imports/import_upload_controller.dart';
 import '../imports/import_workspace_screen.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
   const PersonaWorkspaceScreen(
-      {required this.controller, this.importControllerFactory, super.key});
+      {required this.controller,
+      this.importControllerFactory,
+      this.importFileSource,
+      this.importUploadControllerFactory,
+      super.key});
 
   final PersonaController controller;
   final ImportController Function(Persona persona)? importControllerFactory;
+  final ImportFileSource? importFileSource;
+  final ImportUploadController Function(Persona persona, ImportJob? job)?
+      importUploadControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -42,6 +52,11 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
       builder: (BuildContext context) => ImportWorkspaceScreen(
         persona: persona,
         controller: factory(persona),
+        fileSource: widget.importFileSource,
+        uploadControllerFactory: widget.importUploadControllerFactory == null
+            ? null
+            : (ImportJob? job) =>
+                widget.importUploadControllerFactory!(persona, job),
       ),
     ));
   }
