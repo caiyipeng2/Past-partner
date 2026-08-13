@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:past_partner/core/config/api_endpoint.dart';
@@ -5,6 +7,7 @@ import 'package:past_partner/core/session/session.dart';
 import 'package:past_partner/features/imports/import_file.dart';
 import 'package:past_partner/features/imports/import_gateway.dart';
 import 'package:past_partner/features/imports/import_job.dart';
+import 'package:past_partner/features/imports/import_resume.dart';
 import 'package:past_partner/features/imports/import_upload_controller.dart';
 
 class _Gateway implements ImportUploadGateway {
@@ -13,6 +16,7 @@ class _Gateway implements ImportUploadGateway {
   final List<List<int>> uploadedBytes = <List<int>>[];
   final List<String> uploadedDigests = <String>[];
   int completeCalls = 0;
+  bool failUpload = false;
 
   @override
   Future<Map<String, dynamic>> missingChunks({
@@ -39,6 +43,7 @@ class _Gateway implements ImportUploadGateway {
     required List<int> bytes,
     required String sha256,
   }) async {
+    if (failUpload) throw const ImportFileError('network');
     uploadedIndexes.add(index);
     uploadedBytes.add(bytes);
     uploadedDigests.add(sha256);
@@ -81,6 +86,13 @@ class _Gateway implements ImportUploadGateway {
         createdAt: '2026-08-13T00:00:00Z',
         updatedAt: '2026-08-13T00:00:00Z',
       );
+}
+
+class _DeleteFailingResumeStore extends InMemoryImportResumeStore {
+  @override
+  Future<void> delete(String importId) async {
+    throw const ImportResumeError('delete failed');
+  }
 }
 
 void main() {
@@ -152,5 +164,104 @@ void main() {
     expect(controller.state, ImportUploadState.error);
     expect(controller.errorMessage, '选择的文件与原导入任务不匹配。');
     expect(gateway.completeCalls, 0);
+  });
+
+  test('keeps a physical-file manifest when upload fails and removes it on success',
+      () async {
+    final Directory directory = await Directory.systemTemp.createTemp('p3-05-');
+    addTearDown(() => directory.delete(recursive: true));
+    final String path = '${directory.path}${Platform.pathSeparator}chat.txt';
+    await File(path).writeAsBytes(<int>[0, 1, 2, 3, 4, 5]);
+    final _Gateway failingGateway = _Gateway()..failUpload = true;
+    final InMemoryImportResumeStore store = InMemoryImportResumeStore();
+    final ImportUploadController failedController = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: failingGateway,
+      createImport: failingGateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+
+    await failedController.upload(<LocalImportFile>[
+      RandomAccessImportFile(
+        path: path,
+        sourceName: 'chat.txt',
+        mediaType: 'text/plain',
+        length: 6,
+      ),
+    ]);
+
+    expect(await store.read('import-1'), isNotNull);
+
+    final _Gateway successfulGateway = _Gateway();
+    final ImportUploadController resumedController = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: successfulGateway,
+      createImport: successfulGateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+    final bool resumed = await resumedController.resume(
+        successfulGateway._job(state: ImportState.uploading));
+
+    expect(resumed, isTrue);
+    expect(resumedController.state, ImportUploadState.ready);
+    expect(await store.read('import-1'), isNull);
+  });
+
+  test('returns a stable error when no process-resume manifest exists', () async {
+    final _Gateway gateway = _Gateway();
+    final ImportUploadController controller = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: gateway,
+      createImport: gateway.create,
+      resumeStore: InMemoryImportResumeStore(),
+    );
+
+    final bool resumed = await controller.resume(gateway._job(
+      state: ImportState.uploading,
+    ));
+
+    expect(resumed, isFalse);
+    expect(controller.state, ImportUploadState.error);
+    expect(controller.errorMessage, '本地恢复记录不存在，请重新选择原文件。');
+  });
+
+  test('does not turn completed upload into failure when cleanup is unavailable',
+      () async {
+    final _Gateway gateway = _Gateway();
+    final _DeleteFailingResumeStore store = _DeleteFailingResumeStore();
+    final ImportUploadController controller = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: gateway,
+      createImport: gateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+
+    final Directory directory = await Directory.systemTemp.createTemp('p3-05-');
+    addTearDown(() => directory.delete(recursive: true));
+    final String path = '${directory.path}${Platform.pathSeparator}chat.txt';
+    await File(path).writeAsBytes(<int>[0, 1, 2, 3, 4, 5]);
+    await controller.upload(<LocalImportFile>[
+      RandomAccessImportFile(
+        path: path,
+        sourceName: 'chat.txt',
+        mediaType: 'text/plain',
+        length: 6,
+      ),
+    ]);
+
+    expect(controller.state, ImportUploadState.ready);
+    expect(controller.cleanupError,
+        '上传已完成，但本地恢复记录清理失败，请稍后重试。');
   });
 }

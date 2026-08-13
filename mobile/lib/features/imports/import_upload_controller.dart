@@ -8,6 +8,7 @@ import '../../core/session/session.dart';
 import 'import_file.dart';
 import 'import_gateway.dart';
 import 'import_job.dart';
+import 'import_resume.dart';
 
 enum ImportUploadState { idle, preparing, uploading, completing, ready, error }
 
@@ -18,6 +19,7 @@ class ImportUploadController extends ChangeNotifier {
     required this.personaId,
     required this.gateway,
     required this.createImport,
+    this.resumeStore,
     this.chunkSize = 8 * 1024 * 1024,
   }) : assert(chunkSize > 0);
 
@@ -26,11 +28,14 @@ class ImportUploadController extends ChangeNotifier {
   final String personaId;
   final ImportUploadGateway gateway;
   final Future<ImportJob> Function(ImportDraft draft) createImport;
+  final ImportResumeStore? resumeStore;
   final int chunkSize;
 
   ImportUploadState state = ImportUploadState.idle;
   ImportJob? job;
   String? errorMessage;
+  String? cleanupError;
+  bool resumeUnavailable = false;
   int receivedBytes = 0;
   int totalBytes = 0;
   int currentChunk = -1;
@@ -46,6 +51,8 @@ class ImportUploadController extends ChangeNotifier {
   }) async {
     _files = List<LocalImportFile>.unmodifiable(files);
     errorMessage = null;
+    cleanupError = null;
+    resumeUnavailable = false;
     if (_files.isEmpty) {
       _fail('请选择至少一个文件。');
       return;
@@ -67,6 +74,7 @@ class ImportUploadController extends ChangeNotifier {
     notifyListeners();
     try {
       job = existingJob ?? await createImport(_draft());
+      await _saveResumeManifest(job!);
       final int expectedChunks = (totalBytes + chunkSize - 1) ~/ chunkSize;
       final Map<String, dynamic> missing = await gateway.missingChunks(
         endpoint: endpoint,
@@ -105,6 +113,7 @@ class ImportUploadController extends ChangeNotifier {
       receivedBytes = totalBytes;
       state = ImportUploadState.ready;
       currentChunk = -1;
+      await _clearResumeManifest(job!);
     } catch (_) {
       _fail('文件上传失败，请重试。', notify: false);
     }
@@ -112,6 +121,63 @@ class ImportUploadController extends ChangeNotifier {
   }
 
   Future<void> retry() => upload(_files, existingJob: job);
+
+  Future<bool> resume(ImportJob existingJob) async {
+    resumeUnavailable = false;
+    errorMessage = null;
+    final ImportResumeStore? store = resumeStore;
+    if (store == null) {
+      resumeUnavailable = true;
+      _fail('本地恢复记录不存在，请重新选择原文件。');
+      return false;
+    }
+    final ImportUploadResume? resumeManifest;
+    try {
+      resumeManifest = await store.read(existingJob.id);
+    } on Object {
+      _fail('本地恢复记录读取失败，请重试。');
+      return false;
+    }
+    if (resumeManifest == null || resumeManifest.personaId != personaId) {
+      resumeUnavailable = true;
+      _fail('本地恢复记录不存在，请重新选择原文件。');
+      return false;
+    }
+    await upload(
+      resumeManifest.files
+          .map((ImportResumeFile file) => file.toLocalFile())
+          .toList(growable: false),
+      existingJob: existingJob,
+    );
+    return state == ImportUploadState.ready;
+  }
+
+  Future<void> _saveResumeManifest(ImportJob target) async {
+    final ImportResumeStore? store = resumeStore;
+    if (store == null) return;
+    final List<ImportResumeFile?> entries =
+        _files.map(ImportResumeFile.fromLocalFile).toList(growable: false);
+    if (entries.any((ImportResumeFile? file) => file == null)) return;
+    try {
+      await store.write(ImportUploadResume(
+        importId: target.id,
+        personaId: personaId,
+        files: entries.cast<ImportResumeFile>(),
+      ));
+    } on Object {
+      throw const ImportResumeError('本地恢复记录保存失败，请重试。');
+    }
+  }
+
+  Future<void> _clearResumeManifest(ImportJob target) async {
+    final ImportResumeStore? store = resumeStore;
+    if (store == null) return;
+    try {
+      await store.delete(target.id);
+    } on Object {
+      cleanupError = '上传已完成，但本地恢复记录清理失败，请稍后重试。';
+    }
+  }
 
   ImportDraft _draft() => ImportDraft(
         personaId: personaId,

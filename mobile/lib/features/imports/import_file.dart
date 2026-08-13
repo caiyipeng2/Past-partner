@@ -16,6 +16,11 @@ abstract interface class LocalImportFile {
   String get mediaType;
   int get length;
 
+  /// A secure resume manifest may retain this local reference when available.
+  /// In-memory test sources deliberately return null so their bytes cannot be
+  /// mistaken for a process-restart-safe file handle.
+  String? get resumablePath => null;
+
   Future<List<int>> readRange(int offset, int length);
 }
 
@@ -37,6 +42,9 @@ class MemoryImportFile implements LocalImportFile {
   final String mediaType;
 
   final List<int> _bytes;
+
+  @override
+  String? get resumablePath => null;
 
   @override
   int get length => _bytes.length;
@@ -142,6 +150,9 @@ class RandomAccessImportFile implements LocalImportFile {
 
   @override
   final int length;
+
+  @override
+  String get resumablePath => path;
 
   @override
   Future<List<int>> readRange(int offset, int count) async {

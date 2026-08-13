@@ -56,12 +56,30 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
   Future<void> _pickAndUpload(ImportFileSource source,
       {ImportJob? existingJob}) async {
     try {
-      final List<LocalImportFile> files = await source.pick();
-      if (!mounted || files.isEmpty) return;
       final ImportUploadController Function(ImportJob? job)? factory =
           widget.uploadControllerFactory;
       if (factory == null) return;
       final ImportUploadController uploader = factory(existingJob);
+      if (existingJob != null) {
+        final bool resumed = await uploader.resume(existingJob);
+        if (resumed) {
+          if (!mounted) return;
+          await widget.controller.load();
+          if (!mounted || uploader.cleanupError == null) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(uploader.cleanupError!)));
+          return;
+        }
+        if (uploader.errorMessage != null && !uploader.resumeUnavailable) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(uploader.errorMessage!)));
+          }
+          return;
+        }
+      }
+      final List<LocalImportFile> files = await source.pick();
+      if (!mounted || files.isEmpty) return;
       await uploader.upload(files, existingJob: existingJob);
       if (!mounted) return;
       await widget.controller.load();
@@ -69,6 +87,9 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
       if (uploader.errorMessage != null) {
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(uploader.errorMessage!)));
+      } else if (uploader.cleanupError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(uploader.cleanupError!)));
       }
     } on ImportFileError catch (error) {
       if (mounted) {
@@ -125,6 +146,12 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
                               ...widget.controller.jobs.map((ImportJob job) =>
                                   _ImportCard(
                                       job: job,
+                                      actionLabel: job.state ==
+                                                  ImportState.uploading ||
+                                              job.state == ImportState.created ||
+                                              job.state == ImportState.failed
+                                          ? '继续上传'
+                                          : null,
                                       onTap: widget.fileSource == null ||
                                               widget.uploadControllerFactory ==
                                                   null ||
@@ -211,9 +238,10 @@ class _EmptyImports extends StatelessWidget {
 }
 
 class _ImportCard extends StatelessWidget {
-  const _ImportCard({required this.job, this.onTap});
+  const _ImportCard({required this.job, this.actionLabel, this.onTap});
 
   final ImportJob job;
+  final String? actionLabel;
   final VoidCallback? onTap;
 
   @override
@@ -225,12 +253,20 @@ class _ImportCard extends StatelessWidget {
         leading: CircleAvatar(child: Icon(_iconFor(job.mediaType))),
         title: Text(job.sourceName,
             style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle:
-            Text('${job.state.label} · ${job.progressLabel}\n${job.mediaType}'),
+        subtitle: Text(
+            '${job.state.label} · ${job.progressLabel}\n${job.mediaType}'),
         isThreeLine: true,
         onTap: onTap,
         trailing: onTap != null
-            ? const Icon(Icons.arrow_forward_rounded)
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  const Icon(Icons.restore_rounded),
+                  if (actionLabel != null)
+                    Text(actionLabel!,
+                        style: Theme.of(context).textTheme.labelSmall),
+                ],
+              )
             : null,
       ),
     );
