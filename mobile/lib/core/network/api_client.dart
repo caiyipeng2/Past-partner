@@ -15,7 +15,9 @@ class ApiClient {
     final http.Response response = await _send(
       'POST',
       endpoint.path('/api/v1/auth/session'),
-      deviceToken == null ? null : <String, String>{'X-Dev-Device-Bootstrap-Token': deviceToken},
+      deviceToken == null
+          ? null
+          : <String, String>{'X-Dev-Device-Bootstrap-Token': deviceToken},
     );
     if (response.statusCode != 201) throw _failure(response);
     return Session.fromJson(_jsonObject(response));
@@ -30,7 +32,48 @@ class ApiClient {
     if (response.statusCode != 200) throw _failure(response);
   }
 
-  Future<http.Response> _send(String method, Uri uri, Map<String, String>? headers) async {
+  Future<List<Map<String, dynamic>>> listPersonas(
+      ApiEndpoint endpoint, Session session) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/personas'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    final Map<String, dynamic> body = _jsonObject(response);
+    final dynamic personas = body['personas'];
+    if (personas is! List) {
+      throw const ApiFailure('invalid_response',
+          'The local service returned an invalid response.');
+    }
+    final List<Map<String, dynamic>> result = <Map<String, dynamic>>[];
+    for (final dynamic value in personas) {
+      if (value is! Map) {
+        throw const ApiFailure('invalid_response',
+            'The local service returned an invalid response.');
+      }
+      result.add(Map<String, dynamic>.from(value));
+    }
+    return result;
+  }
+
+  Future<Map<String, dynamic>> createPersona(
+    ApiEndpoint endpoint,
+    Session session,
+    Map<String, dynamic> payload,
+  ) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/personas'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      payload,
+    );
+    if (response.statusCode != 201) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<http.Response> _send(
+      String method, Uri uri, Map<String, String>? headers) async {
     final http.Request request = http.Request(method, uri)
       ..followRedirects = false
       ..maxRedirects = 0;
@@ -38,14 +81,46 @@ class ApiClient {
     try {
       final http.StreamedResponse streamed = await _client.send(request);
       final http.Response response = await http.Response.fromStream(streamed);
-      if (response.isRedirect || (response.statusCode >= 300 && response.statusCode < 400)) {
-        throw const ApiFailure('redirect_rejected', 'The server redirect was rejected.');
+      if (response.isRedirect ||
+          (response.statusCode >= 300 && response.statusCode < 400)) {
+        throw const ApiFailure(
+            'redirect_rejected', 'The server redirect was rejected.');
       }
       return response;
     } on ApiFailure {
       rethrow;
     } catch (_) {
-      throw const ApiFailure('transport_unavailable', 'The local service is unavailable.');
+      throw const ApiFailure(
+          'transport_unavailable', 'The local service is unavailable.');
+    }
+  }
+
+  Future<http.Response> _sendJson(
+    String method,
+    Uri uri,
+    Map<String, String> headers,
+    Map<String, dynamic> payload,
+  ) async {
+    final http.Request request = http.Request(method, uri)
+      ..followRedirects = false
+      ..maxRedirects = 0
+      ..headers.addAll(
+          <String, String>{...headers, 'Content-Type': 'application/json'})
+      ..body = jsonEncode(payload);
+    try {
+      final http.StreamedResponse streamed = await _client.send(request);
+      final http.Response response = await http.Response.fromStream(streamed);
+      if (response.isRedirect ||
+          (response.statusCode >= 300 && response.statusCode < 400)) {
+        throw const ApiFailure(
+            'redirect_rejected', 'The server redirect was rejected.');
+      }
+      return response;
+    } on ApiFailure {
+      rethrow;
+    } catch (_) {
+      throw const ApiFailure(
+          'transport_unavailable', 'The local service is unavailable.');
     }
   }
 
@@ -56,7 +131,8 @@ class ApiClient {
     } on FormatException {
       // Fall through to a stable client error.
     }
-    throw const ApiFailure('invalid_response', 'The local service returned an invalid response.');
+    throw const ApiFailure(
+        'invalid_response', 'The local service returned an invalid response.');
   }
 
   static ApiFailure _failure(http.Response response) {
@@ -64,10 +140,14 @@ class ApiClient {
     String message = 'The local service rejected the request.';
     try {
       final dynamic value = jsonDecode(response.body);
-      if (value is Map<String, dynamic> && value['error'] is Map<String, dynamic>) {
-        final Map<String, dynamic> error = value['error'] as Map<String, dynamic>;
+      if (value is Map<String, dynamic> &&
+          value['error'] is Map<String, dynamic>) {
+        final Map<String, dynamic> error =
+            value['error'] as Map<String, dynamic>;
         if (error['code'] is String) code = error['code'] as String;
-        if (error['message'] is String && error['message'] != '') message = error['message'] as String;
+        if (error['message'] is String && error['message'] != '') {
+          message = error['message'] as String;
+        }
       }
     } on FormatException {
       // Do not expose the response body in a user-visible exception.
