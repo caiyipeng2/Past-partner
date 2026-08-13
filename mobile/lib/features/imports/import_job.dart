@@ -36,6 +36,7 @@ class ImportJob {
     required this.state,
     required this.createdAt,
     required this.updatedAt,
+    this.files = const <ImportFileEntry>[],
   });
 
   final String id;
@@ -48,6 +49,7 @@ class ImportJob {
   final ImportState state;
   final String createdAt;
   final String updatedAt;
+  final List<ImportFileEntry> files;
 
   factory ImportJob.fromJson(Map<String, dynamic> json) {
     final dynamic id = json['id'];
@@ -60,6 +62,7 @@ class ImportJob {
     final dynamic state = json['state'];
     final dynamic createdAt = json['created_at'];
     final dynamic updatedAt = json['updated_at'];
+    final dynamic rawFiles = json['files'];
     if (id is! String ||
         id.isEmpty ||
         personaId is! String ||
@@ -79,6 +82,18 @@ class ImportJob {
         updatedAt is! String) {
       throw const FormatException('The import response is invalid.');
     }
+    final List<ImportFileEntry> files = <ImportFileEntry>[];
+    if (rawFiles != null) {
+      if (rawFiles is! List) {
+        throw const FormatException('The import response is invalid.');
+      }
+      for (final dynamic value in rawFiles) {
+        if (value is! Map) {
+          throw const FormatException('The import response is invalid.');
+        }
+        files.add(ImportFileEntry.fromJson(Map<String, dynamic>.from(value)));
+      }
+    }
     return ImportJob(
       id: id,
       personaId: personaId,
@@ -90,6 +105,7 @@ class ImportJob {
       state: ImportState.fromValue(state),
       createdAt: createdAt,
       updatedAt: updatedAt,
+      files: List<ImportFileEntry>.unmodifiable(files),
     );
   }
 
@@ -110,23 +126,73 @@ class ImportJob {
   }
 }
 
+class ImportFileEntry {
+  const ImportFileEntry({
+    required this.fileId,
+    required this.sourceName,
+    required this.mediaType,
+    required this.totalBytes,
+    this.sha256,
+  });
+
+  final String fileId;
+  final String sourceName;
+  final String mediaType;
+  final int totalBytes;
+  final String? sha256;
+
+  factory ImportFileEntry.fromJson(Map<String, dynamic> json) {
+    final dynamic fileId = json['file_id'];
+    final dynamic sourceName = json['source_name'];
+    final dynamic mediaType = json['media_type'];
+    final dynamic totalBytes = json['total_bytes'];
+    final dynamic sha256 = json['sha256'];
+    if (fileId is! String || fileId.isEmpty ||
+        sourceName is! String || sourceName.isEmpty ||
+        mediaType is! String || mediaType.isEmpty ||
+        totalBytes is! int || totalBytes < 0 ||
+        (sha256 != null && sha256 is! String)) {
+      throw const FormatException('The import file response is invalid.');
+    }
+    return ImportFileEntry(
+      fileId: fileId,
+      sourceName: sourceName,
+      mediaType: mediaType,
+      totalBytes: totalBytes,
+      sha256: sha256 as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'file_id': fileId,
+        'source_name': sourceName,
+        'media_type': mediaType,
+        'total_bytes': totalBytes,
+        'sha256': sha256,
+      };
+}
+
 class ImportDraft {
   const ImportDraft({
     required this.personaId,
     required this.sourceName,
     required this.totalBytes,
     required this.mediaType,
+    this.files,
   });
 
   final String personaId;
   final String sourceName;
   final int totalBytes;
   final String mediaType;
+  final List<ImportFileEntry>? files;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'persona_id': personaId,
         'source_name': sourceName.trim(),
         'total_bytes': totalBytes,
         'media_type': mediaType.trim(),
+        if (files != null)
+          'files': files!.map((ImportFileEntry item) => item.toJson()).toList(),
       };
 }

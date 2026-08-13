@@ -112,12 +112,83 @@ class ApiClient {
     return _jsonObject(response);
   }
 
+  Future<Map<String, dynamic>> missingChunks(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId, {
+    required int expectedChunks,
+  }) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/imports/$importId/missing-chunks').replace(
+          queryParameters: <String, String>{
+        'expected_chunks': '$expectedChunks',
+      }),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> putChunk(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId,
+    int index,
+    List<int> bytes,
+    String sha256,
+  ) async {
+    final http.Request request = http.Request(
+      'PUT',
+      endpoint.path('/api/v1/imports/$importId/chunks/$index'),
+    )
+      ..followRedirects = false
+      ..maxRedirects = 0
+      ..headers.addAll(<String, String>{
+        'Authorization': 'Bearer ${session.accessToken}',
+        'Content-Type': 'application/octet-stream',
+        'X-Chunk-Sha256': sha256,
+        'Content-Length': '${bytes.length}',
+      })
+      ..bodyBytes = bytes;
+    final http.Response response = await _sendRequest(request);
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> completeImport(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId, {
+    String? wholeSha256,
+  }) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/imports/$importId/complete'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      <String, dynamic>{if (wholeSha256 != null) 'sha256': wholeSha256},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
   Future<http.Response> _send(
       String method, Uri uri, Map<String, String>? headers) async {
     final http.Request request = http.Request(method, uri)
       ..followRedirects = false
       ..maxRedirects = 0;
     if (headers != null) request.headers.addAll(headers);
+    try {
+      return _sendRequest(request);
+    } on ApiFailure {
+      rethrow;
+    } catch (_) {
+      throw const ApiFailure(
+          'transport_unavailable', 'The local service is unavailable.');
+    }
+  }
+
+  Future<http.Response> _sendRequest(http.Request request) async {
     try {
       final http.StreamedResponse streamed = await _client.send(request);
       final http.Response response = await http.Response.fromStream(streamed);

@@ -2,14 +2,22 @@ import 'package:flutter/material.dart';
 
 import '../persona/persona.dart';
 import 'import_controller.dart';
+import 'import_file.dart';
 import 'import_job.dart';
+import 'import_upload_controller.dart';
 
 class ImportWorkspaceScreen extends StatefulWidget {
   const ImportWorkspaceScreen(
-      {required this.persona, required this.controller, super.key});
+      {required this.persona,
+      required this.controller,
+      this.fileSource,
+      this.uploadControllerFactory,
+      super.key});
 
   final Persona persona;
   final ImportController controller;
+  final ImportFileSource? fileSource;
+  final ImportUploadController Function(ImportJob? job)? uploadControllerFactory;
 
   @override
   State<ImportWorkspaceScreen> createState() => _ImportWorkspaceScreenState();
@@ -23,6 +31,11 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
   }
 
   Future<void> _openCreateForm() async {
+    final ImportFileSource? fileSource = widget.fileSource;
+    if (fileSource != null && widget.uploadControllerFactory != null) {
+      await _pickAndUpload(fileSource);
+      return;
+    }
     final ImportDraft? draft = await showModalBottomSheet<ImportDraft>(
       context: context,
       isScrollControlled: true,
@@ -38,6 +51,31 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
         mediaType: draft.mediaType,
       ),
     );
+  }
+
+  Future<void> _pickAndUpload(ImportFileSource source,
+      {ImportJob? existingJob}) async {
+    try {
+      final List<LocalImportFile> files = await source.pick();
+      if (!mounted || files.isEmpty) return;
+      final ImportUploadController Function(ImportJob? job)? factory =
+          widget.uploadControllerFactory;
+      if (factory == null) return;
+      final ImportUploadController uploader = factory(existingJob);
+      await uploader.upload(files, existingJob: existingJob);
+      if (!mounted) return;
+      await widget.controller.load();
+      if (!mounted) return;
+      if (uploader.errorMessage != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(uploader.errorMessage!)));
+      }
+    } on ImportFileError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
   }
 
   @override
@@ -68,6 +106,8 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
                             errorMessage: widget.controller.errorMessage,
                             onCreate: _openCreateForm,
                             onRetry: widget.controller.load,
+                            canPickFiles: widget.fileSource != null &&
+                                widget.uploadControllerFactory != null,
                           )
                         : ListView(
                             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
@@ -82,13 +122,25 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
                                           .colorScheme
                                           .onSurfaceVariant)),
                               const SizedBox(height: 16),
-                              ...widget.controller.jobs.map(
-                                  (ImportJob job) => _ImportCard(job: job)),
+                              ...widget.controller.jobs.map((ImportJob job) =>
+                                  _ImportCard(
+                                      job: job,
+                                      onTap: widget.fileSource == null ||
+                                              widget.uploadControllerFactory ==
+                                                  null ||
+                                              job.state == ImportState.uploaded ||
+                                              job.state == ImportState.completed
+                                          ? null
+                                          : () => _pickAndUpload(
+                                              widget.fileSource!,
+                                              existingJob: job))),
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: saving ? null : _openCreateForm,
                                 icon: const Icon(Icons.add_rounded),
-                                label: const Text('创建另一个任务'),
+                                label: Text(widget.fileSource != null
+                                    ? '选择更多文件'
+                                    : '创建另一个任务'),
                               ),
                             ],
                           ),
@@ -98,7 +150,7 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
               ? FloatingActionButton.extended(
                   onPressed: saving ? null : _openCreateForm,
                   icon: const Icon(Icons.upload_file_rounded),
-                  label: const Text('创建导入任务'),
+                  label: Text(widget.fileSource != null ? '选择文件' : '创建导入任务'),
                 )
               : null,
         );
@@ -111,11 +163,13 @@ class _EmptyImports extends StatelessWidget {
   const _EmptyImports(
       {required this.errorMessage,
       required this.onCreate,
-      required this.onRetry});
+      required this.onRetry,
+      required this.canPickFiles});
 
   final String? errorMessage;
   final VoidCallback onCreate;
   final VoidCallback onRetry;
+  final bool canPickFiles;
 
   @override
   Widget build(BuildContext context) {
@@ -132,7 +186,12 @@ class _EmptyImports extends StatelessWidget {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
-        Text(hasError ? '请确认服务连接正常后重试。' : '先登记一份聊天资料，下一步可上传文件并查看处理进度。',
+        Text(
+            hasError
+                ? '请确认服务连接正常后重试。'
+                : canPickFiles
+                    ? '选择微信、QQ、图片、音频或其他文件，开始分片上传。'
+                    : '先登记一份聊天资料，下一步可上传文件并查看处理进度。',
             textAlign: TextAlign.center,
             style: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -143,7 +202,8 @@ class _EmptyImports extends StatelessWidget {
           onPressed: hasError ? onRetry : onCreate,
           icon: Icon(
               hasError ? Icons.refresh_rounded : Icons.upload_file_rounded),
-          label: Text(hasError ? '重试加载' : '创建导入任务'),
+          label: Text(
+              hasError ? '重试加载' : canPickFiles ? '选择文件并上传' : '创建导入任务'),
         ),
       ],
     );
@@ -151,9 +211,10 @@ class _EmptyImports extends StatelessWidget {
 }
 
 class _ImportCard extends StatelessWidget {
-  const _ImportCard({required this.job});
+  const _ImportCard({required this.job, this.onTap});
 
   final ImportJob job;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -167,7 +228,8 @@ class _ImportCard extends StatelessWidget {
         subtitle:
             Text('${job.state.label} · ${job.progressLabel}\n${job.mediaType}'),
         isThreeLine: true,
-        trailing: job.state == ImportState.created
+        onTap: onTap,
+        trailing: onTap != null
             ? const Icon(Icons.arrow_forward_rounded)
             : null,
       ),

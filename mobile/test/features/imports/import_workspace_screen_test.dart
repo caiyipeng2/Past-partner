@@ -6,9 +6,11 @@ import 'package:past_partner/core/session/session.dart';
 import 'package:past_partner/core/session/session_controller.dart';
 import 'package:past_partner/core/session/session_store.dart';
 import 'package:past_partner/features/imports/import_controller.dart';
+import 'package:past_partner/features/imports/import_file.dart';
 import 'package:past_partner/features/imports/import_gateway.dart';
 import 'package:past_partner/features/imports/import_job.dart';
 import 'package:past_partner/features/imports/import_workspace_screen.dart';
+import 'package:past_partner/features/imports/import_upload_controller.dart';
 import 'package:past_partner/features/persona/persona.dart';
 
 class _Store implements SessionStore {
@@ -123,4 +125,66 @@ void main() {
     expect(find.text('导入任务加载失败，请重试。'), findsOneWidget);
     expect(find.text('重试加载'), findsOneWidget);
   });
+
+  testWidgets('exposes the real file picker entry when upload is wired',
+      (WidgetTester tester) async {
+    final _Gateway gateway = _Gateway();
+    final SessionController sessions = SessionController(_Store(), ApiClient())
+      ..session = Session(
+          accessToken: 'token', ownerId: 'owner', expiresAt: DateTime.utc(2099))
+      ..endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+    final ImportController imports = ImportController(
+      sessions,
+      personaId: persona.id,
+      gateway: gateway,
+    );
+    final ImportUploadController uploader = ImportUploadController(
+      endpoint: sessions.endpoint!,
+      session: sessions.session!,
+      personaId: persona.id,
+      gateway: _UploadGateway(),
+      createImport: (ImportDraft draft) async => gateway.jobs.first,
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: ImportWorkspaceScreen(
+        persona: persona,
+        controller: imports,
+        fileSource: const MemoryImportSource(),
+        uploadControllerFactory: (_) => uploader,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('选择文件并上传'), findsOneWidget);
+    expect(find.textContaining('选择微信、QQ'), findsOneWidget);
+  });
+}
+
+class _UploadGateway implements ImportUploadGateway {
+  @override
+  Future<ImportJob> complete({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    String? wholeSha256,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<Map<String, dynamic>> missingChunks({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int expectedChunks,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<Map<String, dynamic>> putChunk({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int index,
+    required List<int> bytes,
+    required String sha256,
+  }) => throw UnimplementedError();
 }

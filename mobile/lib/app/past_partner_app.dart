@@ -5,6 +5,9 @@ import '../features/connection/connection_screen.dart';
 import '../features/persona/persona_controller.dart';
 import '../features/persona/persona_workspace_screen.dart';
 import '../features/imports/import_controller.dart';
+import '../features/imports/import_file.dart';
+import '../features/imports/import_gateway.dart';
+import '../features/imports/import_upload_controller.dart';
 import '../core/session/session_controller.dart';
 
 class PastPartnerApp extends StatefulWidget {
@@ -50,6 +53,22 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                     widget.sessionController,
                     personaId: persona.id,
                   ),
+                  importFileSource: const FilePickerImportSource(),
+                  importUploadControllerFactory: (persona, job) {
+                    final snapshot = widget.sessionController;
+                    return ImportUploadController(
+                      endpoint: snapshot.endpoint!,
+                      session: snapshot.session!,
+                      personaId: persona.id,
+                      gateway: ApiClientImportGateway(snapshot.client),
+                      createImport: (draft) =>
+                          ApiClientImportGateway(snapshot.client).create(
+                            endpoint: snapshot.endpoint!,
+                            session: snapshot.session!,
+                            draft: draft,
+                          ),
+                    );
+                  },
                 )
               : ConnectionScreen(controller: widget.sessionController),
         );

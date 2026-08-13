@@ -17,7 +17,32 @@ abstract interface class ImportGateway {
   });
 }
 
-class ApiClientImportGateway implements ImportGateway {
+abstract interface class ImportUploadGateway {
+  Future<Map<String, dynamic>> missingChunks({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int expectedChunks,
+  });
+
+  Future<Map<String, dynamic>> putChunk({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int index,
+    required List<int> bytes,
+    required String sha256,
+  });
+
+  Future<ImportJob> complete({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    String? wholeSha256,
+  });
+}
+
+class ApiClientImportGateway implements ImportGateway, ImportUploadGateway {
   const ApiClientImportGateway(this.client);
 
   final ApiClient client;
@@ -41,5 +66,41 @@ class ApiClientImportGateway implements ImportGateway {
   }) async {
     return ImportJob.fromJson(
         await client.createImport(endpoint, session, draft.toJson()));
+  }
+
+  @override
+  Future<Map<String, dynamic>> missingChunks({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int expectedChunks,
+  }) =>
+      client.missingChunks(endpoint, session, importId,
+          expectedChunks: expectedChunks);
+
+  @override
+  Future<Map<String, dynamic>> putChunk({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required int index,
+    required List<int> bytes,
+    required String sha256,
+  }) =>
+      client.putChunk(endpoint, session, importId, index, bytes, sha256);
+
+  @override
+  Future<ImportJob> complete({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    String? wholeSha256,
+  }) async {
+    return ImportJob.fromJson(await client.completeImport(
+      endpoint,
+      session,
+      importId,
+      wholeSha256: wholeSha256,
+    ));
   }
 }
