@@ -152,4 +152,103 @@ void main() {
       ],
     });
   });
+
+  test('lists, creates, and revokes owner-scoped consent records', () async {
+    final List<http.Request> requests = <http.Request>[];
+    final ApiClient client = ApiClient(
+      client: MockClient((http.Request request) async {
+        try {
+          requests.add(request);
+          if (request.method == 'GET') {
+            return http.Response.bytes(
+              utf8.encode(jsonEncode(<String, dynamic>{
+                'consents': <Map<String, dynamic>>[
+                  <String, dynamic>{
+                    'id': 'consent-1',
+                    'persona_id': 'persona-1',
+                    'provider_id': 'deepseek',
+                    'model_id': 'deepseek-v4-flash',
+                    'data_category': 'image',
+                    'estimated_cost': 0.12,
+                    'purpose': '图片理解',
+                    'authorization_scope': 'persona-image-analysis',
+                    'created_at': '2026-08-14T00:00:00+00:00',
+                    'status': 'active',
+                  },
+                ],
+              })),
+              200,
+              headers: <String, String>{
+                'content-type': 'application/json; charset=utf-8'
+              },
+            );
+          }
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(<String, dynamic>{
+              'id': 'consent-1',
+              'persona_id': 'persona-1',
+              'provider_id': 'deepseek',
+              'model_id': 'deepseek-v4-flash',
+              'data_category': 'image',
+              'estimated_cost': 0.12,
+              'purpose': '图片理解',
+              'authorization_scope': 'persona-image-analysis',
+              'created_at': '2026-08-14T00:00:00+00:00',
+              'status':
+                  request.url.path.endsWith('/revoke') ? 'revoked' : 'active',
+              if (request.url.path.endsWith('/revoke'))
+                'revoked_at': '2026-08-14T01:00:00+00:00',
+            })),
+            request.url.path.endsWith('/revoke') ? 200 : 201,
+            headers: <String, String>{
+              'content-type': 'application/json; charset=utf-8'
+            },
+          );
+        } catch (_) {
+          rethrow;
+        }
+      }),
+    );
+
+    final List<Map<String, dynamic>> listed = await client.listConsents(
+      endpoint,
+      session,
+      'persona-1',
+    );
+    final Map<String, dynamic> created = await client.createConsent(
+      endpoint,
+      session,
+      <String, dynamic>{
+        'persona_id': 'persona-1',
+        'provider_id': 'deepseek',
+        'model_id': 'deepseek-v4-flash',
+        'data_category': 'image',
+        'estimated_cost': 0.12,
+        'purpose': '图片理解',
+        'authorization_scope': 'persona-image-analysis',
+      },
+    );
+    final Map<String, dynamic> revoked = await client.revokeConsent(
+      endpoint,
+      session,
+      'consent-1',
+    );
+
+    expect(listed.single['status'], 'active');
+    expect(created['id'], 'consent-1');
+    expect(revoked['status'], 'revoked');
+    expect(requests[0].url.path, '/api/v1/consents');
+    expect(requests[0].url.queryParameters['persona_id'], 'persona-1');
+    expect(jsonDecode(requests[1].body), <String, dynamic>{
+      'persona_id': 'persona-1',
+      'provider_id': 'deepseek',
+      'model_id': 'deepseek-v4-flash',
+      'data_category': 'image',
+      'estimated_cost': 0.12,
+      'purpose': '图片理解',
+      'authorization_scope': 'persona-image-analysis',
+    });
+    expect(requests[2].url.path, '/api/v1/consents/consent-1/revoke');
+    expect(requests[2].headers['authorization'], 'Bearer token');
+  });
 }

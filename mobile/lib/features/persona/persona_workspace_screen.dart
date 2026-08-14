@@ -11,6 +11,8 @@ import '../imports/import_review_controller.dart';
 import '../models/model_controller.dart';
 import '../models/model_option.dart';
 import '../models/model_selection_screen.dart';
+import '../consents/consent_controller.dart';
+import '../consents/consent_screen.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
   const PersonaWorkspaceScreen(
@@ -20,6 +22,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       this.importUploadControllerFactory,
       this.importReviewControllerFactory,
       this.modelSelectionControllerFactory,
+      this.consentControllerFactory,
       super.key});
 
   final PersonaController controller;
@@ -31,6 +34,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       importReviewControllerFactory;
   final ModelSelectionController Function(ModelOption? selected)?
       modelSelectionControllerFactory;
+  final ConsentController Function(Persona persona)? consentControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -89,6 +93,19 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
       ),
     );
     if (mounted && selected != null) setState(() => _selectedModel = selected);
+  }
+
+  void _openConsents(Persona persona) {
+    final ConsentController Function(Persona persona)? factory =
+        widget.consentControllerFactory;
+    if (factory == null) return;
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (BuildContext context) => ConsentScreen(
+        personaName: persona.displayName,
+        controller: factory(persona),
+        selectedModel: _selectedModel,
+      ),
+    ));
   }
 
   @override
@@ -160,7 +177,12 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
                                       onTap:
                                           widget.importControllerFactory == null
                                               ? null
-                                              : () => _openImports(persona))),
+                                              : () => _openImports(persona),
+                                      onConsent:
+                                          widget.consentControllerFactory ==
+                                                  null
+                                              ? null
+                                              : () => _openConsents(persona))),
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: saving ? null : _openCreateForm,
@@ -231,10 +253,11 @@ class _EmptyPersonaState extends StatelessWidget {
 }
 
 class _PersonaCard extends StatelessWidget {
-  const _PersonaCard({required this.persona, this.onTap});
+  const _PersonaCard({required this.persona, this.onTap, this.onConsent});
 
   final Persona persona;
   final VoidCallback? onTap;
+  final VoidCallback? onConsent;
 
   @override
   Widget build(BuildContext context) {
@@ -246,7 +269,19 @@ class _PersonaCard extends StatelessWidget {
         title: Text(persona.displayName,
             style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(persona.relationshipLabel),
-        trailing: const Icon(Icons.chevron_right_rounded),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (onConsent != null)
+              IconButton(
+                key: Key('consent-open-${persona.id}'),
+                tooltip: '管理授权',
+                onPressed: onConsent,
+                icon: const Icon(Icons.shield_outlined),
+              ),
+            const Icon(Icons.chevron_right_rounded),
+          ],
+        ),
         onTap: onTap,
       ),
     );

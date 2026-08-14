@@ -57,6 +57,77 @@ class ApiClient {
     return result;
   }
 
+  Future<List<Map<String, dynamic>>> listConsents(
+    ApiEndpoint endpoint,
+    Session session,
+    String personaId,
+  ) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/consents').replace(
+        queryParameters: <String, String>{'persona_id': personaId},
+      ),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    final Map<String, dynamic> body = _jsonObject(response);
+    final dynamic consents = body['consents'];
+    if (consents is! List || consents.length > 2048) {
+      throw const ApiFailure('invalid_response',
+          'The local service returned an invalid response.');
+    }
+    return consents.map((dynamic value) {
+      if (value is! Map) {
+        throw const ApiFailure('invalid_response',
+            'The local service returned an invalid response.');
+      }
+      return Map<String, dynamic>.from(value);
+    }).toList(growable: false);
+  }
+
+  Future<Map<String, dynamic>> createConsent(
+    ApiEndpoint endpoint,
+    Session session,
+    Map<String, dynamic> payload,
+  ) async {
+    const Set<String> allowed = <String>{
+      'persona_id',
+      'provider_id',
+      'model_id',
+      'data_category',
+      'estimated_cost',
+      'purpose',
+      'authorization_scope',
+    };
+    if (payload.keys.any((String key) => !allowed.contains(key))) {
+      throw const ApiFailure('invalid_request',
+          'The consent request contains unsupported fields.');
+    }
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/consents'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      payload,
+    );
+    if (response.statusCode != 201) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> revokeConsent(
+    ApiEndpoint endpoint,
+    Session session,
+    String consentId,
+  ) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/consents/$consentId/revoke'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      <String, dynamic>{},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
   Future<List<Map<String, dynamic>>> listModels(
       ApiEndpoint endpoint, Session session,
       {String? providerId}) async {
