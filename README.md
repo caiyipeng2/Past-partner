@@ -90,6 +90,8 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 移动端代码位于 `mobile/`，包含端点白名单、设备配对会话、Secure Storage 会话恢复，以及简化/活泼两套静态对话预览。生成 Android/iOS runner、执行 `flutter pub get`、`flutter analyze`、`flutter test` 和 APK 构建前，需要先安装 Flutter SDK；未安装 SDK 的环境不能将该目录宣称为已构建的 Android/iOS 应用。
 
+P3-05 增加移动端导入任务的进程重启恢复：上传开始后，Secure Storage 只保存导入任务 ID、人物 ID、文件显示元数据和系统文件引用，不保存访问令牌、文件正文或完整路径到页面/日志。网络失败或应用进程被终止后，重新进入未完成任务会优先使用恢复清单继续缺片上传；清单缺失或文件已不可读时会明确提示重新选择原文件。上传完成不等同于操作系统级后台任务，当前仍由用户重新打开应用触发恢复。APK 使用 `scripts/build_mobile_apk.ps1` 生成，产物命名为 `Past-partner_<版本>_<yyyyMMdd_HHmm>_<debug|release>.apk`，输出目录只保留最新一组命名 APK。
+
 导入任务默认允许最多 3 GiB（3,221,225,472 字节）。该限制按一次任务中所有文件大小之和计算；可通过 `PAST_PARTNER_MAX_IMPORT_BYTES` 在服务端调整，单文件不能绕过任务总量限制。
 
 P1-03 已增加通用 HTML 聊天记录解析，支持常见消息容器、发送者/时间/正文标记、HTML 实体、UTF-8/UTF-16/GB18030 编码，并忽略脚本、样式和模板内容。

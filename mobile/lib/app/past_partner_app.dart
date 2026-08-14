@@ -8,6 +8,7 @@ import '../features/imports/import_controller.dart';
 import '../features/imports/import_file.dart';
 import '../features/imports/import_gateway.dart';
 import '../features/imports/import_upload_controller.dart';
+import '../features/imports/import_resume.dart';
 import '../core/session/session_controller.dart';
 
 class PastPartnerApp extends StatefulWidget {
@@ -61,6 +62,7 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       session: snapshot.session!,
                       personaId: persona.id,
                       gateway: ApiClientImportGateway(snapshot.client),
+                      resumeStore: SecureImportResumeStore(),
                       createImport: (draft) =>
                           ApiClientImportGateway(snapshot.client).create(
                             endpoint: snapshot.endpoint!,
