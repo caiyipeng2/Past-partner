@@ -8,6 +8,9 @@ import '../imports/import_job.dart';
 import '../imports/import_upload_controller.dart';
 import '../imports/import_workspace_screen.dart';
 import '../imports/import_review_controller.dart';
+import '../models/model_controller.dart';
+import '../models/model_option.dart';
+import '../models/model_selection_screen.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
   const PersonaWorkspaceScreen(
@@ -16,6 +19,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       this.importFileSource,
       this.importUploadControllerFactory,
       this.importReviewControllerFactory,
+      this.modelSelectionControllerFactory,
       super.key});
 
   final PersonaController controller;
@@ -25,12 +29,15 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       importUploadControllerFactory;
   final ImportReviewController Function(Persona persona, ImportJob job)?
       importReviewControllerFactory;
+  final ModelSelectionController Function(ModelOption? selected)?
+      modelSelectionControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
 }
 
 class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
+  ModelOption? _selectedModel;
   @override
   void initState() {
     super.initState();
@@ -69,6 +76,21 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
     ));
   }
 
+  Future<void> _openModelSelection() async {
+    final ModelSelectionController Function(ModelOption? selected)? factory =
+        widget.modelSelectionControllerFactory;
+    if (factory == null) return;
+    final ModelOption? selected = await Navigator.of(context).push<ModelOption>(
+      MaterialPageRoute<ModelOption>(
+        builder: (BuildContext context) => ModelSelectionScreen(
+          controller: factory(_selectedModel),
+          onSelected: (ModelOption model) => Navigator.of(context).pop(model),
+        ),
+      ),
+    );
+    if (mounted && selected != null) setState(() => _selectedModel = selected);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -80,6 +102,12 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
           appBar: AppBar(
             title: const Text('人物'),
             actions: <Widget>[
+              if (widget.modelSelectionControllerFactory != null)
+                IconButton(
+                  tooltip: '选择模型',
+                  onPressed: _openModelSelection,
+                  icon: const Icon(Icons.tune_rounded),
+                ),
               IconButton(
                 tooltip: '刷新人物',
                 onPressed: loading || saving ? null : widget.controller.load,
@@ -112,6 +140,20 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
                                           .colorScheme
                                           .onSurfaceVariant)),
                               const SizedBox(height: 16),
+                              if (_selectedModel != null) ...<Widget>[
+                                ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading:
+                                      const Icon(Icons.auto_awesome_rounded),
+                                  title: const Text('当前模型'),
+                                  subtitle: Text(
+                                      '${_selectedModel!.providerName} · ${_selectedModel!.displayName}'),
+                                  trailing:
+                                      const Icon(Icons.chevron_right_rounded),
+                                  onTap: _openModelSelection,
+                                ),
+                                const SizedBox(height: 8),
+                              ],
                               ...widget.controller.personas.map(
                                   (Persona persona) => _PersonaCard(
                                       persona: persona,
