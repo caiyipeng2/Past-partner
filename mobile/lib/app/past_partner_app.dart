@@ -4,6 +4,8 @@ import '../features/appearance/appearance_controller.dart';
 import '../features/connection/connection_screen.dart';
 import '../features/persona/persona_controller.dart';
 import '../features/persona/persona_workspace_screen.dart';
+import '../features/models/model_controller.dart';
+import '../features/models/model_gateway.dart';
 import '../features/imports/import_controller.dart';
 import '../features/imports/import_file.dart';
 import '../features/imports/import_gateway.dart';
@@ -80,6 +82,15 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       session: snapshot.session!,
                       importId: job.id,
                       gateway: ApiClientImportReviewGateway(snapshot.client),
+                    );
+                  },
+                  modelSelectionControllerFactory: (selected) {
+                    final SessionController snapshot = widget.sessionController;
+                    return ModelSelectionController(
+                      endpoint: snapshot.endpoint!,
+                      session: snapshot.session!,
+                      gateway: ApiClientModelGateway(snapshot.client),
+                      initialSelection: selected,
                     );
                   },
                 )

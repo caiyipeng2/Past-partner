@@ -57,6 +57,67 @@ class ApiClient {
     return result;
   }
 
+  Future<List<Map<String, dynamic>>> listModels(
+      ApiEndpoint endpoint, Session session,
+      {String? providerId}) async {
+    final Uri uri = endpoint.path('/api/v1/models').replace(
+          queryParameters: providerId == null
+              ? null
+              : <String, String>{'provider_id': providerId},
+        );
+    final http.Response response = await _send(
+      'GET',
+      uri,
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    final Map<String, dynamic> body = _jsonObject(response);
+    final dynamic models = body['models'];
+    if (models is! List || models.length > 2048) {
+      throw const ApiFailure('invalid_response',
+          'The local service returned an invalid response.');
+    }
+    final List<Map<String, dynamic>> result = <Map<String, dynamic>>[];
+    for (final dynamic value in models) {
+      if (value is! Map) {
+        throw const ApiFailure('invalid_response',
+            'The local service returned an invalid response.');
+      }
+      final Map<String, dynamic> model = Map<String, dynamic>.from(value);
+      // The filtered v1 response identifies the provider at the envelope
+      // level. Normalize it onto each item so the client keeps one model
+      // contract for both filtered and all-provider requests.
+      if (providerId != null && !model.containsKey('provider_id')) {
+        model['provider_id'] = providerId;
+      }
+      result.add(model);
+    }
+    return result;
+  }
+
+  Future<Map<String, dynamic>> estimateModelCost(
+    ApiEndpoint endpoint,
+    Session session, {
+    required String providerId,
+    required String modelId,
+    required int inputTokens,
+    required int outputTokens,
+  }) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/models/cost-estimate'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      <String, dynamic>{
+        'provider_id': providerId,
+        'model_id': modelId,
+        'input_tokens': inputTokens,
+        'output_tokens': outputTokens,
+      },
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
   Future<Map<String, dynamic>> createPersona(
     ApiEndpoint endpoint,
     Session session,
