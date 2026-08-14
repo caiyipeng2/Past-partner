@@ -7,6 +7,7 @@ import '../imports/import_file.dart';
 import '../imports/import_job.dart';
 import '../imports/import_upload_controller.dart';
 import '../imports/import_workspace_screen.dart';
+import '../imports/import_review_controller.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
   const PersonaWorkspaceScreen(
@@ -14,6 +15,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       this.importControllerFactory,
       this.importFileSource,
       this.importUploadControllerFactory,
+      this.importReviewControllerFactory,
       super.key});
 
   final PersonaController controller;
@@ -21,6 +23,8 @@ class PersonaWorkspaceScreen extends StatefulWidget {
   final ImportFileSource? importFileSource;
   final ImportUploadController Function(Persona persona, ImportJob? job)?
       importUploadControllerFactory;
+  final ImportReviewController Function(Persona persona, ImportJob job)?
+      importReviewControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -57,6 +61,10 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
             ? null
             : (ImportJob? job) =>
                 widget.importUploadControllerFactory!(persona, job),
+        reviewControllerFactory: widget.importReviewControllerFactory == null
+            ? null
+            : (ImportJob job) =>
+                widget.importReviewControllerFactory!(persona, job),
       ),
     ));
   }
