@@ -8,8 +8,7 @@ import 'package:past_partner/core/network/api_client.dart';
 import 'package:past_partner/core/session/session.dart';
 
 void main() {
-  final ApiEndpoint endpoint =
-      ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+  final ApiEndpoint endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
   final Session session = Session(
     accessToken: 'token',
     ownerId: 'owner',
@@ -103,6 +102,54 @@ void main() {
     expect(requests[1].url.path, '/api/v1/imports/import-1/complete');
     expect(jsonDecode(requests[1].body), <String, dynamic>{
       'sha256': 'whole-digest',
+    });
+  });
+
+  test('reads and saves import review data through the bounded routes',
+      () async {
+    final List<http.Request> requests = <http.Request>[];
+    final ApiClient client = ApiClient(
+      client: MockClient((http.Request request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/preview')) {
+          return http.Response(
+              jsonEncode(<String, dynamic>{
+                'import_id': 'import-1',
+                'state': 'uploaded',
+              }),
+              200);
+        }
+        if (request.method == 'GET') {
+          return http.Response(
+              jsonEncode(<String, dynamic>{
+                'mapping': <String, String>{'wx-a': 'persona'},
+              }),
+              200);
+        }
+        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+      }),
+    );
+
+    await client.getImportPreview(endpoint, session, 'import-1', limit: 999);
+    await client.getParticipantMapping(endpoint, session, 'import-1');
+    await client.saveParticipantMapping(
+        endpoint, session, 'import-1', <String, String>{'wx-a': 'user'});
+    await client.saveImportCorrections(
+        endpoint, session, 'import-1', <Map<String, dynamic>>[
+      <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
+    ]);
+
+    expect(requests[0].url.queryParameters['limit'], '100');
+    expect(requests[0].url.path, '/api/v1/imports/import-1/preview');
+    expect(
+        requests[1].url.path, '/api/v1/imports/import-1/participant-mapping');
+    expect(jsonDecode(requests[2].body), <String, dynamic>{
+      'mapping': <String, String>{'wx-a': 'user'},
+    });
+    expect(jsonDecode(requests[3].body), <String, dynamic>{
+      'corrections': <Map<String, dynamic>>[
+        <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
+      ],
     });
   });
 }

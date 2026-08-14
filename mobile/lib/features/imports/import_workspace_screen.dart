@@ -5,6 +5,8 @@ import 'import_controller.dart';
 import 'import_file.dart';
 import 'import_job.dart';
 import 'import_upload_controller.dart';
+import 'import_review_controller.dart';
+import 'import_review_screen.dart';
 
 class ImportWorkspaceScreen extends StatefulWidget {
   const ImportWorkspaceScreen(
@@ -12,12 +14,15 @@ class ImportWorkspaceScreen extends StatefulWidget {
       required this.controller,
       this.fileSource,
       this.uploadControllerFactory,
+      this.reviewControllerFactory,
       super.key});
 
   final Persona persona;
   final ImportController controller;
   final ImportFileSource? fileSource;
-  final ImportUploadController Function(ImportJob? job)? uploadControllerFactory;
+  final ImportUploadController Function(ImportJob? job)?
+      uploadControllerFactory;
+  final ImportReviewController Function(ImportJob job)? reviewControllerFactory;
 
   @override
   State<ImportWorkspaceScreen> createState() => _ImportWorkspaceScreenState();
@@ -66,14 +71,14 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
           if (!mounted) return;
           await widget.controller.load();
           if (!mounted || uploader.cleanupError == null) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(uploader.cleanupError!)));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(uploader.cleanupError!)));
           return;
         }
         if (uploader.errorMessage != null && !uploader.resumeUnavailable) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(uploader.errorMessage!)));
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(uploader.errorMessage!)));
           }
           return;
         }
@@ -85,11 +90,11 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
       await widget.controller.load();
       if (!mounted) return;
       if (uploader.errorMessage != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(uploader.errorMessage!)));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(uploader.errorMessage!)));
       } else if (uploader.cleanupError != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(uploader.cleanupError!)));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(uploader.cleanupError!)));
       }
     } on ImportFileError catch (error) {
       if (mounted) {
@@ -146,21 +151,8 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
                               ...widget.controller.jobs.map((ImportJob job) =>
                                   _ImportCard(
                                       job: job,
-                                      actionLabel: job.state ==
-                                                  ImportState.uploading ||
-                                              job.state == ImportState.created ||
-                                              job.state == ImportState.failed
-                                          ? '继续上传'
-                                          : null,
-                                      onTap: widget.fileSource == null ||
-                                              widget.uploadControllerFactory ==
-                                                  null ||
-                                              job.state == ImportState.uploaded ||
-                                              job.state == ImportState.completed
-                                          ? null
-                                          : () => _pickAndUpload(
-                                              widget.fileSource!,
-                                              existingJob: job))),
+                                      actionLabel: _actionLabel(job),
+                                      onTap: _actionFor(job))),
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: saving ? null : _openCreateForm,
@@ -183,6 +175,40 @@ class _ImportWorkspaceScreenState extends State<ImportWorkspaceScreen> {
         );
       },
     );
+  }
+
+  String? _actionLabel(ImportJob job) {
+    if (job.state == ImportState.uploaded ||
+        job.state == ImportState.completed) {
+      return widget.reviewControllerFactory == null ? null : '查看审核';
+    }
+    return job.state == ImportState.uploading ||
+            job.state == ImportState.created ||
+            job.state == ImportState.failed
+        ? '继续上传'
+        : null;
+  }
+
+  VoidCallback? _actionFor(ImportJob job) {
+    if (job.state == ImportState.uploaded ||
+        job.state == ImportState.completed) {
+      final ImportReviewController Function(ImportJob job)? factory =
+          widget.reviewControllerFactory;
+      if (factory == null) return null;
+      return () => Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (BuildContext context) =>
+                ImportReviewScreen(controller: factory(job)),
+          ));
+    }
+    if (widget.fileSource == null || widget.uploadControllerFactory == null) {
+      return null;
+    }
+    if (job.state == ImportState.uploading ||
+        job.state == ImportState.created ||
+        job.state == ImportState.failed) {
+      return () => _pickAndUpload(widget.fileSource!, existingJob: job);
+    }
+    return null;
   }
 }
 
@@ -229,8 +255,11 @@ class _EmptyImports extends StatelessWidget {
           onPressed: hasError ? onRetry : onCreate,
           icon: Icon(
               hasError ? Icons.refresh_rounded : Icons.upload_file_rounded),
-          label: Text(
-              hasError ? '重试加载' : canPickFiles ? '选择文件并上传' : '创建导入任务'),
+          label: Text(hasError
+              ? '重试加载'
+              : canPickFiles
+                  ? '选择文件并上传'
+                  : '创建导入任务'),
         ),
       ],
     );
@@ -253,8 +282,8 @@ class _ImportCard extends StatelessWidget {
         leading: CircleAvatar(child: Icon(_iconFor(job.mediaType))),
         title: Text(job.sourceName,
             style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle: Text(
-            '${job.state.label} · ${job.progressLabel}\n${job.mediaType}'),
+        subtitle:
+            Text('${job.state.label} · ${job.progressLabel}\n${job.mediaType}'),
         isThreeLine: true,
         onTap: onTap,
         trailing: onTap != null

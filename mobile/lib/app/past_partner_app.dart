@@ -9,6 +9,8 @@ import '../features/imports/import_file.dart';
 import '../features/imports/import_gateway.dart';
 import '../features/imports/import_upload_controller.dart';
 import '../features/imports/import_resume.dart';
+import '../features/imports/import_review_controller.dart';
+import '../features/imports/import_review_gateway.dart';
 import '../core/session/session_controller.dart';
 
 class PastPartnerApp extends StatefulWidget {
@@ -65,10 +67,19 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       resumeStore: SecureImportResumeStore(),
                       createImport: (draft) =>
                           ApiClientImportGateway(snapshot.client).create(
-                            endpoint: snapshot.endpoint!,
-                            session: snapshot.session!,
-                            draft: draft,
-                          ),
+                        endpoint: snapshot.endpoint!,
+                        session: snapshot.session!,
+                        draft: draft,
+                      ),
+                    );
+                  },
+                  importReviewControllerFactory: (persona, job) {
+                    final SessionController snapshot = widget.sessionController;
+                    return ImportReviewController(
+                      endpoint: snapshot.endpoint!,
+                      session: snapshot.session!,
+                      importId: job.id,
+                      gateway: ApiClientImportReviewGateway(snapshot.client),
                     );
                   },
                 )

@@ -11,6 +11,9 @@ import 'package:past_partner/features/imports/import_gateway.dart';
 import 'package:past_partner/features/imports/import_job.dart';
 import 'package:past_partner/features/imports/import_workspace_screen.dart';
 import 'package:past_partner/features/imports/import_upload_controller.dart';
+import 'package:past_partner/features/imports/import_review.dart';
+import 'package:past_partner/features/imports/import_review_controller.dart';
+import 'package:past_partner/features/imports/import_review_gateway.dart';
 import 'package:past_partner/features/persona/persona.dart';
 
 class _Store implements SessionStore {
@@ -159,6 +162,96 @@ void main() {
     expect(find.text('选择文件并上传'), findsOneWidget);
     expect(find.textContaining('选择微信、QQ'), findsOneWidget);
   });
+
+  testWidgets('opens review screen for an uploaded import',
+      (WidgetTester tester) async {
+    final _Gateway gateway = _Gateway()
+      ..jobs.add(ImportJob(
+        id: 'import-uploaded',
+        personaId: persona.id,
+        sourceName: 'wechat.txt',
+        mediaType: 'text/plain',
+        totalBytes: 10,
+        receivedBytes: 10,
+        chunkCount: 1,
+        state: ImportState.uploaded,
+        createdAt: '2026-08-13T00:00:00Z',
+        updatedAt: '2026-08-13T00:01:00Z',
+      ));
+    final SessionController sessions = SessionController(_Store(), ApiClient())
+      ..session = Session(
+          accessToken: 'token', ownerId: 'owner', expiresAt: DateTime.utc(2099))
+      ..endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+    final ImportReviewController reviewController = ImportReviewController(
+      endpoint: sessions.endpoint!,
+      session: sessions.session!,
+      importId: 'import-uploaded',
+      gateway: _ReviewGateway(),
+    );
+    await tester.pumpWidget(MaterialApp(
+      home: ImportWorkspaceScreen(
+        persona: persona,
+        controller: controller(gateway),
+        reviewControllerFactory: (_) => reviewController,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('查看审核'), findsOneWidget);
+    await tester.tap(find.text('wechat.txt'));
+    await tester.pumpAndSettle();
+    expect(find.text('导入审核'), findsOneWidget);
+  });
+}
+
+class _ReviewGateway implements ImportReviewGateway {
+  @override
+  Future<ImportPreview> preview({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    int limit = 20,
+  }) async =>
+      ImportPreview.fromJson(<String, dynamic>{
+        'import_id': importId,
+        'state': 'uploaded',
+        'source_name': 'wechat.txt',
+        'media_type': 'text/plain',
+        'source_type': 'wechat',
+        'summary': <String, dynamic>{
+          'record_count': 0,
+          'warning_count': 0,
+          'confidence': 1,
+          'truncated': false,
+        },
+        'warnings': <dynamic>[],
+        'records': <dynamic>[],
+        'file_summaries': <dynamic>[],
+      });
+
+  @override
+  Future<Map<String, String>> mapping({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+  }) async =>
+      <String, String>{};
+
+  @override
+  Future<void> saveMapping({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required Map<String, String> mapping,
+  }) async {}
+
+  @override
+  Future<void> saveCorrections({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String importId,
+    required List<ImportCorrection> corrections,
+  }) async {}
 }
 
 class _UploadGateway implements ImportUploadGateway {
@@ -168,7 +261,8 @@ class _UploadGateway implements ImportUploadGateway {
     required Session session,
     required String importId,
     String? wholeSha256,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
 
   @override
   Future<Map<String, dynamic>> missingChunks({
@@ -176,7 +270,8 @@ class _UploadGateway implements ImportUploadGateway {
     required Session session,
     required String importId,
     required int expectedChunks,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
 
   @override
   Future<Map<String, dynamic>> putChunk({
@@ -186,5 +281,6 @@ class _UploadGateway implements ImportUploadGateway {
     required int index,
     required List<int> bytes,
     required String sha256,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
 }

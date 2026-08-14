@@ -120,8 +120,9 @@ class ApiClient {
   }) async {
     final http.Response response = await _send(
       'GET',
-      endpoint.path('/api/v1/imports/$importId/missing-chunks').replace(
-          queryParameters: <String, String>{
+      endpoint
+          .path('/api/v1/imports/$importId/missing-chunks')
+          .replace(queryParameters: <String, String>{
         'expected_chunks': '$expectedChunks',
       }),
       <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
@@ -170,6 +171,69 @@ class ApiClient {
     );
     if (response.statusCode != 200) throw _failure(response);
     return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> getImportPreview(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId, {
+    int limit = 20,
+  }) async {
+    final int boundedLimit = limit.clamp(1, 100);
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/imports/$importId/preview').replace(
+        queryParameters: <String, String>{'limit': '$boundedLimit'},
+      ),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> getParticipantMapping(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId,
+  ) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/imports/$importId/participant-mapping'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> saveParticipantMapping(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId,
+    Map<String, String> mapping,
+  ) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/imports/$importId/participant-mapping'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      <String, dynamic>{'mapping': mapping},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<void> saveImportCorrections(
+    ApiEndpoint endpoint,
+    Session session,
+    String importId,
+    List<Map<String, dynamic>> corrections,
+  ) async {
+    final http.Response response = await _sendJson(
+      'POST',
+      endpoint.path('/api/v1/imports/$importId/corrections'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+      <String, dynamic>{'corrections': corrections},
+    );
+    if (response.statusCode != 200) throw _failure(response);
   }
 
   Future<http.Response> _send(
