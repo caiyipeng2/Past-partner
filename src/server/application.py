@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
 
 from src.domain.personas import PersonaValidationError
+from src.services.conversation_repository import ConversationRepository
+from src.services.conversation_service import ConversationService
 from src.providers.base import ChatMessage, ChatRequest
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_provider_adapters
@@ -52,6 +54,7 @@ class Application:
         gateway: ProviderGateway,
         auth: LocalAuthService,
         training: FineTuningService,
+        conversations: ConversationService,
     ):
         self.personas = personas
         self.imports = imports
@@ -63,6 +66,7 @@ class Application:
         self.gateway = gateway
         self.auth = auth
         self.training = training
+        self.conversations = conversations
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -122,6 +126,11 @@ class Application:
             gateway,
             personas,
         )
+        conversations = ConversationService(
+            ConversationRepository(storage.database_path(), encryption),
+            personas,
+            gateway,
+        )
         return cls(
             personas,
             imports,
@@ -133,6 +142,7 @@ class Application:
             gateway,
             auth,
             training,
+            conversations,
         )
 
     def issue_session(
@@ -194,12 +204,14 @@ class Application:
             training_cleanup = self.training.delete_for_persona(owner_id, persona_id)
             deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
             deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
+            deleted_conversations = self.conversations.delete_for_persona(owner_id, persona_id)
             self.personas.delete(owner_id, persona_id)
             return {
                 "persona_id": persona_id,
                 "deleted": True,
                 "deleted_imports": deleted_imports,
                 "deleted_consents": deleted_consents,
+                "deleted_conversations": deleted_conversations,
                 **training_cleanup,
             }
 
@@ -222,6 +234,7 @@ class Application:
             "imports": imports,
             "consents": [consent.to_dict() for consent in self.consents.list(owner_id)],
             "training_jobs": [job.to_dict() for job in self.training.list(owner_id)],
+            "conversations": [conversation.to_dict() for conversation in self.conversations.list(owner_id)],
         }
 
     def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -433,6 +446,40 @@ class Application:
 
     def cancel_training_job(self, owner_id: str, job_id: str) -> dict[str, Any]:
         return self.training.cancel(owner_id, job_id).to_dict()
+
+    def create_conversation(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            conversation = self.conversations.create(
+                owner_id,
+                _required_text(payload["persona_id"], "persona_id"),
+                _required_text(payload["provider_id"], "provider_id"),
+                _required_text(payload["model_id"], "model_id"),
+            )
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+        return conversation.to_dict()
+
+    def list_conversations(self, owner_id: str, persona_id: str | None = None) -> dict[str, Any]:
+        return {
+            "conversations": [
+                conversation.summary() for conversation in self.conversations.list(owner_id, persona_id)
+            ]
+        }
+
+    def get_conversation(self, owner_id: str, conversation_id: str) -> dict[str, Any]:
+        return self.conversations.get(owner_id, conversation_id).to_dict()
+
+    def send_conversation_message(
+        self,
+        owner_id: str,
+        conversation_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            content = payload["content"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing content") from exc
+        return self.conversations.send(owner_id, conversation_id, content).to_dict()
 
     def chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
