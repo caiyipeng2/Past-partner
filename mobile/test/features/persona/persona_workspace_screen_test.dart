@@ -13,6 +13,10 @@ import 'package:past_partner/features/imports/import_controller.dart';
 import 'package:past_partner/features/imports/import_gateway.dart';
 import 'package:past_partner/features/imports/import_job.dart';
 import 'package:past_partner/features/imports/import_workspace_screen.dart';
+import 'package:past_partner/features/consents/consent.dart';
+import 'package:past_partner/features/consents/consent_controller.dart';
+import 'package:past_partner/features/consents/consent_gateway.dart';
+import 'package:past_partner/features/consents/consent_screen.dart';
 
 class _FakeStore implements SessionStore {
   @override
@@ -109,6 +113,43 @@ void main() {
     expect(find.byType(ImportWorkspaceScreen), findsOneWidget);
     expect(find.text('小雅的导入'), findsOneWidget);
   });
+
+  testWidgets('persona card exposes a scoped consent entry',
+      (WidgetTester tester) async {
+    final SessionController sessionController =
+        SessionController(_FakeStore(), ApiClient())
+          ..session = Session(
+              accessToken: 'token',
+              ownerId: 'owner',
+              expiresAt: DateTime.utc(2099))
+          ..endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+    final PersonaController personaController = PersonaController(
+      sessionController,
+      gateway: _FakeGateway()
+        ..records.add(const Persona(
+            id: 'persona-1',
+            displayName: '小雅',
+            relationshipType: PersonaRelationship.friend)),
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: PersonaWorkspaceScreen(
+        controller: personaController,
+        consentControllerFactory: (Persona persona) => ConsentController(
+          endpoint: sessionController.endpoint!,
+          session: sessionController.session!,
+          personaId: persona.id,
+          gateway: _EmptyConsentGateway(),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('consent-open-persona-1')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ConsentScreen), findsOneWidget);
+    expect(find.text('授权管理'), findsOneWidget);
+  });
 }
 
 class _EmptyImportGateway implements ImportGateway {
@@ -125,6 +166,32 @@ class _EmptyImportGateway implements ImportGateway {
     required ApiEndpoint endpoint,
     required Session session,
     required ImportDraft draft,
+  }) async =>
+      throw UnimplementedError();
+}
+
+class _EmptyConsentGateway implements ConsentGateway {
+  @override
+  Future<List<Consent>> list({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String personaId,
+  }) async =>
+      <Consent>[];
+
+  @override
+  Future<Consent> create({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required ConsentDraft draft,
+  }) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<Consent> revoke({
+    required ApiEndpoint endpoint,
+    required Session session,
+    required String consentId,
   }) async =>
       throw UnimplementedError();
 }
