@@ -13,28 +13,37 @@ import '../models/model_option.dart';
 import '../models/model_selection_screen.dart';
 import '../consents/consent_controller.dart';
 import '../consents/consent_screen.dart';
+import '../chat/chat_controller.dart';
+import '../chat/chat_screen.dart';
+import '../appearance/appearance_controller.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
-  const PersonaWorkspaceScreen(
-      {required this.controller,
-      this.importControllerFactory,
-      this.importFileSource,
-      this.importUploadControllerFactory,
-      this.importReviewControllerFactory,
-      this.modelSelectionControllerFactory,
-      this.consentControllerFactory,
-      super.key});
+  const PersonaWorkspaceScreen({
+    required this.controller,
+    this.importControllerFactory,
+    this.importFileSource,
+    this.importUploadControllerFactory,
+    this.importReviewControllerFactory,
+    this.modelSelectionControllerFactory,
+    this.consentControllerFactory,
+    this.chatControllerFactory,
+    this.appearanceController,
+    super.key,
+  });
 
   final PersonaController controller;
   final ImportController Function(Persona persona)? importControllerFactory;
   final ImportFileSource? importFileSource;
   final ImportUploadController Function(Persona persona, ImportJob? job)?
-      importUploadControllerFactory;
+  importUploadControllerFactory;
   final ImportReviewController Function(Persona persona, ImportJob job)?
-      importReviewControllerFactory;
+  importReviewControllerFactory;
   final ModelSelectionController Function(ModelOption? selected)?
-      modelSelectionControllerFactory;
+  modelSelectionControllerFactory;
   final ConsentController Function(Persona persona)? consentControllerFactory;
+  final ChatController? Function(Persona persona, ModelOption? selected)?
+  chatControllerFactory;
+  final AppearanceController? appearanceController;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -63,21 +72,23 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
     final ImportController Function(Persona persona)? factory =
         widget.importControllerFactory;
     if (factory == null) return;
-    Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (BuildContext context) => ImportWorkspaceScreen(
-        persona: persona,
-        controller: factory(persona),
-        fileSource: widget.importFileSource,
-        uploadControllerFactory: widget.importUploadControllerFactory == null
-            ? null
-            : (ImportJob? job) =>
-                widget.importUploadControllerFactory!(persona, job),
-        reviewControllerFactory: widget.importReviewControllerFactory == null
-            ? null
-            : (ImportJob job) =>
-                widget.importReviewControllerFactory!(persona, job),
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => ImportWorkspaceScreen(
+          persona: persona,
+          controller: factory(persona),
+          fileSource: widget.importFileSource,
+          uploadControllerFactory: widget.importUploadControllerFactory == null
+              ? null
+              : (ImportJob? job) =>
+                    widget.importUploadControllerFactory!(persona, job),
+          reviewControllerFactory: widget.importReviewControllerFactory == null
+              ? null
+              : (ImportJob job) =>
+                    widget.importReviewControllerFactory!(persona, job),
+        ),
       ),
-    ));
+    );
   }
 
   Future<void> _openModelSelection() async {
@@ -99,13 +110,40 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
     final ConsentController Function(Persona persona)? factory =
         widget.consentControllerFactory;
     if (factory == null) return;
-    Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (BuildContext context) => ConsentScreen(
-        personaName: persona.displayName,
-        controller: factory(persona),
-        selectedModel: _selectedModel,
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => ConsentScreen(
+          personaName: persona.displayName,
+          controller: factory(persona),
+          selectedModel: _selectedModel,
+        ),
       ),
-    ));
+    );
+  }
+
+  void _openChat(Persona persona) {
+    final ChatController? Function(Persona persona, ModelOption? selected)?
+    factory = widget.chatControllerFactory;
+    if (factory == null) return;
+    if (_selectedModel == null || widget.appearanceController == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先选择模型，再开始对话。')));
+      return;
+    }
+    final ChatController? chat = factory(persona, _selectedModel);
+    if (chat == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => ChatScreen(
+          personaName: persona.displayName,
+          modelLabel:
+              '${_selectedModel!.providerName} · ${_selectedModel!.displayName}',
+          controller: chat,
+          appearanceController: widget.appearanceController!,
+        ),
+      ),
+    );
   }
 
   @override
@@ -146,48 +184,64 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
                         : ListView(
                             padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
                             children: <Widget>[
-                              const Text('选择一个人物开始准备专属对话',
-                                  style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600)),
+                              const Text(
+                                '选择一个人物开始准备专属对话',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                               const SizedBox(height: 4),
-                              Text('人物身份会用于后续导入和对话设置。',
-                                  style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant)),
+                              Text(
+                                '人物身份会用于后续导入和对话设置。',
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
                               const SizedBox(height: 16),
                               if (_selectedModel != null) ...<Widget>[
                                 ListTile(
                                   contentPadding: EdgeInsets.zero,
-                                  leading:
-                                      const Icon(Icons.auto_awesome_rounded),
+                                  leading: const Icon(
+                                    Icons.auto_awesome_rounded,
+                                  ),
                                   title: const Text('当前模型'),
                                   subtitle: Text(
-                                      '${_selectedModel!.providerName} · ${_selectedModel!.displayName}'),
-                                  trailing:
-                                      const Icon(Icons.chevron_right_rounded),
+                                    '${_selectedModel!.providerName} · ${_selectedModel!.displayName}',
+                                  ),
+                                  trailing: const Icon(
+                                    Icons.chevron_right_rounded,
+                                  ),
                                   onTap: _openModelSelection,
                                 ),
                                 const SizedBox(height: 8),
                               ],
                               ...widget.controller.personas.map(
-                                  (Persona persona) => _PersonaCard(
-                                      persona: persona,
-                                      onTap:
-                                          widget.importControllerFactory == null
-                                              ? null
-                                              : () => _openImports(persona),
-                                      onConsent:
-                                          widget.consentControllerFactory ==
-                                                  null
-                                              ? null
-                                              : () => _openConsents(persona))),
+                                (Persona persona) => _PersonaCard(
+                                  persona: persona,
+                                  onTap: widget.chatControllerFactory != null
+                                      ? () => _openChat(persona)
+                                      : widget.importControllerFactory == null
+                                      ? null
+                                      : () => _openImports(persona),
+                                  onImport:
+                                      widget.importControllerFactory == null
+                                      ? null
+                                      : () => _openImports(persona),
+                                  onConsent:
+                                      widget.consentControllerFactory == null
+                                      ? null
+                                      : () => _openConsents(persona),
+                                ),
+                              ),
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: saving ? null : _openCreateForm,
-                                icon:
-                                    const Icon(Icons.person_add_alt_1_rounded),
+                                icon: const Icon(
+                                  Icons.person_add_alt_1_rounded,
+                                ),
                                 label: const Text('创建另一个人物'),
                               ),
                             ],
@@ -208,10 +262,11 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
 }
 
 class _EmptyPersonaState extends StatelessWidget {
-  const _EmptyPersonaState(
-      {required this.errorMessage,
-      required this.onCreate,
-      required this.onRetry});
+  const _EmptyPersonaState({
+    required this.errorMessage,
+    required this.onCreate,
+    required this.onRetry,
+  });
 
   final String? errorMessage;
   final VoidCallback onCreate;
@@ -225,26 +280,32 @@ class _EmptyPersonaState extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       children: <Widget>[
         const SizedBox(height: 64),
-        Icon(hasError ? Icons.cloud_off_rounded : Icons.people_alt_outlined,
-            size: 56, color: Theme.of(context).colorScheme.primary),
+        Icon(
+          hasError ? Icons.cloud_off_rounded : Icons.people_alt_outlined,
+          size: 56,
+          color: Theme.of(context).colorScheme.primary,
+        ),
         const SizedBox(height: 16),
-        Text(hasError ? '人物列表暂时不可用' : '还没有人物',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+        Text(
+          hasError ? '人物列表暂时不可用' : '还没有人物',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+        ),
         const SizedBox(height: 8),
         Text(
           hasError ? errorMessage! : '先创建一个人物，再为 TA 导入聊天资料和设置身份。',
           textAlign: TextAlign.center,
           style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              height: 1.4),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            height: 1.4,
+          ),
         ),
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: hasError ? onRetry : onCreate,
-          icon: Icon(hasError
-              ? Icons.refresh_rounded
-              : Icons.person_add_alt_1_rounded),
+          icon: Icon(
+            hasError ? Icons.refresh_rounded : Icons.person_add_alt_1_rounded,
+          ),
           label: Text(hasError ? '重试加载' : '创建人物'),
         ),
       ],
@@ -253,10 +314,16 @@ class _EmptyPersonaState extends StatelessWidget {
 }
 
 class _PersonaCard extends StatelessWidget {
-  const _PersonaCard({required this.persona, this.onTap, this.onConsent});
+  const _PersonaCard({
+    required this.persona,
+    this.onTap,
+    this.onImport,
+    this.onConsent,
+  });
 
   final Persona persona;
   final VoidCallback? onTap;
+  final VoidCallback? onImport;
   final VoidCallback? onConsent;
 
   @override
@@ -266,8 +333,10 @@ class _PersonaCard extends StatelessWidget {
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: CircleAvatar(child: Text(persona.displayName.substring(0, 1))),
-        title: Text(persona.displayName,
-            style: const TextStyle(fontWeight: FontWeight.w700)),
+        title: Text(
+          persona.displayName,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
         subtitle: Text(persona.relationshipLabel),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -278,6 +347,13 @@ class _PersonaCard extends StatelessWidget {
                 tooltip: '管理授权',
                 onPressed: onConsent,
                 icon: const Icon(Icons.shield_outlined),
+              ),
+            if (onImport != null)
+              IconButton(
+                key: Key('import-open-${persona.id}'),
+                tooltip: '管理导入',
+                onPressed: onImport,
+                icon: const Icon(Icons.folder_open_outlined),
               ),
             const Icon(Icons.chevron_right_rounded),
           ],
@@ -328,10 +404,11 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 12,
-          bottom: MediaQuery.viewInsetsOf(context).bottom + 20),
+        left: 20,
+        right: 20,
+        top: 12,
+        bottom: MediaQuery.viewInsetsOf(context).bottom + 20,
+      ),
       child: Form(
         key: _formKey,
         child: SingleChildScrollView(
@@ -339,19 +416,27 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Center(
-                  child: Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.outlineVariant,
-                          borderRadius: BorderRadius.circular(2)))),
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
               const SizedBox(height: 16),
-              const Text('创建人物',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+              const Text(
+                '创建人物',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+              ),
               const SizedBox(height: 4),
-              Text('先选择身份设定，后续导入时可以继续调整。',
-                  style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              Text(
+                '先选择身份设定，后续导入时可以继续调整。',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
               const SizedBox(height: 20),
               TextFormField(
                 key: const Key('persona-display-name'),
@@ -359,9 +444,10 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
                 autofocus: true,
                 textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(
-                    labelText: '人物名称',
-                    hintText: '例如：妈妈、小雅',
-                    border: OutlineInputBorder()),
+                  labelText: '人物名称',
+                  hintText: '例如：妈妈、小雅',
+                  border: OutlineInputBorder(),
+                ),
                 validator: (String? value) =>
                     value == null || value.trim().isEmpty ? '请输入人物名称' : null,
               ),
@@ -371,8 +457,9 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: PersonaRelationship.values
-                    .map((PersonaRelationship relationship) {
+                children: PersonaRelationship.values.map((
+                  PersonaRelationship relationship,
+                ) {
                   return ChoiceChip(
                     label: Text(relationship.label),
                     selected: relationship == _relationship,
@@ -386,14 +473,15 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
                 TextFormField(
                   controller: _customLabelController,
                   decoration: const InputDecoration(
-                      labelText: '自定义关系',
-                      hintText: '例如：旧友、老师',
-                      border: OutlineInputBorder()),
+                    labelText: '自定义关系',
+                    hintText: '例如：旧友、老师',
+                    border: OutlineInputBorder(),
+                  ),
                   validator: (String? value) =>
                       _relationship == PersonaRelationship.custom &&
-                              (value == null || value.trim().isEmpty)
-                          ? '请输入自定义关系'
-                          : null,
+                          (value == null || value.trim().isEmpty)
+                      ? '请输入自定义关系'
+                      : null,
                 ),
               ],
               const SizedBox(height: 16),
@@ -401,17 +489,19 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
                 controller: _descriptionController,
                 maxLines: 3,
                 decoration: const InputDecoration(
-                    labelText: '关系描述（可选）',
-                    hintText: '记录称呼、语气或相处特点',
-                    border: OutlineInputBorder()),
+                  labelText: '关系描述（可选）',
+                  hintText: '记录称呼、语气或相处特点',
+                  border: OutlineInputBorder(),
+                ),
               ),
               const SizedBox(height: 20),
               SizedBox(
                 height: 48,
                 child: FilledButton.icon(
-                    onPressed: _submit,
-                    icon: const Icon(Icons.check_rounded),
-                    label: const Text('保存人物')),
+                  onPressed: _submit,
+                  icon: const Icon(Icons.check_rounded),
+                  label: const Text('保存人物'),
+                ),
               ),
             ],
           ),

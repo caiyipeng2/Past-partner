@@ -42,8 +42,9 @@ class Migration:
 # those jobs so concurrent HTTP requests cannot overwrite durable lifecycle state.
 # Version 8 distinguishes loopback sessions from development device-pairing sessions
 # and stores only the configured device-token fingerprint for rotation revocation.
-# Business repositories add their own tables in later migrations so startup remains
-# transactional and history is auditable.
+# Version 9 adds encrypted owner/persona-scoped conversation envelopes. Message text
+# never appears in SQLite columns; the persona index is only used for safe filtering
+# and cascade deletion.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -147,6 +148,22 @@ DEFAULT_MIGRATIONS = (
         statements=(
             "ALTER TABLE local_sessions ADD COLUMN session_origin TEXT NOT NULL DEFAULT 'loopback' CHECK (session_origin IN ('loopback', 'device'))",
             "ALTER TABLE local_sessions ADD COLUMN pairing_token_fingerprint BLOB CHECK (pairing_token_fingerprint IS NULL OR length(pairing_token_fingerprint) = 32)",
+        ),
+    ),
+    Migration(
+        version=9,
+        name="conversation_repository",
+        statements=(
+            """
+            CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "CREATE INDEX conversations_owner_persona_idx ON conversations(owner_id, persona_id)",
         ),
     ),
 )

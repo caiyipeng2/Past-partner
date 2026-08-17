@@ -68,10 +68,7 @@ void main() {
           );
         }
         return http.Response(
-          jsonEncode(<String, dynamic>{
-            'id': 'import-1',
-            'state': 'uploaded',
-          }),
+          jsonEncode(<String, dynamic>{'id': 'import-1', 'state': 'uploaded'}),
           200,
         );
       }),
@@ -105,53 +102,67 @@ void main() {
     });
   });
 
-  test('reads and saves import review data through the bounded routes',
-      () async {
-    final List<http.Request> requests = <http.Request>[];
-    final ApiClient client = ApiClient(
-      client: MockClient((http.Request request) async {
-        requests.add(request);
-        if (request.url.path.endsWith('/preview')) {
-          return http.Response(
+  test(
+    'reads and saves import review data through the bounded routes',
+    () async {
+      final List<http.Request> requests = <http.Request>[];
+      final ApiClient client = ApiClient(
+        client: MockClient((http.Request request) async {
+          requests.add(request);
+          if (request.url.path.endsWith('/preview')) {
+            return http.Response(
               jsonEncode(<String, dynamic>{
                 'import_id': 'import-1',
                 'state': 'uploaded',
               }),
-              200);
-        }
-        if (request.method == 'GET') {
-          return http.Response(
+              200,
+            );
+          }
+          if (request.method == 'GET') {
+            return http.Response(
               jsonEncode(<String, dynamic>{
                 'mapping': <String, String>{'wx-a': 'persona'},
               }),
-              200);
-        }
-        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
-      }),
-    );
+              200,
+            );
+          }
+          return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+        }),
+      );
 
-    await client.getImportPreview(endpoint, session, 'import-1', limit: 999);
-    await client.getParticipantMapping(endpoint, session, 'import-1');
-    await client.saveParticipantMapping(
-        endpoint, session, 'import-1', <String, String>{'wx-a': 'user'});
-    await client.saveImportCorrections(
-        endpoint, session, 'import-1', <Map<String, dynamic>>[
-      <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
-    ]);
+      await client.getImportPreview(endpoint, session, 'import-1', limit: 999);
+      await client.getParticipantMapping(endpoint, session, 'import-1');
+      await client.saveParticipantMapping(
+        endpoint,
+        session,
+        'import-1',
+        <String, String>{'wx-a': 'user'},
+      );
+      await client.saveImportCorrections(
+        endpoint,
+        session,
+        'import-1',
+        <Map<String, dynamic>>[
+          <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
+        ],
+      );
 
-    expect(requests[0].url.queryParameters['limit'], '100');
-    expect(requests[0].url.path, '/api/v1/imports/import-1/preview');
-    expect(
-        requests[1].url.path, '/api/v1/imports/import-1/participant-mapping');
-    expect(jsonDecode(requests[2].body), <String, dynamic>{
-      'mapping': <String, String>{'wx-a': 'user'},
-    });
-    expect(jsonDecode(requests[3].body), <String, dynamic>{
-      'corrections': <Map<String, dynamic>>[
-        <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
-      ],
-    });
-  });
+      expect(requests[0].url.queryParameters['limit'], '100');
+      expect(requests[0].url.path, '/api/v1/imports/import-1/preview');
+      expect(
+        requests[1].url.path,
+        '/api/v1/imports/import-1/participant-mapping',
+      );
+      expect(jsonDecode(requests[2].body), <String, dynamic>{
+        'mapping': <String, String>{'wx-a': 'user'},
+      });
+      expect(jsonDecode(requests[3].body), <String, dynamic>{
+        'corrections': <Map<String, dynamic>>[
+          <String, dynamic>{'record_id': 'a' * 64, 'review_state': 'accepted'},
+        ],
+      });
+    },
+  );
 
   test('lists, creates, and revokes owner-scoped consent records', () async {
     final List<http.Request> requests = <http.Request>[];
@@ -161,47 +172,51 @@ void main() {
           requests.add(request);
           if (request.method == 'GET') {
             return http.Response.bytes(
-              utf8.encode(jsonEncode(<String, dynamic>{
-                'consents': <Map<String, dynamic>>[
-                  <String, dynamic>{
-                    'id': 'consent-1',
-                    'persona_id': 'persona-1',
-                    'provider_id': 'deepseek',
-                    'model_id': 'deepseek-v4-flash',
-                    'data_category': 'image',
-                    'estimated_cost': 0.12,
-                    'purpose': '图片理解',
-                    'authorization_scope': 'persona-image-analysis',
-                    'created_at': '2026-08-14T00:00:00+00:00',
-                    'status': 'active',
-                  },
-                ],
-              })),
+              utf8.encode(
+                jsonEncode(<String, dynamic>{
+                  'consents': <Map<String, dynamic>>[
+                    <String, dynamic>{
+                      'id': 'consent-1',
+                      'persona_id': 'persona-1',
+                      'provider_id': 'deepseek',
+                      'model_id': 'deepseek-v4-flash',
+                      'data_category': 'image',
+                      'estimated_cost': 0.12,
+                      'purpose': '图片理解',
+                      'authorization_scope': 'persona-image-analysis',
+                      'created_at': '2026-08-14T00:00:00+00:00',
+                      'status': 'active',
+                    },
+                  ],
+                }),
+              ),
               200,
               headers: <String, String>{
-                'content-type': 'application/json; charset=utf-8'
+                'content-type': 'application/json; charset=utf-8',
               },
             );
           }
           return http.Response.bytes(
-            utf8.encode(jsonEncode(<String, dynamic>{
-              'id': 'consent-1',
-              'persona_id': 'persona-1',
-              'provider_id': 'deepseek',
-              'model_id': 'deepseek-v4-flash',
-              'data_category': 'image',
-              'estimated_cost': 0.12,
-              'purpose': '图片理解',
-              'authorization_scope': 'persona-image-analysis',
-              'created_at': '2026-08-14T00:00:00+00:00',
-              'status':
-                  request.url.path.endsWith('/revoke') ? 'revoked' : 'active',
-              if (request.url.path.endsWith('/revoke'))
-                'revoked_at': '2026-08-14T01:00:00+00:00',
-            })),
+            utf8.encode(
+              jsonEncode(<String, dynamic>{
+                'id': 'consent-1',
+                'persona_id': 'persona-1',
+                'provider_id': 'deepseek',
+                'model_id': 'deepseek-v4-flash',
+                'data_category': 'image',
+                'estimated_cost': 0.12,
+                'purpose': '图片理解',
+                'authorization_scope': 'persona-image-analysis',
+                'created_at': '2026-08-14T00:00:00+00:00',
+                'status':
+                    request.url.path.endsWith('/revoke') ? 'revoked' : 'active',
+                if (request.url.path.endsWith('/revoke'))
+                  'revoked_at': '2026-08-14T01:00:00+00:00',
+              }),
+            ),
             request.url.path.endsWith('/revoke') ? 200 : 201,
             headers: <String, String>{
-              'content-type': 'application/json; charset=utf-8'
+              'content-type': 'application/json; charset=utf-8',
             },
           );
         } catch (_) {
@@ -215,19 +230,16 @@ void main() {
       session,
       'persona-1',
     );
-    final Map<String, dynamic> created = await client.createConsent(
-      endpoint,
-      session,
-      <String, dynamic>{
-        'persona_id': 'persona-1',
-        'provider_id': 'deepseek',
-        'model_id': 'deepseek-v4-flash',
-        'data_category': 'image',
-        'estimated_cost': 0.12,
-        'purpose': '图片理解',
-        'authorization_scope': 'persona-image-analysis',
-      },
-    );
+    final Map<String, dynamic> created =
+        await client.createConsent(endpoint, session, <String, dynamic>{
+      'persona_id': 'persona-1',
+      'provider_id': 'deepseek',
+      'model_id': 'deepseek-v4-flash',
+      'data_category': 'image',
+      'estimated_cost': 0.12,
+      'purpose': '图片理解',
+      'authorization_scope': 'persona-image-analysis',
+    });
     final Map<String, dynamic> revoked = await client.revokeConsent(
       endpoint,
       session,
@@ -251,4 +263,86 @@ void main() {
     expect(requests[2].url.path, '/api/v1/consents/consent-1/revoke');
     expect(requests[2].headers['authorization'], 'Bearer token');
   });
+
+  test(
+    'creates, reads, lists, and sends a persona-scoped conversation',
+    () async {
+      final List<http.Request> requests = <http.Request>[];
+      final Map<String, dynamic> conversation = <String, dynamic>{
+        'id': 'conversation-1',
+        'persona_id': 'persona-1',
+        'provider_id': 'test',
+        'model_id': 'deterministic',
+        'created_at': '2026-08-14T00:00:00Z',
+        'updated_at': '2026-08-14T00:00:00Z',
+        'messages': <Map<String, dynamic>>[],
+      };
+      int call = 0;
+      final ApiClient client = ApiClient(
+        client: MockClient((http.Request request) async {
+          requests.add(request);
+          final int current = call++;
+          if (current == 1) {
+            return http.Response(
+              jsonEncode(<String, dynamic>{
+                'conversations': <Map<String, dynamic>>[conversation],
+              }),
+              200,
+            );
+          }
+          if (current == 3) {
+            final Map<String, dynamic> sent =
+                Map<String, dynamic>.from(conversation)
+                  ..['messages'] = <Map<String, dynamic>>[
+                    <String, dynamic>{
+                      'id': 'message-1',
+                      'role': 'user',
+                      'content': '你好',
+                      'created_at': '2026-08-14T00:00:01Z',
+                    },
+                    <String, dynamic>{
+                      'id': 'message-2',
+                      'role': 'assistant',
+                      'content': '测试回复：你好',
+                      'created_at': '2026-08-14T00:00:02Z',
+                    },
+                  ];
+            return http.Response.bytes(utf8.encode(jsonEncode(sent)), 200);
+          }
+          return http.Response(
+              jsonEncode(conversation), current == 0 ? 201 : 200);
+        }),
+      );
+
+      await client.createConversation(
+        endpoint,
+        session,
+        personaId: 'persona-1',
+        providerId: 'test',
+        modelId: 'deterministic',
+      );
+      await client.listConversations(endpoint, session, personaId: 'persona-1');
+      await client.getConversation(endpoint, session, 'conversation-1');
+      await client.sendConversationMessage(
+        endpoint,
+        session,
+        'conversation-1',
+        '你好',
+      );
+
+      expect(requests[0].url.path, '/api/v1/conversations');
+      expect(jsonDecode(requests[0].body), <String, dynamic>{
+        'persona_id': 'persona-1',
+        'provider_id': 'test',
+        'model_id': 'deterministic',
+      });
+      expect(requests[1].url.queryParameters['persona_id'], 'persona-1');
+      expect(requests[2].url.path, '/api/v1/conversations/conversation-1');
+      expect(
+        requests[3].url.path,
+        '/api/v1/conversations/conversation-1/messages',
+      );
+      expect(jsonDecode(requests[3].body), <String, dynamic>{'content': '你好'});
+    },
+  );
 }

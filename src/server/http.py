@@ -17,11 +17,13 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from src.domain.consents import ConsentValidationError
+from src.domain.conversations import ConversationValidationError
 from src.domain.personas import PersonaValidationError
 from src.providers.catalog import CatalogValidationError
 from src.providers.gateway import ProviderError
 from src.server.application import Application, RequestValidationError
 from src.server.config import ServerConfig
+from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
 from src.services.local_auth import LocalAuthError
@@ -54,6 +56,11 @@ _TRAINING_JOBS_PATH = "/api/v1/training-jobs"
 _TRAINING_ESTIMATE_PATH = "/api/v1/training-jobs/estimate"
 _TRAINING_JOB_PATH = re.compile(r"^/api/v1/training-jobs/([A-Za-z0-9._-]+)$")
 _TRAINING_CANCEL_PATH = re.compile(r"^/api/v1/training-jobs/([A-Za-z0-9._-]+)/cancel$")
+_CONVERSATIONS_PATH = "/api/v1/conversations"
+_CONVERSATION_PATH = re.compile(r"^/api/v1/conversations/([A-Za-z0-9._-]+)$")
+_CONVERSATION_MESSAGES_PATH = re.compile(
+    r"^/api/v1/conversations/([A-Za-z0-9._-]+)/messages$"
+)
 _STATIC_FILES = {
     "/": "workspace.html",
     "/index.html": "workspace.html",
@@ -187,8 +194,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_usage",
             } else HTTPStatus.BAD_REQUEST
             self._error(status, exc.code, str(exc))
-        except (PersonaNotFoundError, ImportNotFoundError):
+        except (PersonaNotFoundError, ImportNotFoundError, ConversationNotFoundError):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+        except ConversationValidationError as exc:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, exc.code, str(exc))
         except UploadError as exc:
             # Some upload failures are detected from metadata or the manifest
             # before the request body is consumed. A persistent HTTP/1.1
@@ -300,6 +309,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.application.list_training_jobs(self.owner_id, persona_id),
             )
+        elif path == _CONVERSATIONS_PATH:
+            persona_id = query.get("persona_id", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.list_conversations(self.owner_id, persona_id),
+            )
+        elif match := _CONVERSATION_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.get_conversation(self.owner_id, match.group(1)),
+            )
         elif match := _TRAINING_JOB_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -378,6 +398,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
             self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+        elif path == _CONVERSATIONS_PATH:
+            self._json(
+                HTTPStatus.CREATED,
+                self.server.application.create_conversation(self.owner_id, self._json_body()),
+            )
+        elif match := _CONVERSATION_MESSAGES_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.send_conversation_message(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif path == _MODEL_COST_ESTIMATE_PATH:
             self._json(HTTPStatus.OK, self.server.application.estimate_model_cost(self._json_body()))
         elif path == _TRAINING_ESTIMATE_PATH:
@@ -644,6 +678,12 @@ def _route_template(target: str) -> str:
             return "/api/v1/training-jobs/{job_id}"
         if _TRAINING_CANCEL_PATH.fullmatch(path):
             return "/api/v1/training-jobs/{job_id}/cancel"
+        if path == _CONVERSATIONS_PATH:
+            return "/api/v1/conversations"
+        if _CONVERSATION_MESSAGES_PATH.fullmatch(path):
+            return "/api/v1/conversations/{conversation_id}/messages"
+        if _CONVERSATION_PATH.fullmatch(path):
+            return "/api/v1/conversations/{conversation_id}"
         return "/api/*"
     return "/static"
 
