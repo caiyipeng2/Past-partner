@@ -6,7 +6,13 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from src.services.metadata_store import MetadataConnection, MetadataStore, MetadataStoreError
+from src.services.metadata_store import (
+    MetadataConnection,
+    MetadataIntegrityError,
+    MetadataStore,
+    MetadataStoreError,
+    require_metadata_store,
+)
 from src.services.sqlite_metadata_store import SQLiteMetadataStore
 
 
@@ -56,6 +62,33 @@ class MetadataStoreContractTests(unittest.TestCase):
         self.assertEqual("metadata_connection_failed", captured.exception.code)
         self.assertNotIn("secret/path", str(captured.exception))
         self.assertNotIn(str(missing), str(captured.exception))
+
+    def test_store_close_is_idempotent_and_part_of_the_contract(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            store = SQLiteMetadataStore(Path(directory) / "metadata.sqlite3")
+
+            self.assertIsInstance(store, MetadataStore)
+            store.close()
+            store.close()
+
+    def test_integrity_errors_expose_only_stable_metadata(self) -> None:
+        error = MetadataIntegrityError()
+
+        self.assertEqual("metadata_integrity_error", error.code)
+        self.assertEqual("metadata integrity error", str(error))
+        self.assertNotIn("sqlite", str(error).lower())
+        self.assertNotIn("postgres", str(error).lower())
+
+    def test_require_metadata_store_rejects_non_callable_protocol_members(self) -> None:
+        class MalformedStore:
+            backend_name = "sqlite"
+            migrate = None
+            connect = None
+            transaction = None
+            close = None
+
+        with self.assertRaises(TypeError):
+            require_metadata_store(MalformedStore())
 
 
 if __name__ == "__main__":

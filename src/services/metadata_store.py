@@ -21,6 +21,20 @@ class MetadataStoreError(RuntimeError):
         super().__init__(message)
 
 
+class MetadataIntegrityError(MetadataStoreError):
+    """Stable constraint error without exposing a concrete database driver."""
+
+    def __init__(self) -> None:
+        super().__init__("metadata_integrity_error", "metadata integrity error")
+
+
+class MetadataOperationalError(MetadataStoreError):
+    """Stable operational error without exposing a concrete database driver."""
+
+    def __init__(self) -> None:
+        super().__init__("metadata_operational_error", "metadata operational error")
+
+
 @runtime_checkable
 class MetadataConnection(Protocol):
     @property
@@ -45,6 +59,8 @@ class MetadataStore(Protocol):
 
     def transaction(self, *, immediate: bool = False) -> Iterator[MetadataConnection]: ...
 
+    def close(self) -> None: ...
+
 
 def metadata_store_from_path(database_path: Path | str) -> MetadataStore:
     """Explicit compatibility factory for legacy path-based constructors."""
@@ -59,7 +75,12 @@ def require_metadata_store(value: MetadataStore | Path | str) -> MetadataStore:
 
     if isinstance(value, (Path, str)):
         return metadata_store_from_path(value)
-    if isinstance(value, MetadataStore):
+    required_methods = ("migrate", "connect", "transaction", "close")
+    if (
+        isinstance(value, MetadataStore)
+        and isinstance(getattr(value, "backend_name", None), str)
+        and all(callable(getattr(value, method, None)) for method in required_methods)
+    ):
         return value
     raise TypeError("metadata_store must implement the MetadataStore contract")
 

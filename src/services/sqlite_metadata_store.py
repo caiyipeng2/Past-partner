@@ -21,6 +21,11 @@ class SQLiteMetadataStore:
         self._migrator = SQLiteMigrator(self.database_path)
         self._connect_impl = self._connect
 
+    def close(self) -> None:
+        """Close the adapter lifecycle; SQLite connections are per-operation."""
+
+        return None
+
     def migrate(self) -> int:
         try:
             return self._migrator.migrate()
