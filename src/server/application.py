@@ -17,6 +17,7 @@ from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter, deterministic_test_provider_definition
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.blob_store import build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
 from src.services.multimodal_consent import MultimodalConsentGate
@@ -77,6 +78,7 @@ class Application:
     def from_config(cls, config: ServerConfig) -> "Application":
         config = config.validated()
         storage = StorageLayout(config.data_dir)
+        blob_store = build_blob_store(config.storage_backend, storage)
         SQLiteMigrator(storage.database_path()).migrate()
         master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         encryption = AuthenticatedEncryptionService(master_keys)
@@ -100,7 +102,11 @@ class Application:
         consent_repository = ConsentRepository(storage.database_path(), encryption)
         consents = ConsentService(consent_repository, personas)
         uploads = UploadService(
-            storage, imports, encryption, max_chunk_bytes=config.max_chunk_bytes
+            storage,
+            imports,
+            encryption,
+            max_chunk_bytes=config.max_chunk_bytes,
+            blob_store=blob_store,
         )
         if config.raw_retention_seconds > 0:
             RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)

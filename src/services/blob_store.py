@@ -235,9 +235,18 @@ class LocalBlobStore:
         return candidate
 
 
+def build_blob_store(backend: str, layout: StorageLayout) -> BlobStore:
+    """Build only an explicitly registered backend; never silently fall back."""
+
+    if backend == "local":
+        return LocalBlobStore(layout)
+    raise StorageBackendUnsupportedError()
+
+
 __all__ = [
     "BlobReceipt",
     "BlobStore",
+    "build_blob_store",
     "InvalidKeyError",
     "LocalBlobStore",
     "ObjectConflictError",
