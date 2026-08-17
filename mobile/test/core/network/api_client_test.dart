@@ -265,6 +265,65 @@ void main() {
   });
 
   test(
+    'exports owner data and deletes a persona through authenticated routes',
+    () async {
+      final List<http.Request> requests = <http.Request>[];
+      final ApiClient client = ApiClient(
+        client: MockClient((http.Request request) async {
+          requests.add(request);
+          if (request.method == 'GET') {
+            return http.Response(
+              jsonEncode(<String, dynamic>{
+                'export_version': 1,
+                'generated_at': '2026-08-17T00:00:00Z',
+                'scope': <String, dynamic>{
+                  'raw_payloads_included': false,
+                  'omitted': <String>[
+                    'raw_import_payloads',
+                    'provider_side_data',
+                  ],
+                },
+                'personas': <Map<String, dynamic>>[],
+                'imports': <Map<String, dynamic>>[],
+                'consents': <Map<String, dynamic>>[],
+                'training_jobs': <Map<String, dynamic>>[],
+                'conversations': <Map<String, dynamic>>[],
+              }),
+              200,
+            );
+          }
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'persona_id': 'persona-1',
+              'deleted': true,
+            }),
+            200,
+          );
+        }),
+      );
+
+      final Map<String, dynamic> exported = await client.exportData(
+        endpoint,
+        session,
+      );
+      final Map<String, dynamic> deleted = await client.deletePersona(
+        endpoint,
+        session,
+        'persona-1',
+      );
+
+      expect(exported['export_version'], 1);
+      expect(deleted['deleted'], true);
+      expect(requests[0].method, 'GET');
+      expect(requests[0].url.path, '/api/v1/data-export');
+      expect(requests[0].headers['authorization'], 'Bearer token');
+      expect(requests[1].method, 'DELETE');
+      expect(requests[1].url.path, '/api/v1/personas/persona-1');
+      expect(requests[1].headers['authorization'], 'Bearer token');
+    },
+  );
+
+  test(
     'creates, reads, lists, and sends a persona-scoped conversation',
     () async {
       final List<http.Request> requests = <http.Request>[];

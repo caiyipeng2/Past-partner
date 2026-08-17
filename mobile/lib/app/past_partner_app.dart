@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../features/appearance/appearance_controller.dart';
+import '../features/privacy/privacy_controller.dart';
+import '../features/privacy/privacy_gateway.dart';
 import '../features/connection/connection_screen.dart';
 import '../features/persona/persona_controller.dart';
 import '../features/persona/persona_workspace_screen.dart';
@@ -78,10 +80,10 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       resumeStore: SecureImportResumeStore(),
                       createImport: (draft) =>
                           ApiClientImportGateway(snapshot.client).create(
-                            endpoint: snapshot.endpoint!,
-                            session: snapshot.session!,
-                            draft: draft,
-                          ),
+                        endpoint: snapshot.endpoint!,
+                        session: snapshot.session!,
+                        draft: draft,
+                      ),
                     );
                   },
                   importReviewControllerFactory: (persona, job) {
@@ -121,6 +123,16 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       providerId: selected.providerId,
                       modelId: selected.id,
                       gateway: ApiClientChatGateway(snapshot.client),
+                    );
+                  },
+                  privacyControllerFactory: () {
+                    final SessionController snapshot = widget.sessionController;
+                    return PrivacyController(
+                      gateway: ApiClientPrivacyGateway(
+                        client: snapshot.client,
+                        endpoint: snapshot.endpoint!,
+                        session: snapshot.session!,
+                      ),
                     );
                   },
                   appearanceController: widget.appearanceController,
