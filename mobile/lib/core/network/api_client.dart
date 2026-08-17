@@ -63,6 +63,39 @@ class ApiClient {
     return result;
   }
 
+  Future<Map<String, dynamic>> exportData(
+    ApiEndpoint endpoint,
+    Session session,
+  ) async {
+    final http.Response response = await _send(
+      'GET',
+      endpoint.path('/api/v1/data-export'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
+  Future<Map<String, dynamic>> deletePersona(
+    ApiEndpoint endpoint,
+    Session session,
+    String personaId,
+  ) async {
+    final String normalizedId = personaId.trim();
+    if (normalizedId.isEmpty ||
+        normalizedId.length > 128 ||
+        !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(normalizedId)) {
+      throw const ApiFailure('invalid_request', 'The persona id is invalid.');
+    }
+    final http.Response response = await _send(
+      'DELETE',
+      endpoint.path('/api/v1/personas/$normalizedId'),
+      <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
+    );
+    if (response.statusCode != 200) throw _failure(response);
+    return _jsonObject(response);
+  }
+
   Future<List<Map<String, dynamic>>> listConsents(
     ApiEndpoint endpoint,
     Session session,
@@ -84,17 +117,15 @@ class ApiClient {
         'The local service returned an invalid response.',
       );
     }
-    return consents
-        .map((dynamic value) {
-          if (value is! Map) {
-            throw const ApiFailure(
-              'invalid_response',
-              'The local service returned an invalid response.',
-            );
-          }
-          return Map<String, dynamic>.from(value);
-        })
-        .toList(growable: false);
+    return consents.map((dynamic value) {
+      if (value is! Map) {
+        throw const ApiFailure(
+          'invalid_response',
+          'The local service returned an invalid response.',
+        );
+      }
+      return Map<String, dynamic>.from(value);
+    }).toList(growable: false);
   }
 
   Future<Map<String, dynamic>> createConsent(
@@ -147,9 +178,7 @@ class ApiClient {
     Session session, {
     String? providerId,
   }) async {
-    final Uri uri = endpoint
-        .path('/api/v1/models')
-        .replace(
+    final Uri uri = endpoint.path('/api/v1/models').replace(
           queryParameters: providerId == null
               ? null
               : <String, String>{'provider_id': providerId},
@@ -214,9 +243,7 @@ class ApiClient {
     Session session, {
     String? personaId,
   }) async {
-    final Uri uri = endpoint
-        .path('/api/v1/conversations')
-        .replace(
+    final Uri uri = endpoint.path('/api/v1/conversations').replace(
           queryParameters: personaId == null
               ? null
               : <String, String>{'persona_id': personaId},
@@ -232,17 +259,15 @@ class ApiClient {
         'The local service returned an invalid response.',
       );
     }
-    return values
-        .map((dynamic value) {
-          if (value is! Map) {
-            throw const ApiFailure(
-              'invalid_response',
-              'The local service returned an invalid response.',
-            );
-          }
-          return Map<String, dynamic>.from(value);
-        })
-        .toList(growable: false);
+    return values.map((dynamic value) {
+      if (value is! Map) {
+        throw const ApiFailure(
+          'invalid_response',
+          'The local service returned an invalid response.',
+        );
+      }
+      return Map<String, dynamic>.from(value);
+    }).toList(growable: false);
   }
 
   Future<Map<String, dynamic>> createConversation(
@@ -332,17 +357,15 @@ class ApiClient {
         'The local service returned an invalid response.',
       );
     }
-    return imports
-        .map((dynamic value) {
-          if (value is! Map) {
-            throw const ApiFailure(
-              'invalid_response',
-              'The local service returned an invalid response.',
-            );
-          }
-          return Map<String, dynamic>.from(value);
-        })
-        .toList(growable: false);
+    return imports.map((dynamic value) {
+      if (value is! Map) {
+        throw const ApiFailure(
+          'invalid_response',
+          'The local service returned an invalid response.',
+        );
+      }
+      return Map<String, dynamic>.from(value);
+    }).toList(growable: false);
   }
 
   Future<Map<String, dynamic>> createImport(
@@ -368,13 +391,11 @@ class ApiClient {
   }) async {
     final http.Response response = await _send(
       'GET',
-      endpoint
-          .path('/api/v1/imports/$importId/missing-chunks')
-          .replace(
-            queryParameters: <String, String>{
-              'expected_chunks': '$expectedChunks',
-            },
-          ),
+      endpoint.path('/api/v1/imports/$importId/missing-chunks').replace(
+        queryParameters: <String, String>{
+          'expected_chunks': '$expectedChunks',
+        },
+      ),
       <String, String>{'Authorization': 'Bearer ${session.accessToken}'},
     );
     if (response.statusCode != 200) throw _failure(response);
@@ -389,20 +410,19 @@ class ApiClient {
     List<int> bytes,
     String sha256,
   ) async {
-    final http.Request request =
-        http.Request(
-            'PUT',
-            endpoint.path('/api/v1/imports/$importId/chunks/$index'),
-          )
-          ..followRedirects = false
-          ..maxRedirects = 0
-          ..headers.addAll(<String, String>{
-            'Authorization': 'Bearer ${session.accessToken}',
-            'Content-Type': 'application/octet-stream',
-            'X-Chunk-Sha256': sha256,
-            'Content-Length': '${bytes.length}',
-          })
-          ..bodyBytes = bytes;
+    final http.Request request = http.Request(
+      'PUT',
+      endpoint.path('/api/v1/imports/$importId/chunks/$index'),
+    )
+      ..followRedirects = false
+      ..maxRedirects = 0
+      ..headers.addAll(<String, String>{
+        'Authorization': 'Bearer ${session.accessToken}',
+        'Content-Type': 'application/octet-stream',
+        'X-Chunk-Sha256': sha256,
+        'Content-Length': '${bytes.length}',
+      })
+      ..bodyBytes = bytes;
     final http.Response response = await _sendRequest(request);
     if (response.statusCode != 200) throw _failure(response);
     return _jsonObject(response);

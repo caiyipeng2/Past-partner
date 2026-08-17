@@ -17,6 +17,10 @@ import 'package:past_partner/features/consents/consent.dart';
 import 'package:past_partner/features/consents/consent_controller.dart';
 import 'package:past_partner/features/consents/consent_gateway.dart';
 import 'package:past_partner/features/consents/consent_screen.dart';
+import 'package:past_partner/features/privacy/privacy_controller.dart';
+import 'package:past_partner/features/privacy/privacy_export.dart';
+import 'package:past_partner/features/privacy/privacy_gateway.dart';
+import 'package:past_partner/features/privacy/privacy_screen.dart';
 
 class _FakeStore implements SessionStore {
   @override
@@ -150,6 +154,40 @@ void main() {
     expect(find.byType(ConsentScreen), findsOneWidget);
     expect(find.text('授权管理'), findsOneWidget);
   });
+
+  testWidgets('workspace exposes the privacy management entry',
+      (WidgetTester tester) async {
+    final SessionController sessionController =
+        SessionController(_FakeStore(), ApiClient())
+          ..session = Session(
+              accessToken: 'token',
+              ownerId: 'owner',
+              expiresAt: DateTime.utc(2099))
+          ..endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+    final PersonaController personaController = PersonaController(
+      sessionController,
+      gateway: _FakeGateway()
+        ..records.add(const Persona(
+            id: 'persona-1',
+            displayName: '小雅',
+            relationshipType: PersonaRelationship.friend)),
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: PersonaWorkspaceScreen(
+        controller: personaController,
+        privacyControllerFactory: () => PrivacyController(
+          gateway: _EmptyPrivacyGateway(),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('privacy-open')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PrivacyScreen), findsOneWidget);
+    expect(find.text('隐私管理'), findsOneWidget);
+  });
 }
 
 class _EmptyImportGateway implements ImportGateway {
@@ -194,4 +232,22 @@ class _EmptyConsentGateway implements ConsentGateway {
     required String consentId,
   }) async =>
       throw UnimplementedError();
+}
+
+class _EmptyPrivacyGateway implements PrivacyGateway {
+  @override
+  Future<PrivacyExportSummary> exportData() async => const PrivacyExportSummary(
+        exportVersion: 1,
+        generatedAt: '2026-08-17T00:00:00Z',
+        rawPayloadsIncluded: false,
+        omitted: <String>['raw_import_payloads'],
+        personaCount: 1,
+        importCount: 0,
+        consentCount: 0,
+        trainingJobCount: 0,
+        conversationCount: 0,
+      );
+
+  @override
+  Future<void> deletePersona(String personaId) async {}
 }

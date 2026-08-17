@@ -16,6 +16,8 @@ import '../consents/consent_screen.dart';
 import '../chat/chat_controller.dart';
 import '../chat/chat_screen.dart';
 import '../appearance/appearance_controller.dart';
+import '../privacy/privacy_controller.dart';
+import '../privacy/privacy_screen.dart';
 
 class PersonaWorkspaceScreen extends StatefulWidget {
   const PersonaWorkspaceScreen({
@@ -28,6 +30,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
     this.consentControllerFactory,
     this.chatControllerFactory,
     this.appearanceController,
+    this.privacyControllerFactory,
     super.key,
   });
 
@@ -35,15 +38,16 @@ class PersonaWorkspaceScreen extends StatefulWidget {
   final ImportController Function(Persona persona)? importControllerFactory;
   final ImportFileSource? importFileSource;
   final ImportUploadController Function(Persona persona, ImportJob? job)?
-  importUploadControllerFactory;
+      importUploadControllerFactory;
   final ImportReviewController Function(Persona persona, ImportJob job)?
-  importReviewControllerFactory;
+      importReviewControllerFactory;
   final ModelSelectionController Function(ModelOption? selected)?
-  modelSelectionControllerFactory;
+      modelSelectionControllerFactory;
   final ConsentController Function(Persona persona)? consentControllerFactory;
   final ChatController? Function(Persona persona, ModelOption? selected)?
-  chatControllerFactory;
+      chatControllerFactory;
   final AppearanceController? appearanceController;
+  final PrivacyController Function()? privacyControllerFactory;
 
   @override
   State<PersonaWorkspaceScreen> createState() => _PersonaWorkspaceScreenState();
@@ -81,11 +85,11 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
           uploadControllerFactory: widget.importUploadControllerFactory == null
               ? null
               : (ImportJob? job) =>
-                    widget.importUploadControllerFactory!(persona, job),
+                  widget.importUploadControllerFactory!(persona, job),
           reviewControllerFactory: widget.importReviewControllerFactory == null
               ? null
               : (ImportJob job) =>
-                    widget.importReviewControllerFactory!(persona, job),
+                  widget.importReviewControllerFactory!(persona, job),
         ),
       ),
     );
@@ -123,7 +127,7 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
 
   void _openChat(Persona persona) {
     final ChatController? Function(Persona persona, ModelOption? selected)?
-    factory = widget.chatControllerFactory;
+        factory = widget.chatControllerFactory;
     if (factory == null) return;
     if (_selectedModel == null || widget.appearanceController == null) {
       ScaffoldMessenger.of(
@@ -146,6 +150,21 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
     );
   }
 
+  void _openPrivacy() {
+    final PrivacyController Function()? factory =
+        widget.privacyControllerFactory;
+    if (factory == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => PrivacyScreen(
+          controller: factory(),
+          personas: widget.controller.personas,
+          onPersonaDeleted: widget.controller.load,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -157,6 +176,13 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
           appBar: AppBar(
             title: const Text('人物'),
             actions: <Widget>[
+              if (widget.privacyControllerFactory != null)
+                IconButton(
+                  key: const Key('privacy-open'),
+                  tooltip: '隐私管理',
+                  onPressed: _openPrivacy,
+                  icon: const Icon(Icons.security_rounded),
+                ),
               if (widget.modelSelectionControllerFactory != null)
                 IconButton(
                   tooltip: '选择模型',
@@ -224,16 +250,16 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
                                   onTap: widget.chatControllerFactory != null
                                       ? () => _openChat(persona)
                                       : widget.importControllerFactory == null
-                                      ? null
-                                      : () => _openImports(persona),
+                                          ? null
+                                          : () => _openImports(persona),
                                   onImport:
                                       widget.importControllerFactory == null
-                                      ? null
-                                      : () => _openImports(persona),
+                                          ? null
+                                          : () => _openImports(persona),
                                   onConsent:
                                       widget.consentControllerFactory == null
-                                      ? null
-                                      : () => _openConsents(persona),
+                                          ? null
+                                          : () => _openConsents(persona),
                                 ),
                               ),
                               const SizedBox(height: 8),
@@ -479,9 +505,9 @@ class _PersonaFormSheetState extends State<_PersonaFormSheet> {
                   ),
                   validator: (String? value) =>
                       _relationship == PersonaRelationship.custom &&
-                          (value == null || value.trim().isEmpty)
-                      ? '请输入自定义关系'
-                      : null,
+                              (value == null || value.trim().isEmpty)
+                          ? '请输入自定义关系'
+                          : null,
                 ),
               ],
               const SizedBox(height: 16),
