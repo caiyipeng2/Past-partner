@@ -55,6 +55,7 @@ P1-03 通用 HTML 解析仅提取识别到的消息容器中的发送者、时�
 
 - 当前版本尚未实现静态数据加密的完整覆盖，P0-07 已将人物名称、关系和创建时间等内容字段保存为加密 SQLite 字段，P0-08 已将导入任务和上传清单保存为同一事务中的加密 SQLite 字段；随机服务端人物和导入 ID 作为非秘密索引明文保存，P0-06 已将上传分片和合并对象接入 AES-GCM 加密存储。
 - 默认本地服务使用回环 HTTP，仅适合本机调试。真机开发联调必须配置四个 `PAST_PARTNER_DEV_DEVICE_*` 变量，由服务端校验 RFC1918/IPv6 ULA 私有地址、证书 IP SAN 并以 TLS 1.2+ 启动；设备配对令牌不进入 CORS allow-headers，也不会写入日志。配对令牌是开发联调凭据，不是公网安全机制；不得把服务暴露到公网、通过不受控代理转发或把真实令牌提交到仓库。设备会话最长 1 小时，轮换令牌会使旧设备会话失效；生产 owner 会话仍使用独立的 `PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN`。
+- 加密元数据默认由同一进程内共享的 SQLite `MetadataStore` 负责迁移、连接和事务边界；`PAST_PARTNER_METADATA_BACKEND` 的非 `sqlite` 值会在启动校验阶段拒绝，不会静默回退或伪装成 PostgreSQL。对象字节存储仍由独立的 `PAST_PARTNER_STORAGE_BACKEND` 选择。PostgreSQL、S3/KMS 和多用户隔离属于后续任务。
 - 模拟器或 Android ADB reverse/port-forward 可以继续使用回环 HTTP，且不发送设备配对 header；该方式不等同于真机直连，不应把端口转发暴露给不受控网络。
 - 当前版本提供单一本地 owner 的 Bearer 会话、人物/导入/上传 owner 归属和未授权拦截。尚未接入 OIDC/OAuth2、多用户账户、细粒度角色、审计和公网部署所需的完整访问控制，不适合直接暴露到公网或多人共享环境。
 - 当前版本尚未实现数据匿名化或脱敏，导入和对话内容可能包含本人及第三人的敏感信息。

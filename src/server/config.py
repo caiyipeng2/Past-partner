@@ -50,6 +50,7 @@ class ServerConfig:
     web_dir: Path = Path("web")
     mode: str = "development"
     storage_backend: str = "local"
+    metadata_backend: str = "sqlite"
     owner_bootstrap_token: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:3000",
@@ -78,6 +79,7 @@ class ServerConfig:
             web_dir=Path(os.getenv("PAST_PARTNER_WEB_DIR", str(default.web_dir))),
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
             storage_backend=os.getenv("PAST_PARTNER_STORAGE_BACKEND", default.storage_backend),
+            metadata_backend=os.getenv("PAST_PARTNER_METADATA_BACKEND", default.metadata_backend),
             owner_bootstrap_token=os.getenv("PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN"),
             cors_origins=tuple(item.strip() for item in origins.split(",") if item.strip()) if origins else default.cors_origins,
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
@@ -102,6 +104,11 @@ class ServerConfig:
             raise ConfigurationError(
                 "storage_backend_unsupported",
                 "storage backend is unsupported",
+            )
+        if self.metadata_backend != "sqlite":
+            raise ConfigurationError(
+                "metadata_backend_unsupported",
+                "metadata backend is unsupported",
             )
         if min(self.max_json_bytes, self.max_chunk_bytes, self.max_import_bytes) <= 0:
             raise ValueError("request and import limits must be positive")

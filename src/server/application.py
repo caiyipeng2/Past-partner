@@ -21,11 +21,11 @@ from src.services.blob_store import build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
 from src.services.multimodal_consent import MultimodalConsentGate
-from src.services.database import SQLiteMigrator
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
+from src.services.metadata_store import build_metadata_store
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
@@ -79,27 +79,28 @@ class Application:
         config = config.validated()
         storage = StorageLayout(config.data_dir)
         blob_store = build_blob_store(config.storage_backend, storage)
-        SQLiteMigrator(storage.database_path()).migrate()
+        metadata_store = build_metadata_store(config.metadata_backend, storage.database_path())
+        metadata_store.migrate()
         master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         encryption = AuthenticatedEncryptionService(master_keys)
         auth = LocalAuthService(
-            storage.database_path(),
+            metadata_store,
             encryption,
             mode=config.mode,
             bootstrap_token=config.owner_bootstrap_token,
             device_pairing=config.device_pairing_settings,
         )
-        persona_repository = PersonaRepository(storage.database_path(), encryption)
+        persona_repository = PersonaRepository(metadata_store, encryption)
         persona_repository.assign_unowned(auth.owner_id)
         persona_repository.migrate_legacy_json(storage.root / "personas", auth.owner_id)
         personas = PersonaService(persona_repository)
-        import_repository = ImportRepository(storage.database_path(), encryption)
+        import_repository = ImportRepository(metadata_store, encryption)
         import_repository.assign_unowned(auth.owner_id)
         import_repository.migrate_legacy_json(
             storage.root / "imports", storage.root / "upload-manifests", auth.owner_id
         )
         imports = ImportService(import_repository, personas, max_import_bytes=config.max_import_bytes)
-        consent_repository = ConsentRepository(storage.database_path(), encryption)
+        consent_repository = ConsentRepository(metadata_store, encryption)
         consents = ConsentService(consent_repository, personas)
         uploads = UploadService(
             storage,
@@ -125,7 +126,7 @@ class Application:
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
         datasets = TrainingDatasetBuilder(storage, uploads)
         training = FineTuningService(
-            TrainingJobRepository(storage.database_path(), encryption),
+            TrainingJobRepository(metadata_store, encryption),
             datasets,
             consents,
             catalog,
@@ -133,11 +134,11 @@ class Application:
             personas,
         )
         conversations = ConversationService(
-            ConversationRepository(storage.database_path(), encryption),
+            ConversationRepository(metadata_store, encryption),
             personas,
             gateway,
         )
-        return cls(
+        application = cls(
             personas,
             imports,
             uploads,
@@ -150,6 +151,10 @@ class Application:
             training,
             conversations,
         )
+        # Keep the selected backend visible to diagnostics and future adapters;
+        # repositories still receive the same object directly for isolation.
+        application.metadata_store = metadata_store
+        return application
 
     def issue_session(
         self,

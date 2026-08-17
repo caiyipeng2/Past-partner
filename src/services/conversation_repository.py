@@ -13,7 +13,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.database import SQLiteMigrator
+from src.services.metadata_store import MetadataStore, require_metadata_store
 
 
 class ConversationRepositoryError(RuntimeError):
@@ -26,10 +26,11 @@ class ConversationRepository:
     _RECORD_VERSION = 1
     _AAD_PREFIX = "past-partner/conversation/v1/"
 
-    def __init__(self, database_path: Path | str, encryption: AuthenticatedEncryptionService) -> None:
-        self.database_path = Path(database_path).expanduser().resolve()
+    def __init__(self, database_path: Path | str | MetadataStore, encryption: AuthenticatedEncryptionService) -> None:
+        self.metadata_store = require_metadata_store(database_path)
+        self.database_path = getattr(self.metadata_store, "database_path", None)
         self.encryption = encryption
-        SQLiteMigrator(self.database_path).migrate()
+        self.metadata_store.migrate()
 
     def save(self, owner_id: str, conversation: Conversation) -> Conversation:
         owner = self._owner_id(owner_id)
@@ -174,6 +175,4 @@ class ConversationRepository:
         return value
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return self.metadata_store.connect()

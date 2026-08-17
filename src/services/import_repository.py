@@ -15,7 +15,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.database import SQLiteMigrator
+from src.services.metadata_store import MetadataStore, require_metadata_store
 
 
 class ImportRepositoryError(RuntimeError):
@@ -33,12 +33,13 @@ class ImportRepository:
 
     def __init__(
         self,
-        database_path: Path | str,
+        database_path: Path | str | MetadataStore,
         encryption: AuthenticatedEncryptionService,
     ) -> None:
-        self.database_path = Path(database_path).expanduser().resolve()
+        self.metadata_store = require_metadata_store(database_path)
+        self.database_path = getattr(self.metadata_store, "database_path", None)
         self.encryption = encryption
-        SQLiteMigrator(self.database_path).migrate()
+        self.metadata_store.migrate()
 
     def create(
         self,
@@ -588,10 +589,7 @@ class ImportRepository:
         return normalized
 
     def _connect(self) -> sqlite3.Connection:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path, timeout=5)
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return self.metadata_store.connect()
 
     @staticmethod
     def _owner_id(owner_id: object) -> str | None:
