@@ -294,7 +294,12 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("uploaded", completed["state"])
-        encrypted_payload = self.server.application.uploads.payload_path(job["id"]).read_bytes()
+        encrypted_payload = b"".join(
+            self.server.application.uploads.blob_store.iter_bytes(
+                f"payloads/{job['id']}.bin",
+                block_bytes=1024 * 1024,
+            )
+        )
         self.assertNotIn(content, encrypted_payload)
         self.assertEqual(
             content,
@@ -1512,7 +1517,11 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("cancelled", cancelled["state"])
-        self.assertFalse(self.server.application.uploads._chunk_path(job["id"], 0).exists())
+        self.assertFalse(
+            self.server.application.uploads.blob_store.exists(
+                f"upload-parts/{job['id']}-0.part"
+            )
+        )
 
         status, _, repeated = self.request(
             "POST", f"/api/v1/imports/{job['id']}/cancel", {}

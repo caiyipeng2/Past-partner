@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import shutil
+import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
@@ -20,6 +22,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
+from src.services.blob_store import BlobStore, LocalBlobStore, StorageError
 from src.services.import_repository import ImportRepositoryError
 from src.services.import_service import ImportJob, ImportService, ImportState
 from src.preprocessing.media_inspector import MediaInspectionError, MediaInspector
@@ -65,6 +68,38 @@ class _PayloadAccessEntry:
     leases: int = 0
 
 
+class _BlobReader:
+    """Small BinaryIO adapter over bounded BlobStore blocks."""
+
+    def __init__(self, blocks: Iterator[bytes]):
+        self._blocks = iter(blocks)
+        self._pending = b""
+        self._exhausted = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        if size < 0:
+            chunks = [self._pending]
+            self._pending = b""
+            chunks.extend(self._blocks)
+            self._exhausted = True
+            return b"".join(chunks)
+
+        while not self._exhausted and len(self._pending) < size:
+            try:
+                block = next(self._blocks)
+            except StopIteration:
+                self._exhausted = True
+                break
+            if not isinstance(block, bytes):
+                raise TypeError("BlobStore returned a non-bytes block")
+            self._pending += block
+        value = self._pending[:size]
+        self._pending = self._pending[size:]
+        return value
+
+
 class UploadService:
     def __init__(
         self,
@@ -75,12 +110,14 @@ class UploadService:
         read_block_bytes: int = DEFAULT_READ_BLOCK_BYTES,
         parsers: ParserRegistry | None = None,
         media_inspector: MediaInspector | None = None,
+        blob_store: BlobStore | None = None,
     ):
         if max_chunk_bytes <= 0 or read_block_bytes <= 0:
             raise ValueError("chunk and read block limits must be positive")
         if max_chunk_bytes > encryption.max_plaintext_bytes:
             raise ValueError("chunk limit cannot exceed the encryption segment limit")
         self.storage = storage
+        self.blob_store = blob_store or LocalBlobStore(storage)
         self.imports = imports
         self.encryption = encryption
         self.max_chunk_bytes = max_chunk_bytes
@@ -151,17 +188,21 @@ class UploadService:
             encrypted = self._encrypt_segment(
                 plaintext, self.chunk_aad(import_id, index, final=False), "chunk_encryption_failed"
             )
-            destination = self._chunk_path(import_id, index)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             try:
-                with temporary.open("xb") as output:
-                    output.write(encrypted)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, destination)
-            finally:
-                temporary.unlink(missing_ok=True)
+                self.blob_store.put(
+                    self._chunk_key(import_id, index),
+                    io.BytesIO(encrypted),
+                    length=len(encrypted),
+                    sha256=hashlib.sha256(encrypted).hexdigest(),
+                )
+            except StorageError as exc:
+                if exc.code == "object_conflict":
+                    raise UploadError(
+                        "chunk_conflict", "chunk index already has different content"
+                    ) from exc
+                raise UploadError(
+                    "storage_write_failed", "encrypted chunk could not be stored"
+                ) from exc
 
             chunks[str(index)] = {
                 "length": declared_length,
@@ -180,7 +221,7 @@ class UploadService:
             try:
                 self.imports.save_state(owner_id, updated, manifest)
             except ImportRepositoryError as exc:
-                destination.unlink(missing_ok=True)
+                self.blob_store.delete(self._chunk_key(import_id, index))
                 raise UploadError(
                     "metadata_persistence_failed", "import metadata could not be committed"
                 ) from exc
@@ -199,7 +240,13 @@ class UploadService:
         expected_digest = self._validate_digest(whole_sha256) if whole_sha256 is not None else None
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state is ImportState.UPLOADED and self.payload_path(import_id).is_file():
+            payload_key = self._payload_key(import_id)
+            payload_exists = self._blob_exists(
+                payload_key,
+                "storage_read_failed",
+                "completed payload availability could not be checked",
+            )
+            if job.state is ImportState.UPLOADED and payload_exists:
                 return job
             if job.state in {ImportState.PROCESSING, ImportState.COMPLETED, ImportState.CANCELLED}:
                 raise UploadError("upload_closed", "the import is already being processed")
@@ -212,47 +259,64 @@ class UploadService:
             if total != job.total_bytes or indexes != list(range(len(indexes))):
                 raise UploadError("upload_incomplete", "all bytes and contiguous chunks are required")
 
-            destination = self.payload_path(import_id)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             digest = hashlib.sha256()
-            try:
-                with temporary.open("xb") as output:
-                    for index in indexes:
-                        part = self._chunk_path(import_id, index)
-                        if not part.is_file():
+            encrypted_digest = hashlib.sha256()
+            encrypted_length = 0
+            with tempfile.TemporaryFile(mode="w+b") as output:
+                for index in indexes:
+                    part_key = self._chunk_key(import_id, index)
+                    try:
+                        if not self.blob_store.exists(part_key):
                             raise UploadError("chunk_missing", f"stored chunk {index} is missing")
                         entry = entries[index]
-                        encrypted_length = self._encrypted_length(entry)
-                        with part.open("rb") as source:
-                            encrypted = self._read_exact(source, encrypted_length, "chunk_corrupt")
-                            if source.read(1):
-                                raise UploadError("chunk_corrupt", "stored chunk has trailing bytes")
-                        try:
-                            plaintext = self.encryption.decrypt(
-                                encrypted, self.chunk_aad(import_id, index, final=False)
-                            )
-                        except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                        encrypted = self._read_blob_exact(
+                            part_key,
+                            self._encrypted_length(entry),
+                            "chunk_corrupt",
+                        )
+                    except StorageError as exc:
+                        if exc.code == "object_not_found":
                             raise UploadError(
-                                "chunk_authentication_failed", "stored chunk authentication failed"
+                                "chunk_missing", f"stored chunk {index} is missing"
                             ) from exc
-                        if len(plaintext) != int(entry["length"]):
-                            raise UploadError("chunk_corrupt", "stored chunk length is invalid")
-                        if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
-                            raise UploadError("chunk_corrupt", "stored chunk digest is invalid")
-                        output.write(encrypted)
-                        digest.update(plaintext)
-                    final = self._encrypt_segment(
-                        b"", self.chunk_aad(import_id, len(indexes), final=True), "payload_encryption_failed"
-                    )
-                    output.write(final)
-                    output.flush()
-                    os.fsync(output.fileno())
+                        raise UploadError("chunk_corrupt", "stored chunk could not be read") from exc
+                    try:
+                        plaintext = self.encryption.decrypt(
+                            encrypted, self.chunk_aad(import_id, index, final=False)
+                        )
+                    except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                        raise UploadError(
+                            "chunk_authentication_failed", "stored chunk authentication failed"
+                        ) from exc
+                    if len(plaintext) != int(entry["length"]):
+                        raise UploadError("chunk_corrupt", "stored chunk length is invalid")
+                    if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                        raise UploadError("chunk_corrupt", "stored chunk digest is invalid")
+                    output.write(encrypted)
+                    encrypted_digest.update(encrypted)
+                    encrypted_length += len(encrypted)
+                    digest.update(plaintext)
+                final = self._encrypt_segment(
+                    b"", self.chunk_aad(import_id, len(indexes), final=True), "payload_encryption_failed"
+                )
+                output.write(final)
+                encrypted_digest.update(final)
+                encrypted_length += len(final)
+                output.flush()
+                output.seek(0)
                 if expected_digest is not None and digest.hexdigest() != expected_digest:
                     raise UploadError("payload_digest_mismatch", "completed payload digest does not match")
-                os.replace(temporary, destination)
-            finally:
-                temporary.unlink(missing_ok=True)
+                try:
+                    self.blob_store.put(
+                        payload_key,
+                        output,
+                        length=encrypted_length,
+                        sha256=encrypted_digest.hexdigest(),
+                    )
+                except StorageError as exc:
+                    raise UploadError(
+                        "storage_write_failed", "completed encrypted payload could not be stored"
+                    ) from exc
 
             manifest["version"] = 2
             manifest["final_encrypted_length"] = len(final)
@@ -264,7 +328,7 @@ class UploadService:
             try:
                 self.imports.save_state(owner_id, completed, manifest)
             except ImportRepositoryError as exc:
-                destination.unlink(missing_ok=True)
+                self.blob_store.delete(payload_key)
                 raise UploadError(
                     "metadata_persistence_failed", "import metadata could not be committed"
                 ) from exc
@@ -301,8 +365,8 @@ class UploadService:
             self.imports.save_state(owner_id, cancelled, cancelled_manifest)
 
             for index in indexes:
-                self._chunk_path(import_id, index).unlink(missing_ok=True)
-            self.payload_path(import_id).unlink(missing_ok=True)
+                self._delete_blob(self._chunk_key(import_id, index), "upload chunks could not be removed")
+            self._delete_blob(self._payload_key(import_id), "completed payload could not be removed")
             return cancelled
 
     def delete_import(
@@ -366,15 +430,9 @@ class UploadService:
             )
         manifest = self._load_manifest(owner_id, import_id)
         indexes = self._manifest_indexes(manifest)
-        try:
-            for index in indexes:
-                self._chunk_path(import_id, index).unlink(missing_ok=True)
-            self.payload_path(import_id).unlink(missing_ok=True)
-        except OSError as exc:
-            raise UploadError(
-                "deletion_failed",
-                "import files could not be removed",
-            ) from exc
+        for index in indexes:
+            self._delete_blob(self._chunk_key(import_id, index), "import files could not be removed")
+        self._delete_blob(self._payload_key(import_id), "import files could not be removed")
 
         try:
             deleted = self.imports.delete(owner_id, import_id)
@@ -390,8 +448,48 @@ class UploadService:
             "deleted": True,
         }
 
-    def payload_path(self, import_id: str) -> Path:
-        return self.storage.object_path("payloads", import_id, ".bin")
+    def _delete_blob(self, key: str, message: str) -> None:
+        try:
+            self.blob_store.delete(key)
+        except StorageError as exc:
+            raise UploadError("deletion_failed", message) from exc
+
+    def _blob_exists(self, key: str, code: str, message: str) -> bool:
+        try:
+            return self.blob_store.exists(key)
+        except StorageError as exc:
+            raise UploadError(code, message) from exc
+
+    def _materialize_blob_to_temp(self, key: str) -> Path:
+        destination: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w+b",
+                prefix="past-partner-preview-",
+                suffix=".bin",
+                delete=False,
+            ) as output:
+                destination = Path(output.name)
+                for block in self.blob_store.iter_bytes(
+                    key,
+                    block_bytes=self.read_block_bytes,
+                ):
+                    if not isinstance(block, bytes):
+                        raise TypeError("BlobStore returned a non-bytes block")
+                    output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            return destination
+        except (OSError, StorageError, TypeError) as exc:
+            if destination is not None:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise UploadError(
+                "preview_storage_unavailable",
+                "preview source could not be materialized",
+            ) from exc
 
     def missing_chunks(
         self,
@@ -474,7 +572,11 @@ class UploadService:
 
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+            if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                self._payload_key(import_id),
+                "storage_read_failed",
+                "completed payload availability could not be checked",
+            ):
                 raise UploadError(
                     "preview_unavailable",
                     "preview requires a completed uploaded import",
@@ -515,13 +617,13 @@ class UploadService:
             remaining_records = max_records
             try:
                 for index, file_spec in enumerate(file_specs):
-                    destination = self.storage.object_path(
-                        "preview", f"{preview_id}-{index}", ".bin"
-                    )
-                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    preview_key = f"preview/{preview_id}-{index}.bin"
+                    destination: Path | None = None
                     try:
                         remaining_bytes = int(file_spec["total_bytes"])
-                        with destination.open("xb") as output:
+                        source_digest = hashlib.sha256()
+                        source_length = 0
+                        with tempfile.TemporaryFile(mode="w+b") as source:
                             while remaining_bytes:
                                 if not pending:
                                     try:
@@ -532,11 +634,28 @@ class UploadService:
                                             "payload ended before the manifest file boundary",
                                         ) from exc
                                 take = min(remaining_bytes, len(pending))
-                                output.write(pending[:take])
+                                block = pending[:take]
+                                source.write(block)
+                                source_digest.update(block)
+                                source_length += len(block)
                                 pending = pending[take:]
                                 remaining_bytes -= take
-                            output.flush()
-                            os.fsync(output.fileno())
+                            source.flush()
+                            source.seek(0)
+                            try:
+                                self.blob_store.put(
+                                    preview_key,
+                                    source,
+                                    length=source_length,
+                                    sha256=source_digest.hexdigest(),
+                                )
+                            except StorageError as exc:
+                                raise UploadError(
+                                    "preview_storage_unavailable",
+                                    "preview source could not be stored",
+                                ) from exc
+
+                        destination = self._materialize_blob_to_temp(preview_key)
 
                         namespace = job.id
                         if multi_file:
@@ -610,7 +729,18 @@ class UploadService:
                                 preview_record["source_type"] = result.source_type
                             records.append(preview_record)
                     finally:
-                        destination.unlink(missing_ok=True)
+                        if destination is not None:
+                            try:
+                                destination.unlink(missing_ok=True)
+                            except OSError as exc:
+                                raise UploadError(
+                                    "preview_cleanup_failed",
+                                    "preview temporary data could not be removed",
+                                ) from exc
+                        self._delete_blob(
+                            preview_key,
+                            "preview temporary object could not be removed",
+                        )
 
                 if pending or next(payload, None) is not None:
                     raise UploadError(
@@ -682,8 +812,11 @@ class UploadService:
             with self._payload_access(import_id):
                 with self._lock:
                     job = self.imports.get(owner_id, import_id)
-                    payload_path = self.payload_path(import_id)
-                    if job.state is not ImportState.UPLOADED or not payload_path.is_file():
+                    if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                        self._payload_key(import_id),
+                        "storage_read_failed",
+                        "completed payload availability could not be checked",
+                    ):
                         raise UploadError(
                             "training_dataset_unavailable",
                             "training data requires a completed uploaded import",
@@ -842,7 +975,11 @@ class UploadService:
     def inspect_media(self, owner_id: str, import_id: str) -> dict[str, Any]:
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+            if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                self._payload_key(import_id),
+                "storage_read_failed",
+                "completed payload availability could not be checked",
+            ):
                 raise UploadError(
                     "media_inspection_unavailable",
                     "inspection requires a completed uploaded import",
@@ -981,8 +1118,12 @@ class UploadService:
 
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            payload_path = self.payload_path(import_id)
-            if job.state is not ImportState.UPLOADED or not payload_path.is_file():
+            payload_key = self._payload_key(import_id)
+            if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                payload_key,
+                unavailable_code,
+                unavailable_message,
+            ):
                 raise UploadError(unavailable_code, unavailable_message)
             manifest = self._load_manifest(owner_id, import_id)
             chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
@@ -993,42 +1134,44 @@ class UploadService:
             final_length = self._encrypted_length_value(manifest.get("final_encrypted_length"))
 
         try:
-            with payload_path.open("rb") as source:
-                for index in indexes:
-                    entry = entries[index]
-                    encrypted = self._read_exact(
-                        source, self._encrypted_length(entry), "payload_corrupt"
-                    )
-                    try:
-                        plaintext = self.encryption.decrypt(
-                            encrypted, self.chunk_aad(import_id, index, final=False)
-                        )
-                    except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
-                        raise UploadError(
-                            "payload_authentication_failed",
-                            "payload chunk authentication failed",
-                        ) from exc
-                    if len(plaintext) != int(entry["length"]):
-                        raise UploadError("payload_corrupt", "payload chunk length is invalid")
-                    if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
-                        raise UploadError("payload_corrupt", "payload chunk digest is invalid")
-                    yield plaintext
-
-                final = self._read_exact(source, final_length, "payload_corrupt")
+            source = _BlobReader(
+                self.blob_store.iter_bytes(payload_key, block_bytes=self.read_block_bytes)
+            )
+            for index in indexes:
+                entry = entries[index]
+                encrypted = self._read_exact(
+                    source, self._encrypted_length(entry), "payload_corrupt"
+                )
                 try:
-                    sentinel = self.encryption.decrypt(
-                        final, self.chunk_aad(import_id, len(indexes), final=True)
+                    plaintext = self.encryption.decrypt(
+                        encrypted, self.chunk_aad(import_id, index, final=False)
                     )
                 except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
                     raise UploadError(
                         "payload_authentication_failed",
-                        "payload end marker authentication failed",
+                        "payload chunk authentication failed",
                     ) from exc
-                if sentinel:
-                    raise UploadError("payload_corrupt", "payload end marker is not empty")
-                if source.read(1):
-                    raise UploadError("payload_corrupt", "payload has trailing bytes")
-        except OSError as exc:
+                if len(plaintext) != int(entry["length"]):
+                    raise UploadError("payload_corrupt", "payload chunk length is invalid")
+                if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
+                    raise UploadError("payload_corrupt", "payload chunk digest is invalid")
+                yield plaintext
+
+            final = self._read_exact(source, final_length, "payload_corrupt")
+            try:
+                sentinel = self.encryption.decrypt(
+                    final, self.chunk_aad(import_id, len(indexes), final=True)
+                )
+            except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
+                raise UploadError(
+                    "payload_authentication_failed",
+                    "payload end marker authentication failed",
+                ) from exc
+            if sentinel:
+                raise UploadError("payload_corrupt", "payload end marker is not empty")
+            if source.read(1):
+                raise UploadError("payload_corrupt", "payload has trailing bytes")
+        except (OSError, StorageError, TypeError) as exc:
             raise UploadError(unavailable_code, unavailable_message) from exc
 
     @contextmanager
@@ -1156,7 +1299,11 @@ class UploadService:
 
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+            if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                self._payload_key(import_id),
+                "storage_read_failed",
+                "completed payload availability could not be checked",
+            ):
                 raise UploadError(
                     "correction_unavailable",
                     "corrections require a completed uploaded import",
@@ -1200,7 +1347,11 @@ class UploadService:
 
         with self._lock:
             job = self.imports.get(owner_id, import_id)
-            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
+            if job.state is not ImportState.UPLOADED or not self._blob_exists(
+                self._payload_key(import_id),
+                "storage_read_failed",
+                "completed payload availability could not be checked",
+            ):
                 raise UploadError(
                     "mapping_unavailable",
                     "participant mapping requires a completed uploaded import",
@@ -1253,54 +1404,20 @@ class UploadService:
         if import_id is None:
             import_id = owner_id
             owner_id = None
-        with self._lock:
-            job = self.imports.get(owner_id, import_id)
-            if job.state is not ImportState.UPLOADED or not self.payload_path(import_id).is_file():
-                raise UploadError("payload_unavailable", "completed encrypted payload is unavailable")
-            manifest = self._load_manifest(owner_id, import_id)
-            chunks: Mapping[str, Mapping[str, Any]] = manifest["chunks"]
-            indexes = sorted(int(value) for value in chunks)
-            entries = {index: self._chunk_entry(chunks[str(index)]) for index in indexes}
-            if indexes != list(range(len(indexes))):
-                raise UploadError("manifest_corrupt", "encrypted chunk indexes are not contiguous")
+        return self._iter_completed_payload(
+            owner_id,
+            import_id,
+            unavailable_code="payload_unavailable",
+            unavailable_message="completed encrypted payload is unavailable",
+        )
 
-            with self.payload_path(import_id).open("rb") as source:
-                for index in indexes:
-                    entry = entries[index]
-                    encrypted = self._read_exact(
-                        source, self._encrypted_length(entry), "payload_corrupt"
-                    )
-                    try:
-                        plaintext = self.encryption.decrypt(
-                            encrypted, self.chunk_aad(import_id, index, final=False)
-                        )
-                    except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
-                        raise UploadError(
-                            "payload_authentication_failed", "payload chunk authentication failed"
-                        ) from exc
-                    if len(plaintext) != int(entry["length"]):
-                        raise UploadError("payload_corrupt", "payload chunk length is invalid")
-                    if hashlib.sha256(plaintext).hexdigest() != str(entry["sha256"]).lower():
-                        raise UploadError("payload_corrupt", "payload chunk digest is invalid")
-                    yield plaintext
+    @staticmethod
+    def _chunk_key(import_id: str, index: int) -> str:
+        return f"upload-parts/{import_id}-{index}.part"
 
-                final_length = self._encrypted_length_value(manifest.get("final_encrypted_length"))
-                final = self._read_exact(source, final_length, "payload_corrupt")
-                try:
-                    sentinel = self.encryption.decrypt(
-                        final, self.chunk_aad(import_id, len(indexes), final=True)
-                    )
-                except (AuthenticationError, InvalidEncryptedPayloadError) as exc:
-                    raise UploadError(
-                        "payload_authentication_failed", "payload end marker authentication failed"
-                    ) from exc
-                if sentinel:
-                    raise UploadError("payload_corrupt", "payload end marker is not empty")
-                if source.read(1):
-                    raise UploadError("payload_corrupt", "payload has trailing bytes")
-
-    def _chunk_path(self, import_id: str, index: int) -> Path:
-        return self.storage.object_path("upload-parts", f"{import_id}-{index}", ".part")
+    @staticmethod
+    def _payload_key(import_id: str) -> str:
+        return f"payloads/{import_id}.bin"
 
     def _load_manifest(self, owner_id: str, import_id: str) -> dict[str, Any]:
         value = self.imports.get_manifest(owner_id, import_id)
@@ -1378,6 +1495,22 @@ class UploadService:
                 raise UploadError(code, "encrypted segment exceeded its declared length")
             blocks.append(block)
             remaining -= len(block)
+        return b"".join(blocks)
+
+    def _read_blob_exact(self, key: str, length: int, code: str) -> bytes:
+        if length < 0:
+            raise UploadError(code, "encrypted object length is invalid")
+        blocks: list[bytes] = []
+        actual_length = 0
+        for block in self.blob_store.iter_bytes(key, block_bytes=self.read_block_bytes):
+            if not isinstance(block, bytes):
+                raise UploadError(code, "stored object returned invalid bytes")
+            actual_length += len(block)
+            if actual_length > length:
+                raise UploadError(code, "stored object has trailing bytes")
+            blocks.append(block)
+        if actual_length != length:
+            raise UploadError(code, "stored object is shorter than its manifest length")
         return b"".join(blocks)
 
     def _consume_and_hash(self, stream: BinaryIO, length: int) -> str:

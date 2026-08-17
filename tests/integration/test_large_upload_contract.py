@@ -54,7 +54,7 @@ class LargeUploadContractTests(unittest.TestCase):
         self.assertEqual(ImportState.UPLOADING, stored.state)
         self.assertEqual(1, stored.received_bytes)
         self.assertLess(allocated, 1024 * 1024)
-        self.assertFalse(uploads.payload_path(job.id).exists())
+        self.assertFalse(uploads.blob_store.exists(f"payloads/{job.id}.bin"))
 
 
 if __name__ == "__main__":

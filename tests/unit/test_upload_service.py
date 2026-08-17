@@ -12,6 +12,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.blob_store import BlobReceipt
 from src.services.import_repository import ImportRepository
 from src.preprocessing.media_inspector import MediaInspectionError
 from src.services.import_service import ImportNotFoundError, ImportService, ImportState
@@ -30,6 +31,40 @@ class RecordingReader(io.BytesIO):
     def read(self, size: int = -1) -> bytes:
         self.requested_sizes.append(size)
         return super().read(size)
+
+
+class RecordingBlobStore:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.put_keys: list[str] = []
+        self.deleted_keys: list[str] = []
+
+    def put(
+        self,
+        key: str,
+        source: io.BytesIO,
+        *,
+        length: int,
+        sha256: str,
+    ) -> BlobReceipt:
+        self.put_keys.append(key)
+        if Path(key).is_absolute():
+            raise AssertionError("BlobStore received an absolute path")
+        value = source.read()
+        self.objects[key] = value
+        return BlobReceipt(key=key, length=length, sha256=sha256)
+
+    def iter_bytes(self, key: str, *, block_bytes: int):
+        value = self.objects[key]
+        for start in range(0, len(value), block_bytes):
+            yield value[start : start + block_bytes]
+
+    def exists(self, key: str) -> bool:
+        return key in self.objects
+
+    def delete(self, key: str) -> bool:
+        self.deleted_keys.append(key)
+        return self.objects.pop(key, None) is not None
 
 
 class BlockingMediaInspector:
@@ -75,6 +110,49 @@ class UploadServiceTests(unittest.TestCase):
     def digest(value: bytes) -> str:
         return hashlib.sha256(value).hexdigest()
 
+    def stored_blob(self, key: str) -> bytes:
+        return b"".join(self.uploads.blob_store.iter_bytes(key, block_bytes=1024 * 1024))
+
+    def chunk_key(self, index: int) -> str:
+        return f"upload-parts/{self.job.id}-{index}.part"
+
+    def test_injected_blob_store_receives_logical_chunk_key(self) -> None:
+        blob_store = RecordingBlobStore()
+        uploads = UploadService(
+            self.uploads.storage,
+            self.imports,
+            self.encryption,
+            read_block_bytes=4,
+            blob_store=blob_store,
+        )
+        value = b"injected"
+
+        uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
+
+        self.assertEqual([f"upload-parts/{self.job.id}-0.part"], blob_store.put_keys)
+        self.assertNotIn("/", blob_store.put_keys[0][:1])
+
+    def test_injected_blob_store_owns_completed_payload_and_preview_objects(self) -> None:
+        blob_store = RecordingBlobStore()
+        uploads = UploadService(
+            self.uploads.storage,
+            self.imports,
+            self.encryption,
+            read_block_bytes=4,
+            blob_store=blob_store,
+        )
+        content = b"[2026-08-05 21:00] Xiaoyu: hello\n"
+        job = self.imports.create(self.job.persona_id, "chat.txt", len(content), "text/plain")
+        uploads.put_chunk(job.id, 0, len(content), self.digest(content), io.BytesIO(content))
+        uploads.complete(job.id, self.digest(content))
+
+        preview = uploads.preview(job.id)
+
+        self.assertEqual("generic_text", preview["source_type"])
+        self.assertIn(f"payloads/{job.id}.bin", blob_store.put_keys)
+        self.assertTrue(any(key.startswith("preview/") for key in blob_store.put_keys))
+        self.assertFalse(any(key.startswith("preview/") for key in blob_store.objects))
+
     def test_accepts_out_of_order_chunks_and_completes_payload(self) -> None:
         second = b"world"
         first = b"hello "
@@ -84,7 +162,7 @@ class UploadServiceTests(unittest.TestCase):
         completed = self.uploads.complete(self.job.id, self.digest(first + second))
 
         self.assertEqual(ImportState.UPLOADED, completed.state)
-        encrypted_payload = self.uploads.payload_path(self.job.id).read_bytes()
+        encrypted_payload = self.stored_blob(f"payloads/{self.job.id}.bin")
         self.assertNotEqual(first + second, encrypted_payload)
         self.assertEqual(first + second, b"".join(self.uploads.iter_payload(self.job.id)))
         self.assertFalse((self.root / "upload-manifests").exists())
@@ -96,7 +174,7 @@ class UploadServiceTests(unittest.TestCase):
             self.job.id, 0, len(value), self.digest(value), io.BytesIO(value)
         )
 
-        stored_chunk = self.uploads._chunk_path(self.job.id, 0).read_bytes()
+        stored_chunk = self.stored_blob(self.chunk_key(0))
 
         self.assertNotIn(value, stored_chunk)
         self.assertEqual(
@@ -136,7 +214,7 @@ class UploadServiceTests(unittest.TestCase):
         self.uploads.put_chunk(
             self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
         )
-        path = self.uploads._chunk_path(self.job.id, 0)
+        path = self.root / "upload-parts" / f"{self.job.id}-0.part"
         tampered = bytearray(path.read_bytes())
         tampered[0] ^= 1
         path.write_bytes(tampered)
@@ -145,7 +223,7 @@ class UploadServiceTests(unittest.TestCase):
             self.uploads.complete(self.job.id)
 
         self.assertEqual("chunk_authentication_failed", captured.exception.code)
-        self.assertFalse(self.uploads.payload_path(self.job.id).exists())
+        self.assertFalse(self.uploads.blob_store.exists(f"payloads/{self.job.id}.bin"))
 
     def test_chunk_trailing_bytes_fail_closed(self) -> None:
         value = b"secret"
@@ -156,7 +234,7 @@ class UploadServiceTests(unittest.TestCase):
         self.uploads.put_chunk(
             self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
         )
-        path = self.uploads._chunk_path(self.job.id, 0)
+        path = self.root / "upload-parts" / f"{self.job.id}-0.part"
         with path.open("ab") as output:
             output.write(b"trailing")
 
@@ -175,7 +253,7 @@ class UploadServiceTests(unittest.TestCase):
             self.job.id, 1, len(filler), self.digest(filler), io.BytesIO(filler)
         )
         self.uploads.complete(self.job.id)
-        path = self.uploads.payload_path(self.job.id)
+        path = self.root / "payloads" / f"{self.job.id}.bin"
         tampered = bytearray(path.read_bytes())
         tampered[-1] ^= 1
         path.write_bytes(tampered)
@@ -235,18 +313,18 @@ class UploadServiceTests(unittest.TestCase):
 
         self.assertEqual("deletion_unavailable", captured.exception.code)
         self.assertIsNotNone(self.imports.repository.get(self.job.id))
-        self.assertTrue(self.uploads._chunk_path(self.job.id, 0).exists())
+        self.assertTrue(self.uploads.blob_store.exists(self.chunk_key(0)))
 
     def test_cancel_clears_stored_parts_and_closes_the_import(self) -> None:
         value = b"secret"
         self.uploads.put_chunk(self.job.id, 0, len(value), self.digest(value), io.BytesIO(value))
-        chunk_path = self.uploads._chunk_path(self.job.id, 0)
-        self.assertTrue(chunk_path.exists())
+        chunk_key = self.chunk_key(0)
+        self.assertTrue(self.uploads.blob_store.exists(chunk_key))
 
         cancelled = self.uploads.cancel(self.job.id)
 
         self.assertEqual(ImportState.CANCELLED, cancelled.state)
-        self.assertFalse(chunk_path.exists())
+        self.assertFalse(self.uploads.blob_store.exists(chunk_key))
         self.assertEqual(0, cancelled.received_bytes)
         self.assertEqual(0, cancelled.chunk_count)
         self.assertEqual({}, self.imports.get_manifest(self.job.id)["chunks"])
