@@ -24,6 +24,14 @@ _RFC1918_NETWORKS = tuple(
 _ULA_NETWORK = ipaddress.ip_network("fc00::/7")
 
 
+class ConfigurationError(ValueError):
+    """Stable startup configuration error without echoing secret input."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class DevicePairingSettings:
     host: ipaddress.IPv4Address | ipaddress.IPv6Address
@@ -41,6 +49,7 @@ class ServerConfig:
     data_dir: Path = Path("data/runtime")
     web_dir: Path = Path("web")
     mode: str = "development"
+    storage_backend: str = "local"
     owner_bootstrap_token: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:3000",
@@ -68,6 +77,7 @@ class ServerConfig:
             data_dir=Path(os.getenv("PAST_PARTNER_DATA_DIR", str(default.data_dir))),
             web_dir=Path(os.getenv("PAST_PARTNER_WEB_DIR", str(default.web_dir))),
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
+            storage_backend=os.getenv("PAST_PARTNER_STORAGE_BACKEND", default.storage_backend),
             owner_bootstrap_token=os.getenv("PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN"),
             cors_origins=tuple(item.strip() for item in origins.split(",") if item.strip()) if origins else default.cors_origins,
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
@@ -88,6 +98,11 @@ class ServerConfig:
             raise ValueError("port must be between 0 and 65535")
         if self.mode not in {"development", "test", "production"}:
             raise ValueError("mode must be development, test, or production")
+        if self.storage_backend != "local":
+            raise ConfigurationError(
+                "storage_backend_unsupported",
+                "storage backend is unsupported",
+            )
         if min(self.max_json_bytes, self.max_chunk_bytes, self.max_import_bytes) <= 0:
             raise ValueError("request and import limits must be positive")
         if not 0 <= self.raw_retention_seconds <= MAX_RAW_RETENTION_SECONDS:

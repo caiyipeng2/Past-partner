@@ -14,6 +14,38 @@ def _token() -> str:
 
 
 class ServerConfigTests(unittest.TestCase):
+    def test_storage_backend_defaults_to_local(self) -> None:
+        self.assertEqual("local", ServerConfig().storage_backend)
+        with patch.dict(os.environ, {}, clear=False):
+            self.assertEqual("local", ServerConfig.from_env().storage_backend)
+
+    def test_storage_backend_accepts_explicit_local_value(self) -> None:
+        with patch.dict(os.environ, {"PAST_PARTNER_STORAGE_BACKEND": "local"}, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual("local", config.storage_backend)
+
+    def test_storage_backend_rejects_unknown_values_without_silent_fallback(self) -> None:
+        for value in ("s3", "minio", "postgres", "", "C:/private/storage"):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {"PAST_PARTNER_STORAGE_BACKEND": value},
+                clear=False,
+            ):
+                with self.assertRaises(ValueError) as captured:
+                    ServerConfig.from_env()
+                self.assertEqual("storage_backend_unsupported", captured.exception.code)
+
+    def test_storage_backend_error_does_not_echo_secret_or_full_path(self) -> None:
+        secret = "provider-secret"
+        path = "C:/private/runtime/storage"
+        with self.assertRaises(ValueError) as captured:
+            ServerConfig(storage_backend=f"s3://{secret}/{path}").validated()
+
+        self.assertEqual("storage_backend_unsupported", captured.exception.code)
+        self.assertNotIn(secret, str(captured.exception))
+        self.assertNotIn(path, str(captured.exception))
+
     def test_import_limit_is_configurable_from_environment(self) -> None:
         with patch.dict(os.environ, {"PAST_PARTNER_MAX_IMPORT_BYTES": "987654321"}, clear=False):
             config = ServerConfig.from_env()
