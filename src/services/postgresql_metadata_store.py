@@ -131,7 +131,17 @@ class _PostgreSQLConnection:
 
     @property
     def in_transaction(self) -> bool:
-        return bool(self._raw.in_transaction)
+        sqlite_style = getattr(self._raw, "in_transaction", None)
+        if sqlite_style is not None:
+            return bool(sqlite_style)
+        # psycopg exposes transaction state through ``connection.info`` rather
+        # than SQLite's boolean attribute. Treat unknown/non-idle states as
+        # active so error paths still attempt a safe rollback.
+        info = getattr(self._raw, "info", None)
+        status = getattr(info, "transaction_status", None)
+        if status is None or status == 0 or status == "IDLE":
+            return False
+        return getattr(status, "name", None) != "IDLE"
 
     def execute(self, sql: str, parameters: Any = ()) -> Any:
         try:

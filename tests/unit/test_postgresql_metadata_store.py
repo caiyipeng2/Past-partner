@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from src.services.metadata_store import (
     MetadataIntegrityError,
@@ -8,7 +9,7 @@ from src.services.metadata_store import (
     MetadataStore,
     MetadataStoreError,
 )
-from src.services.postgresql_metadata_store import PostgreSQLMetadataStore
+from src.services.postgresql_metadata_store import PostgreSQLMetadataStore, _PostgreSQLConnection
 
 
 class _FakeIntegrityError(Exception):
@@ -134,6 +135,15 @@ class PostgreSQLMetadataStoreTests(unittest.TestCase):
 
         self.assertEqual(1, pools[0].raw.rollback_count)
         self.assertEqual(2, pools[0].returned)
+
+    def test_psycopg_transaction_status_replaces_sqlite_in_transaction_attribute(self) -> None:
+        class PsycopgRaw:
+            info = SimpleNamespace(transaction_status=2)
+
+        connection = _PostgreSQLConnection(PsycopgRaw(), lambda *_: None)
+        self.assertTrue(connection.in_transaction)
+        connection._raw.info.transaction_status = 0
+        self.assertFalse(connection.in_transaction)
 
     def test_integrity_and_operational_errors_are_stable_and_redacted(self) -> None:
         pools, factory = self._factory()
