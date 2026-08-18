@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Iterator
 from unittest.mock import patch
 
-from src.services.blob_store import BlobReceipt, BlobStore, LocalBlobStore, StorageError
+from src.services.blob_store import (
+    BlobReceipt,
+    BlobStore,
+    LocalBlobStore,
+    S3BlobStore,
+    S3BlobStoreSettings,
+    StorageError,
+)
 from src.services.storage import StorageLayout
 
 
@@ -195,6 +202,128 @@ class LocalBlobStoreTests(unittest.TestCase):
         self.assertNotIn(str(self.root), str(captured.exception))
         self.assertNotIn(secret, str(captured.exception))
         self.assertNotIn("secret body", str(captured.exception))
+
+
+class _RemoteError(Exception):
+    def __init__(self, status: int, code: str = "RemoteFailure") -> None:
+        self.response = {
+            "ResponseMetadata": {"HTTPStatusCode": status},
+            "Error": {"Code": code},
+        }
+        super().__init__("remote secret and endpoint must not escape")
+
+
+class _S3Body:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def iter_chunks(self, chunk_size: int):
+        for offset in range(0, len(self.payload), chunk_size):
+            yield self.payload[offset : offset + chunk_size]
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeS3Client:
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, dict[str, str]]] = {}
+        self.put_read_sizes: list[int] = []
+        self.fail_head: Exception | None = None
+        self.fail_get: Exception | None = None
+
+    def put_object(self, *, Bucket: str, Key: str, Body, ContentLength: int, Metadata, IfNoneMatch: str):
+        if Key in self.objects:
+            raise _RemoteError(412, "PreconditionFailed")
+        chunks: list[bytes] = []
+        while True:
+            chunk = Body.read(7)
+            self.put_read_sizes.append(len(chunk))
+            if not chunk:
+                break
+            chunks.append(chunk)
+        self.objects[Key] = (b"".join(chunks), dict(Metadata))
+
+    def get_object(self, *, Bucket: str, Key: str):
+        if self.fail_get is not None:
+            raise self.fail_get
+        if Key not in self.objects:
+            raise _RemoteError(404, "NoSuchKey")
+        return {"Body": _S3Body(self.objects[Key][0])}
+
+    def head_object(self, *, Bucket: str, Key: str):
+        if self.fail_head is not None:
+            raise self.fail_head
+        if Key not in self.objects:
+            raise _RemoteError(404, "NotFound")
+        return {"ContentLength": len(self.objects[Key][0])}
+
+    def delete_object(self, *, Bucket: str, Key: str):
+        self.objects.pop(Key, None)
+
+
+class S3BlobStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = _FakeS3Client()
+        self.store = S3BlobStore(
+            self.client,
+            S3BlobStoreSettings(
+                bucket="past-partner-test",
+                region="local",
+                endpoint="http://127.0.0.1:9000",
+                path_style=True,
+            ),
+        )
+
+    @staticmethod
+    def _digest(payload: bytes) -> str:
+        return hashlib.sha256(payload).hexdigest()
+
+    def test_put_iter_exists_and_delete_use_bounded_client_calls(self) -> None:
+        payload = b"s3 compatible object"
+        key = "payloads/import-1.bin"
+
+        receipt = self.store.put(key, io.BytesIO(payload), length=len(payload), sha256=self._digest(payload))
+
+        self.assertEqual(BlobReceipt(key=key, length=len(payload), sha256=self._digest(payload)), receipt)
+        self.assertTrue(self.store.exists(key))
+        self.assertEqual([b"s3 com", b"patibl", b"e obje", b"ct"], list(self.store.iter_bytes(key, block_bytes=6)))
+        self.assertTrue(all(size <= 7 for size in self.client.put_read_sizes))
+        self.assertTrue(self.store.delete(key))
+        self.assertFalse(self.store.delete(key))
+
+    def test_s3_rejects_duplicate_and_cleans_digest_mismatch(self) -> None:
+        key = "payloads/conflict.bin"
+        original = b"original"
+        self.store.put(key, io.BytesIO(original), length=len(original), sha256=self._digest(original))
+
+        with self.assertRaisesRegex(StorageError, "already exists") as conflict:
+            self.store.put(key, io.BytesIO(b"replacement"), length=11, sha256=self._digest(b"replacement"))
+        self.assertEqual("object_conflict", conflict.exception.code)
+
+        mismatch_key = "payloads/mismatch.bin"
+        with self.assertRaisesRegex(StorageError, "digest") as mismatch:
+            self.store.put(mismatch_key, io.BytesIO(b"body"), length=4, sha256="a" * 64)
+        self.assertEqual("storage_write_failed", mismatch.exception.code)
+        self.assertNotIn(mismatch_key, self.client.objects)
+
+    def test_s3_maps_remote_errors_without_echoing_provider_details(self) -> None:
+        missing = "payloads/missing.bin"
+        with self.assertRaisesRegex(StorageError, "not found") as captured:
+            list(self.store.iter_bytes(missing, block_bytes=16))
+        self.assertEqual("object_not_found", captured.exception.code)
+        self.assertNotIn("remote secret", str(captured.exception))
+
+        self.client.fail_head = _RemoteError(503)
+        with self.assertRaisesRegex(StorageError, "read") as head_error:
+            self.store.exists("payloads/any.bin")
+        self.assertEqual("storage_read_failed", head_error.exception.code)
+
+    def test_s3_rejects_invalid_keys_before_remote_calls(self) -> None:
+        with self.assertRaisesRegex(StorageError, "invalid") as captured:
+            self.store.exists("../escape.bin")
+        self.assertEqual("invalid_key", captured.exception.code)
+        self.assertEqual({}, self.client.objects)
 
 
 if __name__ == "__main__":
