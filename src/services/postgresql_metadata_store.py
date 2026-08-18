@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from src.services.postgresql_database import PostgreSQLMigrator
 from src.services.metadata_store import (
     MetadataConnection,
     MetadataIntegrityError,
@@ -184,12 +185,18 @@ class PostgreSQLMetadataStore:
         self._driver_loader = driver_loader or _load_pool_factory
         self._pool: Any | None = None
         self._closed = False
+        self._migrator = PostgreSQLMigrator(self.connect)
 
     def migrate(self) -> int:
-        raise MetadataStoreError(
-            "metadata_migration_unavailable",
-            "metadata migration is unavailable",
-        )
+        try:
+            return self._migrator.migrate()
+        except MetadataStoreError:
+            raise
+        except Exception as exc:
+            raise MetadataStoreError(
+                "metadata_migration_failed",
+                "metadata store migration failed",
+            ) from exc
 
     def _ensure_pool(self) -> Any:
         if self._closed:
