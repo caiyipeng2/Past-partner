@@ -17,7 +17,7 @@ from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter, deterministic_test_provider_definition
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
-from src.services.blob_store import build_blob_store
+from src.services.blob_store import S3BlobStoreSettings, build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
 from src.services.multimodal_consent import MultimodalConsentGate
@@ -80,7 +80,18 @@ class Application:
     def from_config(cls, config: ServerConfig) -> "Application":
         config = config.validated()
         storage = StorageLayout(config.data_dir)
-        blob_store = build_blob_store(config.storage_backend, storage)
+        s3_settings = None
+        if config.storage_backend == "s3":
+            s3_settings = S3BlobStoreSettings(
+                endpoint=config.storage_s3_endpoint,
+                bucket=config.storage_s3_bucket or "",
+                region=config.storage_s3_region,
+                access_key=config.storage_s3_access_key,
+                secret_key=config.storage_s3_secret_key,
+                session_token=config.storage_s3_session_token,
+                path_style=config.storage_s3_path_style,
+            )
+        blob_store = build_blob_store(config.storage_backend, storage, s3_settings=s3_settings)
         metadata_store = build_metadata_store(
             config.metadata_backend,
             storage.database_path(),

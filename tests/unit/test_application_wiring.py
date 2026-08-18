@@ -52,9 +52,33 @@ class ApplicationStorageWiringTests(unittest.TestCase):
         self.assertIsInstance(application.uploads.blob_store, LocalBlobStore)
         self.assertEqual(self.root.resolve(), application.uploads.blob_store.layout.root)
 
+    def test_s3_backend_passes_validated_settings_to_blob_store_factory(self) -> None:
+        config = ServerConfig(
+            data_dir=self.root,
+            web_dir=Path.cwd() / "web",
+            mode="test",
+            storage_backend="s3",
+            storage_s3_endpoint="http://127.0.0.1:9000",
+            storage_s3_bucket="past-partner-test",
+            storage_s3_region="local",
+            storage_s3_access_key="access-key",
+            storage_s3_secret_key="secret-key",
+        )
+        with patch("src.server.application.build_blob_store") as factory:
+            factory.return_value = LocalBlobStore(StorageLayout(self.root))
+            application = Application.from_config(config)
+
+        factory.assert_called_once()
+        self.assertEqual("s3", factory.call_args.args[0])
+        settings = factory.call_args.kwargs["s3_settings"]
+        self.assertEqual("past-partner-test", settings.bucket)
+        self.assertEqual("http://127.0.0.1:9000", settings.endpoint)
+        self.assertEqual("local", settings.region)
+        self.assertIsNotNone(application.uploads.blob_store)
+
     def test_unsupported_backend_fails_before_application_writes_objects(self) -> None:
         with self.assertRaises(ConfigurationError) as captured:
-            Application.from_config(self.config("s3"))
+            Application.from_config(self.config("azure"))
 
         self.assertEqual("storage_backend_unsupported", captured.exception.code)
         self.assertFalse((self.root / "payloads").exists())

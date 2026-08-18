@@ -1,6 +1,7 @@
 import inspect
 import io
 import hashlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,9 @@ from src.services.blob_store import (
     LocalBlobStore,
     S3BlobStore,
     S3BlobStoreSettings,
+    StorageBackendUnavailableError,
     StorageError,
+    build_blob_store,
 )
 from src.services.storage import StorageLayout
 
@@ -324,6 +327,15 @@ class S3BlobStoreTests(unittest.TestCase):
             self.store.exists("../escape.bin")
         self.assertEqual("invalid_key", captured.exception.code)
         self.assertEqual({}, self.client.objects)
+
+    def test_factory_fails_closed_when_optional_sdk_is_missing(self) -> None:
+        settings = S3BlobStoreSettings(bucket="past-partner-test")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(sys.modules, {"boto3": None, "botocore": None, "botocore.config": None}):
+                with self.assertRaises(StorageBackendUnavailableError) as captured:
+                    build_blob_store("s3", StorageLayout(Path(directory)), s3_settings=settings)
+
+        self.assertEqual("storage_backend_unavailable", captured.exception.code)
 
 
 if __name__ == "__main__":
