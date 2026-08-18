@@ -25,8 +25,78 @@ class ServerConfigTests(unittest.TestCase):
 
         self.assertEqual("local", config.storage_backend)
 
+    def test_storage_backend_accepts_valid_s3_settings(self) -> None:
+        config = ServerConfig(
+            storage_backend="s3",
+            storage_s3_endpoint="https://objects.example.test",
+            storage_s3_bucket="past-partner-test",
+            storage_s3_region="cn-test-1",
+            storage_s3_access_key="access-key",
+            storage_s3_secret_key="secret-key",
+            storage_s3_path_style=False,
+        ).validated()
+
+        self.assertEqual("s3", config.storage_backend)
+        self.assertEqual("past-partner-test", config.storage_s3_bucket)
+        self.assertEqual("cn-test-1", config.storage_s3_region)
+        self.assertFalse(config.storage_s3_path_style)
+
+    def test_minio_alias_normalizes_and_allows_loopback_http_only_in_development(self) -> None:
+        config = ServerConfig(
+            mode="development",
+            storage_backend="minio",
+            storage_s3_endpoint="http://127.0.0.1:9000",
+            storage_s3_bucket="past-partner-test",
+            storage_s3_access_key="access-key",
+            storage_s3_secret_key="secret-key",
+        ).validated()
+
+        self.assertEqual("s3", config.storage_backend)
+
+    def test_s3_requires_bucket_and_paired_credentials(self) -> None:
+        with self.assertRaises(ValueError) as missing_bucket:
+            ServerConfig(storage_backend="s3").validated()
+        self.assertEqual("storage_bucket_required", missing_bucket.exception.code)
+
+        with self.assertRaises(ValueError) as one_sided:
+            ServerConfig(
+                storage_backend="s3",
+                storage_s3_bucket="past-partner-test",
+                storage_s3_access_key="access-key",
+            ).validated()
+        self.assertEqual("storage_credentials_invalid", one_sided.exception.code)
+
+    def test_s3_production_rejects_plain_http_endpoint(self) -> None:
+        with self.assertRaises(ValueError) as captured:
+            ServerConfig(
+                mode="production",
+                storage_backend="s3",
+                storage_s3_endpoint="http://objects.example.test",
+                storage_s3_bucket="past-partner-test",
+            ).validated()
+
+        self.assertEqual("storage_endpoint_insecure", captured.exception.code)
+        self.assertNotIn("objects.example.test", str(captured.exception))
+
+    def test_s3_settings_are_loaded_from_environment(self) -> None:
+        values = {
+            "PAST_PARTNER_STORAGE_BACKEND": "minio",
+            "PAST_PARTNER_STORAGE_S3_ENDPOINT": "http://127.0.0.1:9000",
+            "PAST_PARTNER_STORAGE_S3_BUCKET": "past-partner-test",
+            "PAST_PARTNER_STORAGE_S3_REGION": "local",
+            "PAST_PARTNER_STORAGE_S3_ACCESS_KEY": "access-key",
+            "PAST_PARTNER_STORAGE_S3_SECRET_KEY": "secret-key",
+            "PAST_PARTNER_STORAGE_S3_PATH_STYLE": "false",
+        }
+        with patch.dict(os.environ, values, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual("s3", config.storage_backend)
+        self.assertEqual("local", config.storage_s3_region)
+        self.assertFalse(config.storage_s3_path_style)
+
     def test_storage_backend_rejects_unknown_values_without_silent_fallback(self) -> None:
-        for value in ("s3", "minio", "postgres", "", "C:/private/storage"):
+        for value in ("postgres", "", "C:/private/storage"):
             with self.subTest(value=value), patch.dict(
                 os.environ,
                 {"PAST_PARTNER_STORAGE_BACKEND": value},

@@ -1,3 +1,4 @@
 # 默认安装仅包含核心服务依赖。
 # 解析、模型和开发工具通过各自清单显式安装。
+# S3-compatible object storage is optional: install requirements-storage.txt explicitly.
 -r requirements-core.txt

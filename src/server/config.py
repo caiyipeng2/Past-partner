@@ -8,8 +8,10 @@ import hashlib
 import hmac
 import ipaddress
 import os
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cryptography import x509
 
@@ -23,6 +25,7 @@ _RFC1918_NETWORKS = tuple(
     for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
 _ULA_NETWORK = ipaddress.ip_network("fc00::/7")
+_S3_BUCKET = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])?$")
 
 
 class ConfigurationError(ValueError):
@@ -51,6 +54,13 @@ class ServerConfig:
     web_dir: Path = Path("web")
     mode: str = "development"
     storage_backend: str = "local"
+    storage_s3_endpoint: str | None = None
+    storage_s3_bucket: str | None = None
+    storage_s3_region: str = "us-east-1"
+    storage_s3_access_key: str | None = None
+    storage_s3_secret_key: str | None = None
+    storage_s3_session_token: str | None = None
+    storage_s3_path_style: bool = True
     metadata_backend: str = "sqlite"
     metadata_dsn: str | None = None
     metadata_pool_min_size: int = 1
@@ -83,6 +93,15 @@ class ServerConfig:
             web_dir=Path(os.getenv("PAST_PARTNER_WEB_DIR", str(default.web_dir))),
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
             storage_backend=os.getenv("PAST_PARTNER_STORAGE_BACKEND", default.storage_backend),
+            storage_s3_endpoint=os.getenv("PAST_PARTNER_STORAGE_S3_ENDPOINT"),
+            storage_s3_bucket=os.getenv("PAST_PARTNER_STORAGE_S3_BUCKET"),
+            storage_s3_region=os.getenv("PAST_PARTNER_STORAGE_S3_REGION", default.storage_s3_region),
+            storage_s3_access_key=os.getenv("PAST_PARTNER_STORAGE_S3_ACCESS_KEY"),
+            storage_s3_secret_key=os.getenv("PAST_PARTNER_STORAGE_S3_SECRET_KEY"),
+            storage_s3_session_token=os.getenv("PAST_PARTNER_STORAGE_S3_SESSION_TOKEN"),
+            storage_s3_path_style=_bool_env(
+                "PAST_PARTNER_STORAGE_S3_PATH_STYLE", default.storage_s3_path_style
+            ),
             metadata_backend=os.getenv("PAST_PARTNER_METADATA_BACKEND", default.metadata_backend),
             metadata_dsn=os.getenv("PAST_PARTNER_METADATA_DSN"),
             metadata_pool_min_size=_int_env(
@@ -111,11 +130,13 @@ class ServerConfig:
             raise ValueError("port must be between 0 and 65535")
         if self.mode not in {"development", "test", "production"}:
             raise ValueError("mode must be development, test, or production")
-        if self.storage_backend != "local":
-            raise ConfigurationError(
-                "storage_backend_unsupported",
-                "storage backend is unsupported",
-            )
+        storage_backend = self.storage_backend.strip().lower() if isinstance(self.storage_backend, str) else ""
+        if storage_backend == "minio":
+            storage_backend = "s3"
+        if storage_backend not in {"local", "s3"}:
+            raise ConfigurationError("storage_backend_unsupported", "storage backend is unsupported")
+        if storage_backend == "s3":
+            _validate_s3_settings(self)
         metadata_backend = self.metadata_backend.strip().lower() if isinstance(self.metadata_backend, str) else ""
         if metadata_backend == "postgres":
             metadata_backend = "postgresql"
@@ -146,6 +167,7 @@ class ServerConfig:
             self._build_device_pairing_settings()
         return replace(
             self,
+            storage_backend=storage_backend,
             metadata_backend=metadata_backend,
             data_dir=self.data_dir.expanduser().resolve(),
             web_dir=self.web_dir.expanduser().resolve(),
@@ -230,6 +252,43 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError("storage_path_style_invalid", "S3 path-style setting is invalid")
+
+
+def _validate_s3_settings(config: ServerConfig) -> None:
+    bucket = config.storage_s3_bucket.strip() if isinstance(config.storage_s3_bucket, str) else ""
+    if not bucket or _S3_BUCKET.fullmatch(bucket) is None or len(bucket) > 63:
+        raise ConfigurationError("storage_bucket_required", "S3 bucket is required and invalid")
+    region = config.storage_s3_region.strip() if isinstance(config.storage_s3_region, str) else ""
+    if not region or len(region) > 63 or any(ord(character) < 33 for character in region):
+        raise ConfigurationError("storage_region_invalid", "S3 region is invalid")
+    access = config.storage_s3_access_key
+    secret = config.storage_s3_secret_key
+    if bool(access) != bool(secret):
+        raise ConfigurationError("storage_credentials_invalid", "S3 credentials must be provided together")
+    endpoint = config.storage_s3_endpoint
+    if endpoint is None or not endpoint.strip():
+        return
+    parsed = urlsplit(endpoint.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        raise ConfigurationError("storage_endpoint_invalid", "S3 endpoint is invalid")
+    if parsed.query or parsed.fragment:
+        raise ConfigurationError("storage_endpoint_invalid", "S3 endpoint is invalid")
+    if parsed.scheme == "http":
+        hostname = (parsed.hostname or "").casefold().rstrip(".")
+        if config.mode == "production" or hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ConfigurationError("storage_endpoint_insecure", "S3 endpoint must use HTTPS")
 
 
 def _csv_env(name: str) -> tuple[str, ...]:

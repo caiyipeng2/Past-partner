@@ -1,0 +1,3 @@
+# Optional S3-compatible object storage adapter (AWS S3, MinIO, or compatible service).
+-r requirements-core.txt
+boto3>=1.35.0
