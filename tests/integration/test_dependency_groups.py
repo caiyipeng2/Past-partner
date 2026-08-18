@@ -27,6 +27,7 @@ class DependencyGroupContractTests(unittest.TestCase):
                 "loguru>=0.6.0",
                 "python-dotenv>=0.20.0",
                 "cryptography>=49.0.0",
+                "psycopg[binary,pool]>=3.2.0",
             ],
             self._entries("requirements-core.txt"),
         )
