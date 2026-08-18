@@ -12,6 +12,7 @@ from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.import_repository import ImportRepository, ImportRepositoryError
 from src.services.import_service import ImportFile, ImportJob, ImportState
 from src.services.local_auth import LocalAuthService
+from src.services.metadata_store import MetadataIntegrityError
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 from src.services.storage import StorageLayout
 
@@ -140,7 +141,7 @@ class ImportRepositoryTests(unittest.TestCase):
             )
             connection.commit()
 
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(MetadataIntegrityError):
             self.repository.save_state(changed, changed_manifest)
 
         self.assertEqual(self.job, self.repository.get(self.job.id))

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataStore, require_metadata_store
+from src.services.metadata_store import MetadataConnection, MetadataIntegrityError, MetadataStore, require_metadata_store
 
 
 class ConversationRepositoryError(RuntimeError):
@@ -48,7 +47,7 @@ class ConversationRepository:
             )
             connection.commit()
             return conversation
-        except sqlite3.IntegrityError as exc:
+        except MetadataIntegrityError as exc:
             if connection.in_transaction:
                 connection.rollback()
             code = "conversation_exists" if "UNIQUE" in str(exc).upper() else "conversation_references_invalid"
@@ -174,5 +173,5 @@ class ConversationRepository:
             raise ValueError("owner_id must be non-empty")
         return value
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()

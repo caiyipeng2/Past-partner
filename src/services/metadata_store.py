@@ -85,11 +85,29 @@ def require_metadata_store(value: MetadataStore | Path | str) -> MetadataStore:
     raise TypeError("metadata_store must implement the MetadataStore contract")
 
 
-def build_metadata_store(backend: str, database_path: Path | str) -> MetadataStore:
+def build_metadata_store(
+    backend: str,
+    database_path: Path | str,
+    *,
+    dsn: str | None = None,
+    pool_min_size: int = 1,
+    pool_max_size: int = 4,
+) -> MetadataStore:
     """Build the configured metadata backend without silently falling back."""
 
-    if backend != "sqlite":
-        raise MetadataStoreError("metadata_backend_unsupported", "metadata backend is unsupported")
-    from src.services.sqlite_metadata_store import SQLiteMetadataStore
+    normalized_backend = "postgresql" if backend == "postgres" else backend
+    if normalized_backend == "sqlite":
+        from src.services.sqlite_metadata_store import SQLiteMetadataStore
 
-    return SQLiteMetadataStore(database_path)
+        return SQLiteMetadataStore(database_path)
+    if normalized_backend == "postgresql":
+        if not isinstance(dsn, str) or not dsn.strip():
+            raise MetadataStoreError("metadata_dsn_required", "metadata PostgreSQL DSN is required")
+        from src.services.postgresql_metadata_store import PostgreSQLMetadataStore
+
+        return PostgreSQLMetadataStore(
+            dsn,
+            min_size=pool_min_size,
+            max_size=pool_max_size,
+        )
+    raise MetadataStoreError("metadata_backend_unsupported", "metadata backend is unsupported")

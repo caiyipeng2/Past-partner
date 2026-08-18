@@ -63,6 +63,16 @@ class MetadataStoreContractTests(unittest.TestCase):
         self.assertNotIn("secret/path", str(captured.exception))
         self.assertNotIn(str(missing), str(captured.exception))
 
+    def test_sqlite_constraint_errors_cross_the_port_as_stable_errors(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            store = SQLiteMetadataStore(Path(directory) / "metadata.sqlite3")
+            store.migrate()
+            with closing(store.connect()) as connection:
+                connection.execute("CREATE TABLE unique_probe (id INTEGER PRIMARY KEY)")
+                connection.execute("INSERT INTO unique_probe(id) VALUES (?)", (1,))
+                with self.assertRaises(MetadataIntegrityError):
+                    connection.execute("INSERT INTO unique_probe(id) VALUES (?)", (1,))
+
     def test_store_close_is_idempotent_and_part_of_the_contract(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             store = SQLiteMetadataStore(Path(directory) / "metadata.sqlite3")

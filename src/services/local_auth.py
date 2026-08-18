@@ -9,7 +9,6 @@ import binascii
 import base64
 import ipaddress
 import secrets
-import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
@@ -24,7 +23,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataStore, require_metadata_store
+from src.services.metadata_store import MetadataConnection, MetadataStore, require_metadata_store
 
 if TYPE_CHECKING:
     from src.server.config import DevicePairingSettings
@@ -149,11 +148,11 @@ class LocalAuthService:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    sqlite3.Binary(token_hash),
+                    token_hash,
                     self.owner_id,
                     expires_at.isoformat(),
                     session_origin,
-                    sqlite3.Binary(pairing_fingerprint) if pairing_fingerprint else None,
+                    pairing_fingerprint,
                 ),
             )
             connection.commit()
@@ -171,7 +170,7 @@ class LocalAuthService:
         with closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT user_id, expires_at, session_origin, pairing_token_fingerprint FROM local_sessions WHERE token_hash = ?",
-                (sqlite3.Binary(token_hash),),
+                (token_hash,),
             ).fetchone()
         if row is None or row[0] != self.owner_id or str(row[1]) <= now:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
@@ -267,5 +266,5 @@ class LocalAuthService:
     def _aad(cls, owner_id: str) -> bytes:
         return f"{cls._USER_AAD_PREFIX}{owner_id}".encode("utf-8")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()

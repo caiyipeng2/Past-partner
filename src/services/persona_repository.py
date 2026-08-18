@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Mapping
@@ -14,7 +13,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataStore, require_metadata_store
+from src.services.metadata_store import MetadataConnection, MetadataIntegrityError, MetadataStore, require_metadata_store
 
 
 class PersonaRepositoryError(RuntimeError):
@@ -56,7 +55,7 @@ class PersonaRepository:
                 (persona.id, owner_id, self._RECORD_VERSION, envelope),
             )
             connection.commit()
-        except sqlite3.IntegrityError as exc:
+        except MetadataIntegrityError as exc:
             if connection.in_transaction:
                 connection.rollback()
             raise PersonaRepositoryError("persona_exists", "persona already exists") from exc
@@ -272,7 +271,7 @@ class PersonaRepository:
     def _aad(cls, persona_id: str) -> bytes:
         return f"{cls._AAD_PREFIX}{persona_id}".encode("utf-8")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()
 
     @staticmethod

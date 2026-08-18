@@ -6,7 +6,6 @@ from contextlib import closing
 from dataclasses import replace
 import json
 from pathlib import Path
-import sqlite3
 
 from src.domain.training_jobs import TrainingJob, TrainingJobValidationError
 from src.services.authenticated_encryption import (
@@ -14,7 +13,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataStore, require_metadata_store
+from src.services.metadata_store import MetadataConnection, MetadataIntegrityError, MetadataStore, require_metadata_store
 
 
 class TrainingJobRepositoryError(RuntimeError):
@@ -112,7 +111,7 @@ class TrainingJobRepository:
                     )
             connection.commit()
             return stored
-        except sqlite3.IntegrityError as exc:
+        except MetadataIntegrityError as exc:
             if connection.in_transaction:
                 connection.rollback()
             raise TrainingJobRepositoryError(
@@ -258,7 +257,7 @@ class TrainingJobRepository:
     def _aad(cls, owner_id: str, job_id: str) -> bytes:
         return f"{cls._AAD_PREFIX}{owner_id}/{job_id}".encode("utf-8")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()
 
     @staticmethod

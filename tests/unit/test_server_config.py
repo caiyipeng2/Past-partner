@@ -76,6 +76,51 @@ class ServerConfigTests(unittest.TestCase):
         self.assertEqual(raw, config.model_pricing_json)
         self.assertIsNone(ServerConfig().model_pricing_json)
 
+    def test_postgresql_backend_requires_dsn_and_normalizes_alias(self) -> None:
+        with self.assertRaisesRegex(ValueError, "DSN") as captured:
+            ServerConfig(metadata_backend="postgres").validated()
+        self.assertEqual("metadata_dsn_required", captured.exception.code)
+
+        config = ServerConfig(
+            metadata_backend="postgres",
+            metadata_dsn="postgresql://user:password@example.invalid/past_partner",
+            metadata_pool_min_size=2,
+            metadata_pool_max_size=8,
+        ).validated()
+
+        self.assertEqual("postgresql", config.metadata_backend)
+        self.assertEqual(2, config.metadata_pool_min_size)
+        self.assertEqual(8, config.metadata_pool_max_size)
+
+    def test_postgresql_pool_bounds_are_rejected_without_echoing_dsn(self) -> None:
+        dsn = "postgresql://user:password@example.invalid/past_partner"
+        for minimum, maximum in ((0, 1), (3, 2), (1, 65)):
+            with self.subTest(minimum=minimum, maximum=maximum):
+                with self.assertRaises(ValueError) as captured:
+                    ServerConfig(
+                        metadata_backend="postgresql",
+                        metadata_dsn=dsn,
+                        metadata_pool_min_size=minimum,
+                        metadata_pool_max_size=maximum,
+                    ).validated()
+                self.assertNotIn("password", str(captured.exception))
+                self.assertNotIn("example.invalid", str(captured.exception))
+
+    def test_postgresql_backend_from_env_reads_pool_settings(self) -> None:
+        values = {
+            "PAST_PARTNER_METADATA_BACKEND": "postgres",
+            "PAST_PARTNER_METADATA_DSN": "postgresql://user:password@example.invalid/past_partner",
+            "PAST_PARTNER_METADATA_POOL_MIN_SIZE": "2",
+            "PAST_PARTNER_METADATA_POOL_MAX_SIZE": "6",
+        }
+        with patch.dict(os.environ, values, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual("postgresql", config.metadata_backend)
+        self.assertEqual(values["PAST_PARTNER_METADATA_DSN"], config.metadata_dsn)
+        self.assertEqual(2, config.metadata_pool_min_size)
+        self.assertEqual(6, config.metadata_pool_max_size)
+
     def test_device_pairing_accepts_private_host_matching_tls_certificate(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd() / ".test-runtime") as directory:
             certificate, key, _ = create_server_certificate(Path(directory), "192.168.50.7")

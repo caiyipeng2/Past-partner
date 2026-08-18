@@ -8,7 +8,49 @@ from pathlib import Path
 from typing import Iterator
 
 from src.services.database import SQLiteMigrator
-from src.services.metadata_store import MetadataConnection, MetadataStoreError
+from src.services.metadata_store import (
+    MetadataConnection,
+    MetadataIntegrityError,
+    MetadataOperationalError,
+    MetadataStoreError,
+)
+
+
+class _SQLiteMetadataConnection:
+    """Hide sqlite3 exception classes behind the metadata port."""
+
+    def __init__(self, raw: sqlite3.Connection) -> None:
+        self._raw = raw
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._raw.in_transaction
+
+    def execute(self, sql: str, parameters: object = ()) -> object:
+        try:
+            return self._raw.execute(sql, parameters)
+        except sqlite3.IntegrityError as exc:
+            raise MetadataIntegrityError() from exc
+        except sqlite3.Error as exc:
+            raise MetadataOperationalError() from exc
+
+    def commit(self) -> None:
+        try:
+            self._raw.commit()
+        except sqlite3.Error as exc:
+            raise MetadataOperationalError() from exc
+
+    def rollback(self) -> None:
+        try:
+            self._raw.rollback()
+        except sqlite3.Error as exc:
+            raise MetadataOperationalError() from exc
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        except sqlite3.Error as exc:
+            raise MetadataOperationalError() from exc
 
 
 class SQLiteMetadataStore:
@@ -36,7 +78,7 @@ class SQLiteMetadataStore:
 
     def connect(self) -> MetadataConnection:
         try:
-            return self._connect_impl()
+            return _SQLiteMetadataConnection(self._connect_impl())
         except (OSError, sqlite3.Error) as exc:
             raise MetadataStoreError(
                 "metadata_connection_failed", "metadata store connection failed"

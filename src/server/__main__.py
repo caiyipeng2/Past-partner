@@ -30,7 +30,8 @@ def main() -> None:
         mode=args.mode,
     ).validated()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    server = create_server(config, Application.from_config(config))
+    application = Application.from_config(config)
+    server = create_server(config, application)
     scheme = "https" if server.is_tls else "http"
     logging.getLogger(__name__).info("Serving on %s://%s:%s", scheme, config.host, server.server_address[1])
     try:
@@ -39,6 +40,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        application.close()
 
 
 if __name__ == "__main__":

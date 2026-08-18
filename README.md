@@ -84,7 +84,7 @@ npm start
 python -m unittest discover -s tests -p "test*.py" -v
 ```
 
-对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-01 目前只实现本地适配器；配置 `s3`、`minio` 或其他值会在启动校验阶段明确失败，不会静默回退到本地。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，当前所有仓储共享一个 SQLite 适配器和同一迁移账本；配置 `postgres`、`postgresql` 或其他值会在写入前明确失败。PostgreSQL、云对象存储和 KMS 属于后续独立任务，当前不需要云凭据或额外 SDK。
+对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-01 目前只实现本地适配器；配置 `s3`、`minio` 或其他值会在启动校验阶段明确失败，不会静默回退到本地。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。云对象存储和 KMS 属于后续独立任务。
 
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。
 

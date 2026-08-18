@@ -17,6 +17,7 @@ from src.services.import_service import DEFAULT_MAX_IMPORT_BYTES
 from src.services.upload_service import DEFAULT_CHUNK_BYTES
 
 MAX_RAW_RETENTION_SECONDS = 5 * 365 * 24 * 60 * 60
+MAX_METADATA_POOL_SIZE = 64
 _RFC1918_NETWORKS = tuple(
     ipaddress.ip_network(value)
     for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
@@ -51,6 +52,9 @@ class ServerConfig:
     mode: str = "development"
     storage_backend: str = "local"
     metadata_backend: str = "sqlite"
+    metadata_dsn: str | None = None
+    metadata_pool_min_size: int = 1
+    metadata_pool_max_size: int = 4
     owner_bootstrap_token: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:3000",
@@ -80,6 +84,13 @@ class ServerConfig:
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
             storage_backend=os.getenv("PAST_PARTNER_STORAGE_BACKEND", default.storage_backend),
             metadata_backend=os.getenv("PAST_PARTNER_METADATA_BACKEND", default.metadata_backend),
+            metadata_dsn=os.getenv("PAST_PARTNER_METADATA_DSN"),
+            metadata_pool_min_size=_int_env(
+                "PAST_PARTNER_METADATA_POOL_MIN_SIZE", default.metadata_pool_min_size
+            ),
+            metadata_pool_max_size=_int_env(
+                "PAST_PARTNER_METADATA_POOL_MAX_SIZE", default.metadata_pool_max_size
+            ),
             owner_bootstrap_token=os.getenv("PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN"),
             cors_origins=tuple(item.strip() for item in origins.split(",") if item.strip()) if origins else default.cors_origins,
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
@@ -105,11 +116,20 @@ class ServerConfig:
                 "storage_backend_unsupported",
                 "storage backend is unsupported",
             )
-        if self.metadata_backend != "sqlite":
+        metadata_backend = self.metadata_backend.strip().lower() if isinstance(self.metadata_backend, str) else ""
+        if metadata_backend == "postgres":
+            metadata_backend = "postgresql"
+        if metadata_backend not in {"sqlite", "postgresql"}:
             raise ConfigurationError(
                 "metadata_backend_unsupported",
                 "metadata backend is unsupported",
             )
+        if not 1 <= self.metadata_pool_min_size <= self.metadata_pool_max_size <= MAX_METADATA_POOL_SIZE:
+            raise ConfigurationError("metadata_pool_invalid", "metadata pool size is invalid")
+        if metadata_backend == "postgresql" and not isinstance(self.metadata_dsn, str):
+            raise ConfigurationError("metadata_dsn_required", "metadata PostgreSQL DSN is required")
+        if metadata_backend == "postgresql" and not self.metadata_dsn.strip():
+            raise ConfigurationError("metadata_dsn_required", "metadata PostgreSQL DSN is required")
         if min(self.max_json_bytes, self.max_chunk_bytes, self.max_import_bytes) <= 0:
             raise ValueError("request and import limits must be positive")
         if not 0 <= self.raw_retention_seconds <= MAX_RAW_RETENTION_SECONDS:
@@ -126,6 +146,7 @@ class ServerConfig:
             self._build_device_pairing_settings()
         return replace(
             self,
+            metadata_backend=metadata_backend,
             data_dir=self.data_dir.expanduser().resolve(),
             web_dir=self.web_dir.expanduser().resolve(),
             device_tls_cert_file=(

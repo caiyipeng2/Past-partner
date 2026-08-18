@@ -25,7 +25,7 @@ from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
-from src.services.metadata_store import build_metadata_store
+from src.services.metadata_store import MetadataStore, build_metadata_store
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
@@ -56,6 +56,7 @@ class Application:
         auth: LocalAuthService,
         training: FineTuningService,
         conversations: ConversationService,
+        metadata_store: MetadataStore | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -68,6 +69,7 @@ class Application:
         self.auth = auth
         self.training = training
         self.conversations = conversations
+        self.metadata_store = metadata_store
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -79,7 +81,13 @@ class Application:
         config = config.validated()
         storage = StorageLayout(config.data_dir)
         blob_store = build_blob_store(config.storage_backend, storage)
-        metadata_store = build_metadata_store(config.metadata_backend, storage.database_path())
+        metadata_store = build_metadata_store(
+            config.metadata_backend,
+            storage.database_path(),
+            dsn=config.metadata_dsn,
+            pool_min_size=config.metadata_pool_min_size,
+            pool_max_size=config.metadata_pool_max_size,
+        )
         metadata_store.migrate()
         master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
         encryption = AuthenticatedEncryptionService(master_keys)
@@ -150,11 +158,16 @@ class Application:
             auth,
             training,
             conversations,
+            metadata_store,
         )
-        # Keep the selected backend visible to diagnostics and future adapters;
-        # repositories still receive the same object directly for isolation.
-        application.metadata_store = metadata_store
         return application
+
+    def close(self) -> None:
+        """Release the shared metadata backend exactly once."""
+
+        metadata_store, self.metadata_store = self.metadata_store, None
+        if metadata_store is not None:
+            metadata_store.close()
 
     def issue_session(
         self,

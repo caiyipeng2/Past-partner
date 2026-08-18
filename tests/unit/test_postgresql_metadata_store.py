@@ -98,6 +98,8 @@ class PostgreSQLMetadataStoreTests(unittest.TestCase):
         connection = store.connect()
         connection.execute("SELECT ? AS value", (memoryview(b"payload"),))
         connection.execute("SELECT '?' AS literal, ? -- ?\n", (1,))
+        connection.execute("SELECT rowid, id FROM imports")
+        connection.execute("SELECT rowid, id FROM imports ORDER BY rowid")
         connection.execute("BEGIN IMMEDIATE")
         connection.close()
 
@@ -106,6 +108,8 @@ class PostgreSQLMetadataStoreTests(unittest.TestCase):
             [
                 ("SELECT %s AS value", (b"payload",)),
                 ("SELECT '?' AS literal, %s -- ?\n", (1,)),
+                ("SELECT ctid, id FROM imports", ()),
+                ("SELECT ctid, id FROM imports ORDER BY ctid", ()),
                 ("BEGIN", ()),
             ],
             pools[0].raw.calls,

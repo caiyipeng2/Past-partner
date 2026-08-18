@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from contextlib import closing
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -15,7 +14,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataStore, require_metadata_store
+from src.services.metadata_store import MetadataConnection, MetadataIntegrityError, MetadataStore, require_metadata_store
 
 
 class ImportRepositoryError(RuntimeError):
@@ -73,7 +72,7 @@ class ImportRepository:
                 (job.id, self._RECORD_VERSION, manifest_payload),
             )
             connection.commit()
-        except sqlite3.IntegrityError as exc:
+        except MetadataIntegrityError as exc:
             if connection.in_transaction:
                 connection.rollback()
             raise ImportRepositoryError("import_exists", "import already exists") from exc
@@ -125,7 +124,7 @@ class ImportRepository:
         owner_id = self._owner_id(owner_id)
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
+                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)} ORDER BY rowid",
                 self._owner_params(owner_id),
             ).fetchall()
         jobs = [(row[0], self._decode_job(row[1], row[2], row[3])) for row in rows]
@@ -140,7 +139,7 @@ class ImportRepository:
             return []
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)}",
+                f"SELECT rowid, id, record_version, encrypted_payload FROM imports WHERE {self._owner_clause(owner_id)} ORDER BY rowid",
                 self._owner_params(owner_id),
             ).fetchall()
         jobs = [
@@ -588,7 +587,7 @@ class ImportRepository:
             normalized.append(entry)
         return normalized
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()
 
     @staticmethod

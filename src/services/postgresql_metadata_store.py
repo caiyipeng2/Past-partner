@@ -23,6 +23,7 @@ from src.services.metadata_store import (
 
 
 _BEGIN_IMMEDIATE = re.compile(r"^BEGIN\s+IMMEDIATE\b", re.IGNORECASE)
+_ROWID = re.compile(r"\browid\b", re.IGNORECASE)
 
 
 def _load_pool_factory() -> Callable[..., Any]:
@@ -102,7 +103,7 @@ def _convert_sql(sql: str) -> str:
     if begin_match:
         stripped = "BEGIN" + stripped[begin_match.end() :]
         sql = leading + stripped
-    return _convert_qmarks(sql)
+    return _convert_qmarks(_ROWID.sub("ctid", sql))
 
 
 def _is_integrity_error(error: Exception) -> bool:
