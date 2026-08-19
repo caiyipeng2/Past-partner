@@ -53,6 +53,12 @@ class ServerConfig:
     data_dir: Path = Path("data/runtime")
     web_dir: Path = Path("web")
     mode: str = "development"
+    master_key_source: str = "auto"
+    master_key_kms_key_id: str | None = None
+    master_key_kms_ciphertext_file: Path | None = None
+    master_key_kms_region: str = "us-east-1"
+    master_key_kms_endpoint: str | None = None
+    master_key_kms_auto_provision: bool = False
     storage_backend: str = "local"
     storage_s3_endpoint: str | None = None
     storage_s3_bucket: str | None = None
@@ -92,6 +98,18 @@ class ServerConfig:
             data_dir=Path(os.getenv("PAST_PARTNER_DATA_DIR", str(default.data_dir))),
             web_dir=Path(os.getenv("PAST_PARTNER_WEB_DIR", str(default.web_dir))),
             mode=os.getenv("PAST_PARTNER_MODE", default.mode),
+            master_key_source=os.getenv("PAST_PARTNER_MASTER_KEY_SOURCE", default.master_key_source),
+            master_key_kms_key_id=os.getenv("PAST_PARTNER_MASTER_KEY_KMS_KEY_ID"),
+            master_key_kms_ciphertext_file=_path_env("PAST_PARTNER_MASTER_KEY_KMS_CIPHERTEXT_FILE"),
+            master_key_kms_region=os.getenv(
+                "PAST_PARTNER_MASTER_KEY_KMS_REGION", default.master_key_kms_region
+            ),
+            master_key_kms_endpoint=os.getenv("PAST_PARTNER_MASTER_KEY_KMS_ENDPOINT"),
+            master_key_kms_auto_provision=_bool_env(
+                "PAST_PARTNER_MASTER_KEY_KMS_AUTO_PROVISION",
+                default.master_key_kms_auto_provision,
+                error_code="master_key_kms_auto_provision_invalid",
+            ),
             storage_backend=os.getenv("PAST_PARTNER_STORAGE_BACKEND", default.storage_backend),
             storage_s3_endpoint=os.getenv("PAST_PARTNER_STORAGE_S3_ENDPOINT"),
             storage_s3_bucket=os.getenv("PAST_PARTNER_STORAGE_S3_BUCKET"),
@@ -130,6 +148,15 @@ class ServerConfig:
             raise ValueError("port must be between 0 and 65535")
         if self.mode not in {"development", "test", "production"}:
             raise ValueError("mode must be development, test, or production")
+        master_key_source = _validate_master_key_settings(self)
+        data_dir = self.data_dir.expanduser().resolve()
+        kms_ciphertext_file = self.master_key_kms_ciphertext_file
+        if kms_ciphertext_file is None and (
+            master_key_source == "kms" or self.master_key_kms_key_id is not None
+        ):
+            kms_ciphertext_file = data_dir / "secrets" / "master-key.kms"
+        elif kms_ciphertext_file is not None:
+            kms_ciphertext_file = kms_ciphertext_file.expanduser().resolve()
         storage_backend = self.storage_backend.strip().lower() if isinstance(self.storage_backend, str) else ""
         if storage_backend == "minio":
             storage_backend = "s3"
@@ -167,9 +194,11 @@ class ServerConfig:
             self._build_device_pairing_settings()
         return replace(
             self,
+            master_key_source=master_key_source,
+            master_key_kms_ciphertext_file=kms_ciphertext_file,
             storage_backend=storage_backend,
             metadata_backend=metadata_backend,
-            data_dir=self.data_dir.expanduser().resolve(),
+            data_dir=data_dir,
             web_dir=self.web_dir.expanduser().resolve(),
             device_tls_cert_file=(
                 self.device_tls_cert_file.expanduser().resolve()
@@ -254,7 +283,7 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
-def _bool_env(name: str, default: bool) -> bool:
+def _bool_env(name: str, default: bool, *, error_code: str = "storage_path_style_invalid") -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -263,7 +292,55 @@ def _bool_env(name: str, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise ConfigurationError("storage_path_style_invalid", "S3 path-style setting is invalid")
+    raise ConfigurationError(error_code, "boolean setting is invalid")
+
+
+def _validate_master_key_settings(config: ServerConfig) -> str:
+    source = config.master_key_source.strip().casefold() if isinstance(config.master_key_source, str) else ""
+    if source not in {"auto", "environment", "dpapi", "kms"}:
+        raise ConfigurationError("master_key_source_unsupported", "master key source is unsupported")
+    if source == "dpapi" and config.mode != "development":
+        raise ConfigurationError("master_key_dpapi_unsupported", "DPAPI master keys require development mode")
+
+    key_id = config.master_key_kms_key_id
+    kms_values_present = any(
+        value is not None
+        for value in (
+            config.master_key_kms_key_id,
+            config.master_key_kms_ciphertext_file,
+            config.master_key_kms_endpoint,
+        )
+    )
+    if key_id is not None:
+        if (
+            not isinstance(key_id, str)
+            or not key_id.strip()
+            or len(key_id) > 2048
+            or any(ord(character) < 33 for character in key_id)
+        ):
+            raise ConfigurationError("master_key_kms_key_id_invalid", "KMS key ID is invalid")
+    if source == "kms" and key_id is None:
+        raise ConfigurationError("master_key_kms_key_id_required", "KMS key ID is required")
+    if source in {"environment", "dpapi"} and kms_values_present:
+        raise ConfigurationError("master_key_source_conflict", "KMS settings conflict with the selected master key source")
+    if source == "auto" and kms_values_present and key_id is None:
+        raise ConfigurationError("master_key_kms_key_id_required", "KMS key ID is required")
+
+    region = config.master_key_kms_region
+    if not isinstance(region, str) or not region.strip() or len(region) > 63 or any(ord(character) < 33 for character in region):
+        raise ConfigurationError("master_key_kms_region_invalid", "KMS region is invalid")
+    endpoint = config.master_key_kms_endpoint
+    if endpoint is not None and endpoint.strip():
+        parsed = urlsplit(endpoint.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+            raise ConfigurationError("master_key_kms_endpoint_invalid", "KMS endpoint is invalid")
+        if parsed.query or parsed.fragment:
+            raise ConfigurationError("master_key_kms_endpoint_invalid", "KMS endpoint is invalid")
+        if parsed.scheme == "http":
+            hostname = (parsed.hostname or "").casefold().rstrip(".")
+            if config.mode == "production" or hostname not in {"localhost", "127.0.0.1", "::1"}:
+                raise ConfigurationError("master_key_kms_endpoint_insecure", "KMS endpoint must use HTTPS")
+    return source
 
 
 def _validate_s3_settings(config: ServerConfig) -> None:

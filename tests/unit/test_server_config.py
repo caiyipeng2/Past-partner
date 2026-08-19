@@ -116,6 +116,56 @@ class ServerConfigTests(unittest.TestCase):
         self.assertNotIn(secret, str(captured.exception))
         self.assertNotIn(path, str(captured.exception))
 
+    def test_kms_source_requires_key_id_and_defaults_ciphertext_path(self) -> None:
+        with self.assertRaises(ValueError) as missing:
+            ServerConfig(master_key_source="kms").validated()
+        self.assertEqual("master_key_kms_key_id_required", missing.exception.code)
+
+        environment_config = ServerConfig(master_key_source="environment").validated()
+        self.assertIsNone(environment_config.master_key_kms_ciphertext_file)
+
+        config = ServerConfig(
+            data_dir=Path("runtime-kms"),
+            mode="production",
+            master_key_source="kms",
+            master_key_kms_key_id="alias/past-partner",
+        ).validated()
+        self.assertEqual("kms", config.master_key_source)
+        self.assertEqual(
+            config.data_dir / "secrets" / "master-key.kms",
+            config.master_key_kms_ciphertext_file,
+        )
+
+    def test_kms_source_rejects_unknown_values_and_plain_http_in_production(self) -> None:
+        with self.assertRaises(ValueError) as source:
+            ServerConfig(master_key_source="vault").validated()
+        self.assertEqual("master_key_source_unsupported", source.exception.code)
+
+        with self.assertRaises(ValueError) as endpoint:
+            ServerConfig(
+                mode="production",
+                master_key_source="kms",
+                master_key_kms_key_id="alias/past-partner",
+                master_key_kms_endpoint="http://kms.example.test",
+            ).validated()
+        self.assertEqual("master_key_kms_endpoint_insecure", endpoint.exception.code)
+        self.assertNotIn("kms.example.test", str(endpoint.exception))
+
+    def test_kms_source_is_loaded_from_environment(self) -> None:
+        values = {
+            "PAST_PARTNER_MASTER_KEY_SOURCE": "kms",
+            "PAST_PARTNER_MASTER_KEY_KMS_KEY_ID": "alias/past-partner",
+            "PAST_PARTNER_MASTER_KEY_KMS_REGION": "cn-test-1",
+            "PAST_PARTNER_MASTER_KEY_KMS_AUTO_PROVISION": "true",
+        }
+        with patch.dict(os.environ, values, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual("kms", config.master_key_source)
+        self.assertEqual("alias/past-partner", config.master_key_kms_key_id)
+        self.assertEqual("cn-test-1", config.master_key_kms_region)
+        self.assertTrue(config.master_key_kms_auto_provision)
+
     def test_import_limit_is_configurable_from_environment(self) -> None:
         with patch.dict(os.environ, {"PAST_PARTNER_MAX_IMPORT_BYTES": "987654321"}, clear=False):
             config = ServerConfig.from_env()

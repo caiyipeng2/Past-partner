@@ -9,7 +9,11 @@ from uuid import uuid4
 from src.server.application import Application
 from src.server.config import ConfigurationError, ServerConfig
 from src.services.blob_store import LocalBlobStore
-from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR
+from src.services.master_key import (
+    EnvironmentMasterKeyProvider,
+    MASTER_KEY_BYTES,
+    MASTER_KEY_ENV_VAR,
+)
 from src.services.storage import StorageLayout
 
 
@@ -75,6 +79,31 @@ class ApplicationStorageWiringTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:9000", settings.endpoint)
         self.assertEqual("local", settings.region)
         self.assertIsNotNone(application.uploads.blob_store)
+
+    def test_kms_source_passes_validated_settings_to_master_key_factory(self) -> None:
+        config = ServerConfig(
+            data_dir=self.root,
+            web_dir=Path.cwd() / "web",
+            mode="test",
+            master_key_source="kms",
+            master_key_kms_key_id="alias/past-partner",
+            master_key_kms_region="local",
+            master_key_kms_endpoint="http://127.0.0.1:4566",
+            master_key_kms_auto_provision=True,
+        )
+        with patch("src.server.application.build_master_key_provider") as master_factory:
+            master_factory.return_value = EnvironmentMasterKeyProvider(
+                {MASTER_KEY_ENV_VAR: base64.b64encode(b"w" * MASTER_KEY_BYTES).decode("ascii")}
+            )
+            Application.from_config(config)
+
+        master_factory.assert_called_once()
+        self.assertEqual(self.root, master_factory.call_args.args[0])
+        self.assertEqual("kms", master_factory.call_args.kwargs["master_key_source"])
+        self.assertEqual("alias/past-partner", master_factory.call_args.kwargs["kms_key_id"])
+        self.assertEqual("local", master_factory.call_args.kwargs["kms_region"])
+        self.assertEqual("http://127.0.0.1:4566", master_factory.call_args.kwargs["kms_endpoint"])
+        self.assertTrue(master_factory.call_args.kwargs["kms_auto_provision"])
 
     def test_unsupported_backend_fails_before_application_writes_objects(self) -> None:
         with self.assertRaises(ConfigurationError) as captured:

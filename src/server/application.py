@@ -100,7 +100,16 @@ class Application:
             pool_max_size=config.metadata_pool_max_size,
         )
         metadata_store.migrate()
-        master_keys = build_master_key_provider(config.data_dir, mode=config.mode)
+        master_keys = build_master_key_provider(
+            config.data_dir,
+            mode=config.mode,
+            master_key_source=config.master_key_source,
+            kms_key_id=config.master_key_kms_key_id,
+            kms_ciphertext_path=config.master_key_kms_ciphertext_file,
+            kms_region=config.master_key_kms_region,
+            kms_endpoint=config.master_key_kms_endpoint,
+            kms_auto_provision=config.master_key_kms_auto_provision,
+        )
         encryption = AuthenticatedEncryptionService(master_keys)
         auth = LocalAuthService(
             metadata_store,
