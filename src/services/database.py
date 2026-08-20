@@ -46,6 +46,9 @@ class Migration:
 # never appears in SQLite columns; the persona index is only used for safe filtering
 # and cascade deletion. Version 10 adds an owner-scoped durable task queue. Routing
 # and lease metadata stay queryable; payloads and results remain encrypted blobs.
+# Version 11 persists the canonical owner read/write scope set on each session. Existing
+# sessions default to the full local-owner set so this additive migration preserves the
+# single-owner development behavior while allowing future account boundaries to narrow it.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -195,6 +198,15 @@ DEFAULT_MIGRATIONS = (
             """,
             "CREATE INDEX task_queue_claim_idx ON task_queue(state, available_at, leased_until)",
             "CREATE INDEX task_queue_owner_idx ON task_queue(owner_id, created_at, id)",
+        ),
+    ),
+    Migration(
+        version=11,
+        name="session_scopes",
+        statements=(
+            "ALTER TABLE local_sessions ADD COLUMN scopes TEXT NOT NULL "
+            "DEFAULT 'owner:read,owner:write' "
+            "CHECK (scopes IN ('owner:read', 'owner:write', 'owner:read,owner:write'))",
         ),
     ),
 )

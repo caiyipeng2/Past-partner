@@ -161,14 +161,19 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         try:
             path, _ = self._request_target()
             if self._requires_auth(path):
-                self.owner_id = self.server.application.authenticate(
-                    self.headers.get("Authorization")
-                ).user_id
+                principal = self.server.application.authenticate(self.headers.get("Authorization"))
+                principal.require("owner:read" if self.command == "GET" else "owner:write")
+                self.owner_id = principal.user_id
             else:
                 self.owner_id = None
             operation()
         except LocalAuthError as exc:
-            status = HTTPStatus.SERVICE_UNAVAILABLE if exc.code.startswith("auth_owner_record_") else HTTPStatus.UNAUTHORIZED
+            if exc.code == "insufficient_scope":
+                status = HTTPStatus.FORBIDDEN
+            elif exc.code.startswith("auth_owner_record_"):
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+            else:
+                status = HTTPStatus.UNAUTHORIZED
             self._error(status, exc.code, str(exc))
         except RequestValidationError as exc:
             self._error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))

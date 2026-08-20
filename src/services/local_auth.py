@@ -12,9 +12,9 @@ import secrets
 import threading
 import time
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +23,7 @@ from src.services.authenticated_encryption import (
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
+from src.domain.access_scope import AccessScopeError, AccessScopes
 from src.services.metadata_store import MetadataConnection, MetadataStore, require_metadata_store
 
 if TYPE_CHECKING:
@@ -38,6 +39,11 @@ class LocalAuthError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OwnerPrincipal:
     user_id: str
+    scopes: AccessScopes = field(default_factory=AccessScopes.full)
+
+    def require(self, scope: str) -> None:
+        if not self.scopes.allows(scope):
+            raise LocalAuthError("insufficient_scope", "required owner scope is unavailable")
 
 
 class PairingAttemptLimiter:
@@ -115,7 +121,15 @@ class LocalAuthService:
         remote_address: str,
         presented_bootstrap_token: str | None = None,
         presented_device_bootstrap_token: str | bytes | None = None,
+        *,
+        scopes: AccessScopes | Iterable[str] | None = None,
     ) -> dict[str, str]:
+        try:
+            scope_set = AccessScopes.full() if scopes is None else (
+                scopes if isinstance(scopes, AccessScopes) else AccessScopes.from_values(scopes)
+            )
+        except AccessScopeError as exc:
+            raise LocalAuthError("scope_invalid", "session scope is invalid") from exc
         session_origin = "loopback"
         pairing_fingerprint: bytes | None = None
         if self.mode in {"development", "test"}:
@@ -144,8 +158,8 @@ class LocalAuthService:
             connection.execute(
                 """
                 INSERT INTO local_sessions
-                    (token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint)
-                VALUES (?, ?, ?, ?, ?)
+                    (token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token_hash,
@@ -153,6 +167,7 @@ class LocalAuthService:
                     expires_at.isoformat(),
                     session_origin,
                     pairing_fingerprint,
+                    scope_set.serialize(),
                 ),
             )
             connection.commit()
@@ -161,6 +176,7 @@ class LocalAuthService:
             "token_type": "Bearer",
             "owner_id": self.owner_id,
             "expires_at": expires_at.isoformat(),
+            "scopes": scope_set.serialize(),
         }
 
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
@@ -169,7 +185,8 @@ class LocalAuthService:
         now = datetime.now(UTC).isoformat()
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT user_id, expires_at, session_origin, pairing_token_fingerprint FROM local_sessions WHERE token_hash = ?",
+                "SELECT user_id, expires_at, session_origin, pairing_token_fingerprint, scopes "
+                "FROM local_sessions WHERE token_hash = ?",
                 (token_hash,),
             ).fetchone()
         if row is None or row[0] != self.owner_id or str(row[1]) <= now:
@@ -184,7 +201,11 @@ class LocalAuthService:
                 raise LocalAuthError("authentication_required", "a valid owner session is required")
             if not hmac.compare_digest(stored, current.token_fingerprint):
                 raise LocalAuthError("authentication_required", "a valid owner session is required")
-        return OwnerPrincipal(str(row[0]))
+        try:
+            scope_set = AccessScopes.parse(str(row[4]))
+        except (AccessScopeError, TypeError, ValueError) as exc:
+            raise LocalAuthError("authentication_required", "a valid owner session is required") from exc
+        return OwnerPrincipal(str(row[0]), scope_set)
 
     def _authorize_device_pairing(
         self,

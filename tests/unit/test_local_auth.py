@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.domain.access_scope import AccessScopes
 from src.services.local_auth import LocalAuthError, LocalAuthService
 from src.server.config import DevicePairingSettings
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
@@ -49,6 +50,30 @@ class LocalAuthTests(unittest.TestCase):
 
         self.assertEqual(first.owner_id, second.owner_id)
         self.assertEqual(first.owner_id, second.authenticate(f"Bearer {session['access_token']}").user_id)
+
+    def test_session_scopes_are_persisted_and_returned_on_principal(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption)
+        session = auth.issue_session("127.0.0.1", scopes=["owner:read"])
+
+        principal = auth.authenticate(f"Bearer {session['access_token']}")
+
+        self.assertEqual(AccessScopes.from_values(["owner:read"]), principal.scopes)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            stored = connection.execute("SELECT scopes FROM local_sessions").fetchone()[0]
+        self.assertEqual("owner:read", stored)
+
+    def test_malformed_persisted_scopes_fail_closed(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption)
+        session = auth.issue_session("127.0.0.1")
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            # Simulate a legacy/tampered row so the authentication parser, rather
+            # than only the database CHECK constraint, proves fail-closed behavior.
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute("UPDATE local_sessions SET scopes = 'owner:admin'")
+            connection.commit()
+
+        with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
+            auth.authenticate(f"Bearer {session['access_token']}")
 
     def test_missing_malformed_and_expired_sessions_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, session_ttl=timedelta(seconds=1))

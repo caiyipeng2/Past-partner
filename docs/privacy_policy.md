@@ -58,6 +58,7 @@ P1-03 通用 HTML 解析仅提取识别到的消息容器中的发送者、时�
 - 加密元数据默认由同一进程内共享的 SQLite `MetadataStore` 负责迁移、连接和事务边界；也可通过服务端 `PAST_PARTNER_METADATA_BACKEND=postgresql`（`postgres` 为兼容别名）切换到 PostgreSQL 适配器。PostgreSQL DSN 只从 `PAST_PARTNER_METADATA_DSN` 读取，不写入日志、响应或客户端配置；连接池上下限由服务端变量控制并在启动时限制范围。未知后端、缺少 DSN 或缺少 PostgreSQL 驱动都会明确失败，不会静默回退或伪装成 SQLite。对象字节存储仍由独立的 `PAST_PARTNER_STORAGE_BACKEND` 选择；P4-04 的 S3-compatible 适配器使用同一逻辑 key 边界，生产 endpoint 必须为 HTTPS，服务端凭据不会进入客户端或日志。P4-05 的 KMS-backed 主密钥源仅在显式配置 key ID 后启用，使用 AWS-compatible KMS 以加密/解密 32 字节数据密钥，本地仅保存 KMS 密文 blob；生产 endpoint 必须为 HTTPS，不记录 KMS endpoint、凭据、key ID、密文或明文密钥。P4-06 的任务队列复用同一元数据后端，路由/租约字段用于抢占，任务载荷和结果使用 AES-GCM 加密；租约、重试和失败只保存有界状态码，不保存异常文本、供应商响应或原始数据。worker 不会由服务自动启动，也不代表已经完成多用户账户隔离或多节点运维。
 - 模拟器或 Android ADB reverse/port-forward 可以继续使用回环 HTTP，且不发送设备配对 header；该方式不等同于真机直连，不应把端口转发暴露给不受控网络。
 - 当前版本提供单一本地 owner 的 Bearer 会话、人物/导入/上传 owner 归属和未授权拦截。尚未接入 OIDC/OAuth2、多用户账户、细粒度角色、审计和公网部署所需的完整访问控制，不适合直接暴露到公网或多人共享环境。
+- P4-07 已为本地会话增加 `owner:read` 和 `owner:write` scope：读取接口需要前者，写入/删除接口需要后者，scope 缺失会返回拒绝；scope 与会话一起持久化并在篡改或未知值时 fail closed。该切片只提供主体范围契约和单 owner 兼容基础，不代表已经提供 OIDC/OAuth2 登录、账户注册、管理员角色、计费或公网多租户部署。
 - 当前版本尚未实现数据匿名化或脱敏，导入和对话内容可能包含本人及第三人的敏感信息。
 - 当前版本尚未提供成功标准化数据的自动保留期清理、原始载荷完整导出或账户级级联删除功能；已提供默认关闭、按 `PAST_PARTNER_RAW_RETENTION_SECONDS` 配置的终态导入清理（仅 `failed` 和 `cancelled`）、按 owner 校验的元数据导出、单个导入删除和人物级导入级联删除接口。
 - 当前版本尚未提供生产级审计日志、泄露通知流程或监管报告自动化能力；HTTP 访问日志仅记录方法、路由模板、状态、对端类别和诊断 ID，不记录 token、query、body、客户端 IP 或异常堆栈。P1-10 的授权记录是本地 owner 级业务记录，不替代生产级合规审计。
