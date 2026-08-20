@@ -127,6 +127,6 @@ rg -n "KmsMasterKeyProvider|AwsKmsBackend|build_master_key_provider|MASTER_KEY_K
 
 Confirm that plaintext master-key bytes never enter a file path, log message, HTTP response, or client configuration, and that explicit KMS selection cannot silently fall back to another provider.
 
-- [ ] **Step 3: Commit and prepare user acceptance without merging**
+- [x] **Step 3: Commit and prepare user acceptance without merging**
 
 Commit the implementation on `codex/p4-05-kms-master-key`, report the commit list and test evidence, and wait for explicit acceptance. Only after acceptance may the branch be fast-forwarded into `main`, re-tested, pushed to `origin/main`, and cleaned up.
