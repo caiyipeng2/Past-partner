@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import ipaddress
 import logging
@@ -9,6 +10,7 @@ import mimetypes
 import re
 import socket
 import ssl
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,7 +23,7 @@ from src.domain.conversations import ConversationValidationError
 from src.domain.personas import PersonaValidationError
 from src.providers.catalog import CatalogValidationError
 from src.providers.gateway import ProviderError
-from src.server.application import Application, RequestValidationError
+from src.server.application import Application, AuditServiceError, RequestValidationError
 from src.server.config import ServerConfig
 from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
@@ -61,6 +63,8 @@ _CONVERSATION_PATH = re.compile(r"^/api/v1/conversations/([A-Za-z0-9._-]+)$")
 _CONVERSATION_MESSAGES_PATH = re.compile(
     r"^/api/v1/conversations/([A-Za-z0-9._-]+)/messages$"
 )
+_AUDIT_EVENTS_PATH = "/api/v1/audit-events"
+_AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
     "/index.html": "workspace.html",
@@ -244,6 +248,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_provider_response": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
+        except AuditServiceError as exc:
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
         except TrainingServiceError as exc:
             status = {
                 "training_job_not_found": HTTPStatus.NOT_FOUND,
@@ -325,6 +331,27 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.application.get_conversation(self.owner_id, match.group(1)),
             )
+        elif path == _AUDIT_EVENTS_PATH:
+            raw_limit = query.get("limit", [None])[0]
+            limit = 100
+            if raw_limit is not None:
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError) as exc:
+                    raise RequestValidationError("invalid_audit_limit", "audit limit is invalid") from exc
+                if not 1 <= limit <= 100:
+                    raise RequestValidationError("invalid_audit_limit", "audit limit is invalid")
+            raw_cursor = query.get("before", [None])[0]
+            before = _decode_audit_cursor(raw_cursor) if raw_cursor is not None else None
+            events = self.server.application.list_audit_events(
+                self.owner_id,
+                limit=limit,
+                before=before,
+            )
+            payload: dict[str, Any] = {"audit_events": events}
+            if events and len(events) == limit:
+                payload["next_cursor"] = _encode_audit_cursor(events[-1])
+            self._json(HTTPStatus.OK, payload)
         elif match := _TRAINING_JOB_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -689,6 +716,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/conversations/{conversation_id}/messages"
         if _CONVERSATION_PATH.fullmatch(path):
             return "/api/v1/conversations/{conversation_id}"
+        if path == _AUDIT_EVENTS_PATH:
+            return _AUDIT_EVENTS_PATH
         return "/api/*"
     return "/static"
 
@@ -703,3 +732,27 @@ def _peer_class(value: str) -> str:
     if address.is_private:
         return "private_lan"
     return "other"
+
+
+def _encode_audit_cursor(event: dict[str, Any]) -> str:
+    raw = f"{event['occurred_at']}\x00{event['id']}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_audit_cursor(value: str) -> tuple[str, str]:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        raise RequestValidationError("invalid_audit_cursor", "audit cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        timestamp, event_id = decoded.decode("utf-8").split("\x00", 1)
+        parsed = datetime.fromisoformat(timestamp)
+    except (ValueError, UnicodeError, IndexError) as exc:
+        raise RequestValidationError("invalid_audit_cursor", "audit cursor is invalid") from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+        or not _AUDIT_CURSOR_ID.fullmatch(event_id)
+    ):
+        raise RequestValidationError("invalid_audit_cursor", "audit cursor is invalid")
+    return parsed.astimezone(UTC).isoformat(), event_id
