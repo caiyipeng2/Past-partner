@@ -84,7 +84,7 @@ npm start
 python -m unittest discover -s tests -p "test*.py" -v
 ```
 
-对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-04 增加可选的 S3-compatible 适配器：`s3` 和 `minio` 需要显式安装 `requirements-storage.txt`、配置服务端 bucket/region/endpoint 和成对凭据；生产 endpoint 必须使用 HTTPS，缺少 SDK、配置错误或远端错误都会明确失败，不会静默回退到本地。逻辑对象 key、AES-GCM 密文和上传 API 不变，S3 endpoint 与凭据不会进入日志、响应或客户端配置。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。KMS、分布式任务和多用户隔离属于后续独立任务。
+对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-04 增加可选的 S3-compatible 适配器：`s3` 和 `minio` 需要显式安装 `requirements-storage.txt`、配置服务端 bucket/region/endpoint 和成对凭据；生产 endpoint 必须使用 HTTPS，缺少 SDK、配置错误或远端错误都会明确失败，不会静默回退到本地。逻辑对象 key、AES-GCM 密文和上传 API 不变，S3 endpoint 与凭据不会进入日志、响应或客户端配置。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。P4-05 增加可选的 KMS-backed 主密钥源；分布式任务和多用户隔离仍属于后续独立任务。
 
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。
 
@@ -142,7 +142,7 @@ P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准�
 
 服务启动时会在 `<data-dir>/database/past-partner.sqlite3` 创建本地 SQLite 数据库，并在同一事务中执行尚未应用的版本化迁移。已执行版本记录在 `schema_migrations` 表中，重复启动不会重复应用；迁移历史不一致或迁移失败时，服务会停止启动而不是继续使用不确定的结构。
 
-应用已装配统一主密钥提供器。所有模式都优先读取 `PAST_PARTNER_MASTER_KEY`，其值必须是严格 Base64 编码的 32 字节随机密钥；生产模式缺失或配置错误时，后续敏感写入取钥会直接失败。Windows 本地开发模式未配置环境密钥时，会在首次取钥时生成随机密钥，并通过当前 Windows 用户的 DPAPI 保护后写入 `<data-dir>/secrets/master-key.dpapi`。DPAPI 文件不能跨 Windows 用户直接解保护，不应作为备份密钥使用。
+应用已装配统一主密钥提供器。默认 `PAST_PARTNER_MASTER_KEY_SOURCE=auto` 保持环境密钥优先：`PAST_PARTNER_MASTER_KEY` 必须是严格 Base64 编码的 32 字节随机密钥；没有环境密钥时，Windows 本地开发模式才会使用当前用户 DPAPI 保护的本地密钥。显式选择 `environment` 时只读取环境密钥，显式选择 `dpapi` 仅允许开发模式；生产或测试环境应显式选择 `kms`，配置 `PAST_PARTNER_MASTER_KEY_KMS_KEY_ID`，可选指定 `PAST_PARTNER_MASTER_KEY_KMS_CIPHERTEXT_FILE`（默认 `<data-dir>/secrets/master-key.kms`）。KMS provider 通过 AWS-compatible `boto3` 客户端加解密 32 字节数据密钥，本地只持久化 KMS 密文，绝不写入明文密钥；首次生成需要 `PAST_PARTNER_MASTER_KEY_KMS_AUTO_PROVISION=true`，缺少密文或 KMS 调用失败都会 fail closed，不会回退到环境/DPAPI。KMS endpoint 在生产必须使用 HTTPS，`boto3` 依赖可通过 `requirements-storage.txt` 安装；不要把云凭据、密文文件或密钥 ID 写入仓库和客户端。DPAPI 文件不能跨 Windows 用户直接解保护，不应作为备份密钥使用。
 
 P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片和合并对象接入该服务；P0-07 已将人物名称、关系等内容字段迁入加密 SQLite 仓储，P0-08 又将导入任务和上传清单迁入同一事务仓储，P0-09 增加本地 owner Bearer 会话并为人物、导入和上传接口执行 owner 归属校验，随机服务端 ID 仅作为非秘密索引。每个分片、人物记录、导入任务和清单记录使用独立随机数据密钥和 nonce，AAD 绑定对象身份；3 GiB 导入始终按有界分片处理。启动时会先加密迁移旧 `personas/*.json`、`imports/*.json` 和 `upload-manifests/*.json`，提交成功后才删除明文源文件。开发模式只允许回环地址初始化会话，生产模式需配置 `PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN`；OIDC/OAuth2、多用户账户和审计属于后续任务，具体限制见 `docs/privacy_policy.md`。
 
