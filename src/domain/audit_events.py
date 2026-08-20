@@ -110,6 +110,14 @@ class AuditEvent:
             "metadata": dict(self.metadata),
         }
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AuditEvent):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
+
+    def __repr__(self) -> str:
+        return f"AuditEvent(id={self.id!r}, action={self.action.value!r}, resource_id={self.resource_id!r})"
+
 
 def _identifier(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
