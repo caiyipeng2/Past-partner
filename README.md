@@ -86,6 +86,8 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-04 增加可选的 S3-compatible 适配器：`s3` 和 `minio` 需要显式安装 `requirements-storage.txt`、配置服务端 bucket/region/endpoint 和成对凭据；生产 endpoint 必须使用 HTTPS，缺少 SDK、配置错误或远端错误都会明确失败，不会静默回退到本地。逻辑对象 key、AES-GCM 密文和上传 API 不变，S3 endpoint 与凭据不会进入日志、响应或客户端配置。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。P4-05 增加可选的 KMS-backed 主密钥源。P4-06 增加共享元数据后端上的 owner 范围持久化任务队列：任务路由和租约状态可查询，任务载荷和结果继续使用 AES-GCM 加密；worker 通过短租约、续租、幂等完成、有限重试和稳定失败码处理任务。该切片不自动启动 worker、不引入 broker，也不宣称单机 worker 已具备多节点调度能力；部署者可以启动多个相同 worker 进程，后续导入和训练任务再逐步接入该队列。
 
+P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容；本任务不伪造 OIDC/OAuth 注册、账户管理、管理员角色、计费或公网部署能力，这些仍属于后续生产化任务。
+
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。
 
 模拟器或 Android ADB reverse/port-forward 联调可以继续使用回环 HTTP，不发送设备配对 header；真机直连才需要受控私有 LAN TLS 配置。
