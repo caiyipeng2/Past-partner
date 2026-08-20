@@ -216,6 +216,41 @@ class Application:
         if metadata_store is not None:
             metadata_store.close()
 
+    def readiness(self) -> dict[str, Any]:
+        """Return a redacted readiness snapshot for the local process.
+
+        Metadata is the only dependency with a stable cross-backend probe in
+        this slice.  Backend exceptions are intentionally collapsed to the
+        same unavailable state so a health endpoint cannot disclose paths,
+        driver messages, or connection details.
+        """
+
+        metadata_store = self.metadata_store
+        if metadata_store is None:
+            metadata_state = "unavailable"
+        else:
+            connection = None
+            try:
+                connection = metadata_store.connect()
+                connection.execute("SELECT 1")
+                metadata_state = "ok"
+            except Exception:
+                metadata_state = "unavailable"
+            finally:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception:
+                        metadata_state = "unavailable"
+
+        ready = metadata_state == "ok"
+        return {
+            "status": "ready" if ready else "not_ready",
+            "service": "past-partner-api",
+            "version": "v1",
+            "checks": {"metadata_store": metadata_state},
+        }
+
     def issue_session(
         self,
         remote_address: str,

@@ -29,6 +29,7 @@ from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
 from src.services.local_auth import LocalAuthError
+from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.training_service import TrainingServiceError
 from src.services.upload_service import UploadError
@@ -65,6 +66,8 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _USAGE_PATH = "/api/v1/usage"
+_READY_PATH = "/api/v1/ready"
+_METRICS_PATH = "/api/v1/metrics"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -81,6 +84,7 @@ class ApplicationServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.config = config
         self.application = application
+        self.metrics = MetricsRegistry()
         self.tls_context: ssl.SSLContext | None = None
         self.is_tls = False
 
@@ -137,14 +141,18 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self._diagnostic_id = str(uuid4())
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, X-Chunk-Sha256, Authorization, X-Local-Owner-Token",
-        )
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self.server.metrics.begin_request()
+        try:
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Chunk-Sha256, Authorization, X-Local-Owner-Token",
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        finally:
+            self.server.metrics.end_request()
 
     def do_GET(self) -> None:
         self._dispatch(self._handle_get)
@@ -163,6 +171,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, operation) -> None:
         self._diagnostic_id = str(uuid4())
+        self.server.metrics.begin_request()
         try:
             path, _ = self._request_target()
             if self._requires_auth(path):
@@ -293,11 +302,23 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "request could not be completed",
                 diagnostic_id=diagnostic_id,
             )
+        finally:
+            self.server.metrics.end_request()
 
     def _handle_get(self) -> None:
         path, query = self._request_target()
         if path == "/api/v1/health":
             self._json(HTTPStatus.OK, {"status": "healthy", "service": "past-partner-api", "version": "v1"})
+        elif path == _READY_PATH:
+            readiness = self.server.application.readiness()
+            status = HTTPStatus.OK if readiness["status"] == "ready" else HTTPStatus.SERVICE_UNAVAILABLE
+            self._json(status, readiness)
+        elif path == _METRICS_PATH:
+            self._text(
+                HTTPStatus.OK,
+                self.server.metrics.render_prometheus(),
+                content_type="text/plain; version=0.0.4",
+            )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
         elif path == "/api/v1/imports":
@@ -637,6 +658,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
     def _requires_auth(path: str) -> bool:
         return path.startswith("/api/v1/") and path not in {
             "/api/v1/health",
+            _READY_PATH,
             "/api/v1/auth/session",
         }
 
@@ -649,6 +671,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         if self.close_connection:
             self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text(self, status: HTTPStatus, value: str, *, content_type: str) -> None:
+        body = value.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -681,6 +713,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def log_request(self, code: str | int, size: str | int = "-") -> None:
+        self.server.metrics.observe_request(self.command, _route_template(self.path), code)
         logger.info(
             "request method=%s route=%s status=%s peer_class=%s diagnostic_id=%s",
             self.command,
@@ -699,6 +732,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 def _route_template(target: str) -> str:
     path = urlsplit(target).path
     if path.startswith("/api/"):
+        if path == "/api/v1/health":
+            return "/api/v1/health"
         if _PERSONA_PATH.fullmatch(path):
             return "/api/v1/personas/{persona_id}"
         if _IMPORT_PATH.fullmatch(path):
@@ -741,6 +776,10 @@ def _route_template(target: str) -> str:
             return _AUDIT_EVENTS_PATH
         if path == _USAGE_PATH:
             return _USAGE_PATH
+        if path == _READY_PATH:
+            return _READY_PATH
+        if path == _METRICS_PATH:
+            return _METRICS_PATH
         return "/api/*"
     return "/static"
 
