@@ -6,7 +6,9 @@ import threading
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
+from uuid import uuid4
 
+from src.domain.audit_events import AuditAction, AuditEvent, AuditOutcome
 from src.domain.personas import PersonaValidationError
 from src.services.conversation_repository import ConversationRepository
 from src.services.conversation_service import ConversationService
@@ -17,6 +19,7 @@ from src.providers.gateway import ProviderGateway
 from src.providers.testing import DeterministicTestAdapter, deterministic_test_provider_definition
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
+from src.services.audit_repository import AuditRepository, AuditRepositoryError
 from src.services.blob_store import S3BlobStoreSettings, build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
@@ -43,6 +46,14 @@ class RequestValidationError(ValueError):
         self.code = code
 
 
+class AuditServiceError(RuntimeError):
+    """Stable failure when a completed operation cannot be recorded."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
 class Application:
     def __init__(
         self,
@@ -59,6 +70,7 @@ class Application:
         conversations: ConversationService,
         metadata_store: MetadataStore | None = None,
         task_queue: TaskQueue | None = None,
+        audit_repository: AuditRepository | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -73,6 +85,7 @@ class Application:
         self.conversations = conversations
         self.metadata_store = metadata_store
         self.task_queue = task_queue
+        self.audit_repository = audit_repository
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -114,6 +127,7 @@ class Application:
             kms_auto_provision=config.master_key_kms_auto_provision,
         )
         encryption = AuthenticatedEncryptionService(master_keys)
+        audit_repository = AuditRepository(metadata_store, encryption)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
             metadata_store,
@@ -184,6 +198,7 @@ class Application:
             conversations,
             metadata_store,
             task_queue,
+            audit_repository,
         )
         return application
 
@@ -255,7 +270,7 @@ class Application:
             deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
             deleted_conversations = self.conversations.delete_for_persona(owner_id, persona_id)
             self.personas.delete(owner_id, persona_id)
-            return {
+            result = {
                 "persona_id": persona_id,
                 "deleted": True,
                 "deleted_imports": deleted_imports,
@@ -263,6 +278,20 @@ class Application:
                 "deleted_conversations": deleted_conversations,
                 **training_cleanup,
             }
+            self._record_audit(
+                owner_id,
+                AuditAction.PERSONA_DELETED,
+                "persona",
+                persona_id,
+                metadata={
+                    "deleted_children": sum(
+                        value
+                        for key, value in result.items()
+                        if key.startswith("deleted_") and isinstance(value, int)
+                    )
+                },
+            )
+            return result
 
     def export_data(self, owner_id: str) -> dict[str, Any]:
         imports = [
@@ -307,7 +336,19 @@ class Application:
         return {"consents": [consent.to_dict() for consent in self.consents.list(owner_id, persona_id)]}
 
     def revoke_consent(self, owner_id: str, consent_id: str) -> dict[str, Any]:
-        return self.consents.revoke(owner_id, consent_id).to_dict()
+        result = self.consents.revoke(owner_id, consent_id).to_dict()
+        self._record_audit(
+            owner_id,
+            AuditAction.CONSENT_REVOKED,
+            "consent",
+            consent_id,
+            metadata={
+                "provider_id": result["provider_id"],
+                "model_id": result["model_id"],
+                "scope": result["authorization_scope"],
+            },
+        )
+        return result
 
     def authorize_consent(
         self,
@@ -326,7 +367,19 @@ class Application:
             )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
-        return decision.to_dict()
+        result = decision.to_dict()
+        self._record_audit(
+            owner_id,
+            AuditAction.CONSENT_AUTHORIZED,
+            "consent",
+            consent_id,
+            metadata={
+                "provider_id": result["provider_id"],
+                "model_id": result["model_id"],
+                "scope": result["authorization_scope"],
+            },
+        )
+        return result
 
     def create_import(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -363,7 +416,9 @@ class Application:
 
     def delete_import(self, owner_id: str, import_id: str) -> dict[str, Any]:
         with self._persona_lifecycle_lock:
-            return self.uploads.delete_import(owner_id, import_id)
+            result = self.uploads.delete_import(owner_id, import_id)
+            self._record_audit(owner_id, AuditAction.IMPORT_DELETED, "import", import_id)
+            return result
 
     def get_missing_chunks(
         self,
@@ -494,7 +549,59 @@ class Application:
         return self.training.refresh(owner_id, job_id).to_dict()
 
     def cancel_training_job(self, owner_id: str, job_id: str) -> dict[str, Any]:
-        return self.training.cancel(owner_id, job_id).to_dict()
+        result = self.training.cancel(owner_id, job_id).to_dict()
+        if result.get("state") == "cancelled":
+            self._record_audit(
+                owner_id,
+                AuditAction.TRAINING_CANCELLED,
+                "training_job",
+                job_id,
+                metadata={
+                    "provider_id": result.get("provider_id"),
+                    "model_id": result.get("model_id"),
+                },
+            )
+        return result
+
+    def list_audit_events(
+        self,
+        owner_id: str,
+        *,
+        limit: int = 100,
+        before: tuple[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.audit_repository is None:
+            raise AuditServiceError("audit_unavailable", "audit records are unavailable")
+        try:
+            return [event.to_dict() for event in self.audit_repository.list(owner_id, limit=limit, before=before)]
+        except AuditRepositoryError as exc:
+            raise AuditServiceError("audit_unavailable", "audit records are unavailable") from exc
+
+    def _record_audit(
+        self,
+        owner_id: str,
+        action: AuditAction,
+        resource_type: str,
+        resource_id: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        if self.audit_repository is None:
+            return
+        event = AuditEvent(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            action=action,
+            outcome=AuditOutcome.SUCCESS,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            occurred_at=datetime.now(UTC).isoformat(),
+            metadata=metadata,
+        )
+        try:
+            self.audit_repository.append(event)
+        except AuditRepositoryError as exc:
+            raise AuditServiceError("audit_unavailable", "audit record could not be persisted") from exc
 
     def create_conversation(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
