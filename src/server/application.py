@@ -37,6 +37,8 @@ from src.services.task_queue import TaskQueue
 from src.services.training_dataset import TrainingDatasetBuilder
 from src.services.training_repository import TrainingJobRepository
 from src.services.training_service import FineTuningService
+from src.services.usage_repository import UsageRepository, UsageRepositoryError
+from src.services.usage_service import UsageService, UsageServiceError
 from src.services.upload_service import UploadService
 
 
@@ -71,6 +73,7 @@ class Application:
         metadata_store: MetadataStore | None = None,
         task_queue: TaskQueue | None = None,
         audit_repository: AuditRepository | None = None,
+        usage_repository: UsageRepository | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -86,6 +89,7 @@ class Application:
         self.metadata_store = metadata_store
         self.task_queue = task_queue
         self.audit_repository = audit_repository
+        self.usage_repository = usage_repository
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -128,6 +132,7 @@ class Application:
         )
         encryption = AuthenticatedEncryptionService(master_keys)
         audit_repository = AuditRepository(metadata_store, encryption)
+        usage_repository = UsageRepository(metadata_store, encryption)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
             metadata_store,
@@ -183,6 +188,7 @@ class Application:
             ConversationRepository(metadata_store, encryption),
             personas,
             gateway,
+            UsageService(usage_repository, catalog),
         )
         application = cls(
             personas,
@@ -199,6 +205,7 @@ class Application:
             metadata_store,
             task_queue,
             audit_repository,
+            usage_repository,
         )
         return application
 
@@ -577,6 +584,22 @@ class Application:
         except AuditRepositoryError as exc:
             raise AuditServiceError("audit_unavailable", "audit records are unavailable") from exc
 
+    def list_usage(
+        self,
+        owner_id: str,
+        *,
+        limit: int = 100,
+        before: tuple[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.usage_repository is None:
+            return []
+        try:
+            return [record.to_dict() for record in self.usage_repository.list(
+                owner_id, limit=limit, before=before
+            )]
+        except UsageRepositoryError as exc:
+            raise AuditServiceError("usage_unavailable", "usage records are unavailable") from exc
+
     def _record_audit(
         self,
         owner_id: str,
@@ -637,7 +660,7 @@ class Application:
             raise RequestValidationError("missing_field", "missing content") from exc
         return self.conversations.send(owner_id, conversation_id, content).to_dict()
 
-    def chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def chat(self, payload: Mapping[str, Any], *, owner_id: str | None = None) -> dict[str, Any]:
         try:
             raw_messages = payload["messages"]
             if not isinstance(raw_messages, list) or not raw_messages:
@@ -651,7 +674,16 @@ class Application:
             )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
-        return asdict(self.gateway.chat(request))
+        response = self.gateway.chat(request)
+        if owner_id is not None and self.usage_repository is not None:
+            try:
+                UsageService(self.usage_repository, self.catalog).record_chat(owner_id, request, response)
+            except UsageServiceError:
+                # The conversation path uses the same best-effort rule: provider
+                # success must not become a retry merely because auxiliary usage
+                # persistence is unavailable after the provider was charged.
+                pass
+        return asdict(response)
 
     @staticmethod
     def _training_arguments(

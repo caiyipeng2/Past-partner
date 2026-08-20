@@ -1,5 +1,7 @@
 """Deterministic adapter and metadata that can never be enabled outside test mode."""
 
+from uuid import uuid4
+
 from src.providers.base import (
     AdapterError,
     ChatRequest,
@@ -63,7 +65,7 @@ class DeterministicTestAdapter:
             content=f"测试回复：{last_message}",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            provider_request_id="test-request",
+            provider_request_id=f"test-request-{uuid4().hex}",
         )
 
     def supports_fine_tuning(self, model_id: str) -> bool:

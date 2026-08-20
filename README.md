@@ -90,6 +90,8 @@ P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `own
 
 P4-08 增加 owner 范围的加密追加式业务审计基础：人物/导入删除、第三方授权确认与撤回、已确认的训练取消会写入有限事件元数据，事件载荷使用 AES-GCM 加密且只允许固定的 provider/model/scope/数量/原因键；原始聊天正文、媒体、文件路径、token、API Key 和完整 Provider 响应不会写入审计记录。`GET /api/v1/audit-events` 需要 `owner:read`，支持 1-100 条分页和不透明游标；事件记录不可通过 API 修改或删除。该切片不等同于合规 WORM/监管审计，不记录失败或未授权请求，不提供外部 SIEM、计费或监控能力，数据导出摘要仍明确排除审计记录。
 
+P4-09 增加 owner 范围的加密实际用量账本：成功聊天响应中的规范化 token/media usage 会按服务端模型价格生成有限费用记录，并通过 `GET /api/v1/usage` 以 `owner:read` 分页读取。记录只保存 provider/model、操作类型、计费模式、usage、价格状态和有限时间字段；provider request reference 只保存不可逆指纹，原始消息、完整 Provider 响应、凭据和 API Key 不会进入账本。缺少 usage 或价格时明确显示 `usage_unavailable`/`pricing_unavailable`，不伪造金额；BYOK 显示 provider 侧估算但平台扣款为零，本地模型标记为 `local_compute`。该切片不实现支付、订阅、充值、发票、退款、税务、余额、自动限额或收入结算。
+
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。
 
 模拟器或 Android ADB reverse/port-forward 联调可以继续使用回环 HTTP，不发送设备配对 header；真机直连才需要受控私有 LAN TLS 配置。

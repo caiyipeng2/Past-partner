@@ -7,6 +7,7 @@ from src.providers.base import ChatMessage, ChatRequest
 from src.providers.gateway import ProviderGateway
 from src.services.conversation_repository import ConversationRepository
 from src.services.persona_service import PersonaService
+from src.services.usage_service import UsageService, UsageServiceError
 
 
 class ConversationNotFoundError(LookupError):
@@ -19,10 +20,12 @@ class ConversationService:
         repository: ConversationRepository,
         personas: PersonaService,
         gateway: ProviderGateway,
+        usage: UsageService | None = None,
     ) -> None:
         self.repository = repository
         self.personas = personas
         self.gateway = gateway
+        self.usage = usage
 
     def create(self, owner_id: str, persona_id: str, provider_id: str, model_id: str) -> Conversation:
         self.personas.get(owner_id, persona_id)
@@ -59,6 +62,15 @@ class ConversationService:
         response = self.gateway.chat(request)
         if not isinstance(response.content, str) or not response.content.strip():
             raise ConversationValidationError("empty_provider_response", "provider returned an empty response")
+        if self.usage is not None:
+            try:
+                self.usage.record_chat(owner_id, request, response)
+            except UsageServiceError:
+                # Provider usage is auxiliary to the already successful chat. The
+                # ledger never fabricates a charge or turns a provider success into
+                # a retry that could double-spend. The read API exposes only records
+                # that were durably accepted by the repository.
+                pass
         updated = conversation.add_user_and_assistant(content, response.content)
         stored = self.repository.replace(owner_id, updated)
         if stored is None:
