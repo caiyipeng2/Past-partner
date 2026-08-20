@@ -49,6 +49,8 @@ class Migration:
 # Version 11 persists the canonical owner read/write scope set on each session. Existing
 # sessions default to the full local-owner set so this additive migration preserves the
 # single-owner development behavior while allowing future account boundaries to narrow it.
+# Version 12 adds encrypted owner-scoped business audit events. Only bounded routing
+# fields remain queryable; the event payload itself is encrypted by AuditRepository.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -207,6 +209,27 @@ DEFAULT_MIGRATIONS = (
             "ALTER TABLE local_sessions ADD COLUMN scopes TEXT NOT NULL "
             "DEFAULT 'owner:read,owner:write' "
             "CHECK (scopes IN ('owner:read', 'owner:write', 'owner:read,owner:write'))",
+        ),
+    ),
+    Migration(
+        version=12,
+        name="audit_events",
+        statements=(
+            """
+            CREATE TABLE audit_events (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                action TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 64),
+                outcome TEXT NOT NULL CHECK (outcome = 'success'),
+                resource_type TEXT NOT NULL CHECK (length(resource_type) BETWEEN 1 AND 64),
+                resource_id TEXT NOT NULL CHECK (length(resource_id) BETWEEN 1 AND 128),
+                occurred_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "CREATE INDEX audit_events_owner_cursor_idx ON audit_events(owner_id, occurred_at, id)",
+            "CREATE INDEX audit_events_owner_action_idx ON audit_events(owner_id, action, occurred_at)",
         ),
     ),
 )
