@@ -113,6 +113,11 @@ class ApplicationStorageWiringTests(unittest.TestCase):
         self.assertFalse((self.root / "payloads").exists())
         self.assertFalse((self.root / "upload-parts").exists())
 
+    def test_application_wires_one_task_queue_to_the_shared_metadata_store(self) -> None:
+        application = Application.from_config(self.config())
+
+        self.assertIs(application.task_queue.metadata_store, application.metadata_store)
+
 
 if __name__ == "__main__":
     unittest.main()

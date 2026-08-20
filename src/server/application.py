@@ -30,6 +30,7 @@ from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
 from src.services.storage import StorageLayout
+from src.services.task_queue import TaskQueue
 from src.services.training_dataset import TrainingDatasetBuilder
 from src.services.training_repository import TrainingJobRepository
 from src.services.training_service import FineTuningService
@@ -57,6 +58,7 @@ class Application:
         training: FineTuningService,
         conversations: ConversationService,
         metadata_store: MetadataStore | None = None,
+        task_queue: TaskQueue | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -70,6 +72,7 @@ class Application:
         self.training = training
         self.conversations = conversations
         self.metadata_store = metadata_store
+        self.task_queue = task_queue
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -111,6 +114,7 @@ class Application:
             kms_auto_provision=config.master_key_kms_auto_provision,
         )
         encryption = AuthenticatedEncryptionService(master_keys)
+        task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
             metadata_store,
             encryption,
@@ -179,6 +183,7 @@ class Application:
             training,
             conversations,
             metadata_store,
+            task_queue,
         )
         return application
 

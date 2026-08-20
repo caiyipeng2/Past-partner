@@ -44,7 +44,8 @@ class Migration:
 # and stores only the configured device-token fingerprint for rotation revocation.
 # Version 9 adds encrypted owner/persona-scoped conversation envelopes. Message text
 # never appears in SQLite columns; the persona index is only used for safe filtering
-# and cascade deletion.
+# and cascade deletion. Version 10 adds an owner-scoped durable task queue. Routing
+# and lease metadata stay queryable; payloads and results remain encrypted blobs.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -164,6 +165,36 @@ DEFAULT_MIGRATIONS = (
             )
             """,
             "CREATE INDEX conversations_owner_persona_idx ON conversations(owner_id, persona_id)",
+        ),
+    ),
+    Migration(
+        version=10,
+        name="task_queue",
+        statements=(
+            """
+            CREATE TABLE task_queue (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                task_type TEXT NOT NULL CHECK (length(task_type) BETWEEN 1 AND 128),
+                state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'succeeded', 'failed', 'cancelled')),
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 20),
+                available_at TEXT NOT NULL,
+                leased_until TEXT,
+                lease_owner TEXT,
+                failure_code TEXT,
+                retryable INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                CHECK ((state = 'leased' AND lease_owner IS NOT NULL AND leased_until IS NOT NULL)
+                    OR (state <> 'leased' AND lease_owner IS NULL AND leased_until IS NULL)),
+                CHECK ((state = 'failed' AND failure_code IS NOT NULL)
+                    OR (state <> 'failed'))
+            )
+            """,
+            "CREATE INDEX task_queue_claim_idx ON task_queue(state, available_at, leased_until)",
+            "CREATE INDEX task_queue_owner_idx ON task_queue(owner_id, created_at, id)",
         ),
     ),
 )
