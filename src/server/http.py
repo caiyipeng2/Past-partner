@@ -64,6 +64,7 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
     r"^/api/v1/conversations/([A-Za-z0-9._-]+)/messages$"
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
+_USAGE_PATH = "/api/v1/usage"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -352,6 +353,23 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if events and len(events) == limit:
                 payload["next_cursor"] = _encode_audit_cursor(events[-1])
             self._json(HTTPStatus.OK, payload)
+        elif path == _USAGE_PATH:
+            raw_limit = query.get("limit", [None])[0]
+            limit = 100
+            if raw_limit is not None:
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError) as exc:
+                    raise RequestValidationError("invalid_usage_limit", "usage limit is invalid") from exc
+                if not 1 <= limit <= 100:
+                    raise RequestValidationError("invalid_usage_limit", "usage limit is invalid")
+            raw_cursor = query.get("before", [None])[0]
+            before = _decode_usage_cursor(raw_cursor) if raw_cursor is not None else None
+            records = self.server.application.list_usage(self.owner_id, limit=limit, before=before)
+            payload = {"usage_records": records}
+            if records and len(records) == limit:
+                payload["next_cursor"] = _encode_usage_cursor(records[-1])
+            self._json(HTTPStatus.OK, payload)
         elif match := _TRAINING_JOB_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -429,7 +447,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/v1/imports":
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
-            self._json(HTTPStatus.OK, self.server.application.chat(self._json_body()))
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.chat(self._json_body(), owner_id=self.owner_id),
+            )
         elif path == _CONVERSATIONS_PATH:
             self._json(
                 HTTPStatus.CREATED,
@@ -718,6 +739,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/conversations/{conversation_id}"
         if path == _AUDIT_EVENTS_PATH:
             return _AUDIT_EVENTS_PATH
+        if path == _USAGE_PATH:
+            return _USAGE_PATH
         return "/api/*"
     return "/static"
 
@@ -756,3 +779,23 @@ def _decode_audit_cursor(value: str) -> tuple[str, str]:
     ):
         raise RequestValidationError("invalid_audit_cursor", "audit cursor is invalid")
     return parsed.astimezone(UTC).isoformat(), event_id
+
+
+def _encode_usage_cursor(record: dict[str, Any]) -> str:
+    raw = f"{record['occurred_at']}\x00{record['id']}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_usage_cursor(value: str) -> tuple[str, str]:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        raise RequestValidationError("invalid_usage_cursor", "usage cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        timestamp, record_id = decoded.decode("utf-8").split("\x00", 1)
+        parsed = datetime.fromisoformat(timestamp)
+    except (ValueError, UnicodeError, IndexError) as exc:
+        raise RequestValidationError("invalid_usage_cursor", "usage cursor is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None or not _AUDIT_CURSOR_ID.fullmatch(record_id):
+        raise RequestValidationError("invalid_usage_cursor", "usage cursor is invalid")
+    return parsed.astimezone(UTC).isoformat(), record_id

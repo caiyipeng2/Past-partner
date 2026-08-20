@@ -232,6 +232,30 @@ DEFAULT_MIGRATIONS = (
             "CREATE INDEX audit_events_owner_action_idx ON audit_events(owner_id, action, occurred_at)",
         ),
     ),
+    Migration(
+        version=13,
+        name="usage_records",
+        statements=(
+            """
+            CREATE TABLE usage_records (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                operation TEXT NOT NULL CHECK (operation IN ('chat')),
+                provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 128),
+                model_id TEXT NOT NULL CHECK (length(model_id) BETWEEN 1 AND 256),
+                billing_mode TEXT NOT NULL CHECK (billing_mode IN ('platform_billed', 'provider_billed', 'local_compute')),
+                charge_state TEXT NOT NULL CHECK (charge_state IN ('priced', 'usage_unavailable', 'pricing_unavailable')),
+                occurred_at TEXT NOT NULL,
+                provider_request_fingerprint TEXT,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                CHECK (provider_request_fingerprint IS NULL OR length(provider_request_fingerprint) = 64)
+            )
+            """,
+            "CREATE INDEX usage_records_owner_cursor_idx ON usage_records(owner_id, occurred_at, id)",
+            "CREATE UNIQUE INDEX usage_records_owner_request_idx ON usage_records(owner_id, provider_id, provider_request_fingerprint) WHERE provider_request_fingerprint IS NOT NULL",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
