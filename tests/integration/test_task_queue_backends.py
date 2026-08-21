@@ -66,6 +66,7 @@ class TaskQueueBackendIntegrationTests(unittest.TestCase):
             connection.execute("CREATE SCHEMA public")
         root = Path(tempfile.mkdtemp(prefix="past-partner-task-pg-"))
         key = base64.b64encode(b"p" * MASTER_KEY_BYTES).decode("ascii")
+        application = None
         try:
             with patch.dict(os.environ, {MASTER_KEY_ENV_VAR: key}):
                 application = Application.from_config(
@@ -77,31 +78,33 @@ class TaskQueueBackendIntegrationTests(unittest.TestCase):
                         metadata_dsn=dsn,
                     )
                 )
-            try:
-                owner_id = application.auth.owner_id
-                task = application.task_queue.enqueue(
-                    owner_id,
-                    "integration.echo",
-                    {"value": "postgres"},
-                    now="2026-08-20T10:00:00+00:00",
-                )
-                lease = application.task_queue.claim(
-                    "integration-worker",
-                    now="2026-08-20T10:00:01+00:00",
-                    lease_seconds=30,
-                )
-                self.assertEqual(task.id, lease.id)
-                completed = application.task_queue.complete(
-                    owner_id,
-                    task.id,
-                    "integration-worker",
-                    result={"ok": True},
-                    now="2026-08-20T10:00:02+00:00",
-                )
-                self.assertEqual("succeeded", completed.state.value)
-            finally:
-                application.close()
+            owner_id = application.auth.owner_id
+            task = application.task_queue.enqueue(
+                owner_id,
+                "integration.echo",
+                {"value": "postgres"},
+                now="2026-08-20T10:00:00+00:00",
+            )
+            lease = application.task_queue.claim(
+                "integration-worker",
+                now="2026-08-20T10:00:01+00:00",
+                lease_seconds=30,
+            )
+            self.assertEqual(task.id, lease.id)
+            completed = application.task_queue.complete(
+                owner_id,
+                task.id,
+                "integration-worker",
+                result={"ok": True},
+                now="2026-08-20T10:00:02+00:00",
+            )
+            self.assertEqual("succeeded", completed.state.value)
         finally:
+            if application is not None:
+                application.close()
+            with psycopg.connect(dsn, autocommit=True) as connection:
+                connection.execute("DROP SCHEMA public CASCADE")
+                connection.execute("CREATE SCHEMA public")
             shutil.rmtree(root, ignore_errors=True)
 
 
