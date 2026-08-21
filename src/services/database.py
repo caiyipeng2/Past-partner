@@ -51,6 +51,9 @@ class Migration:
 # single-owner development behavior while allowing future account boundaries to narrow it.
 # Version 12 adds encrypted owner-scoped business audit events. Only bounded routing
 # fields remain queryable; the event payload itself is encrypted by AuditRepository.
+# Version 13 adds encrypted owner-scoped usage records. Version 14 adds encrypted
+# style profiles, reviewed long-term memory aggregates, and deterministic vector
+# index envelopes scoped to the owning persona.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -254,6 +257,49 @@ DEFAULT_MIGRATIONS = (
             """,
             "CREATE INDEX usage_records_owner_cursor_idx ON usage_records(owner_id, occurred_at, id)",
             "CREATE UNIQUE INDEX usage_records_owner_request_idx ON usage_records(owner_id, provider_id, provider_request_fingerprint) WHERE provider_request_fingerprint IS NOT NULL",
+        ),
+    ),
+    Migration(
+        version=14,
+        name="learning_repositories",
+        statements=(
+            """
+            CREATE TABLE style_profiles (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX style_profiles_owner_persona_idx ON style_profiles(owner_id, persona_id)",
+            """
+            CREATE TABLE long_term_memories (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX long_term_memories_owner_persona_idx ON long_term_memories(owner_id, persona_id)",
+            """
+            CREATE TABLE vector_indexes (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                index_version INTEGER NOT NULL CHECK (index_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX vector_indexes_owner_persona_idx ON vector_indexes(owner_id, persona_id)",
         ),
     ),
 )

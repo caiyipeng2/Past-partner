@@ -30,6 +30,30 @@ def _accepted_memory(messages: tuple[NormalizedMessage, ...]):
 
 
 class VectorRetrievalTests(unittest.TestCase):
+    def test_build_index_returns_tokens_keyed_by_stable_memory_id(self) -> None:
+        memory = _accepted_memory(
+            (
+                _message("1" * 64, "persona", "周末一起看电影。", "2026-08-20T10:00:00+00:00"),
+            )
+        )
+
+        index = VectorMemoryRetriever.build_index(memory)
+
+        self.assertEqual(set(index), {candidate.memory_id for candidate in memory.candidates})
+        self.assertTrue(all(isinstance(token, str) for tokens in index.values() for token in tokens))
+
+    def test_retrieval_rejects_an_incomplete_persisted_index(self) -> None:
+        memory = _accepted_memory(
+            (
+                _message("1" * 64, "persona", "周末一起看电影。", "2026-08-20T10:00:00+00:00"),
+            )
+        )
+
+        with self.assertRaises(VectorRetrievalError) as captured:
+            VectorMemoryRetriever().retrieve(memory, "电影", token_index={})
+
+        self.assertEqual("invalid_vector_index", captured.exception.code)
+
     def test_retrieves_only_accepted_memories_with_auditable_sources(self) -> None:
         memory = LongTermMemoryExtractor().extract(
             (
