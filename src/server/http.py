@@ -29,6 +29,7 @@ from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
 from src.services.local_auth import LocalAuthError
+from src.services.learning_service import LearningServiceError
 from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.training_service import TrainingServiceError
@@ -48,6 +49,12 @@ _PARTICIPANT_MAPPING_PATH = re.compile(
 )
 _CORRECTIONS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/corrections$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
+_LEARNING_PROFILE_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/style-profile$")
+_LEARNING_MEMORY_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/memory$")
+_LEARNING_RETRIEVE_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/retrieve$")
+_LEARNING_REVIEW_PATH = re.compile(
+    r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/memory/([A-Fa-f0-9]{64})$"
+)
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
@@ -296,6 +303,27 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "provider_cancellation_unconfirmed": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.UNPROCESSABLE_ENTITY)
             self._error(status, exc.code, str(exc), diagnostic_id=exc.diagnostic_id)
+        except LearningServiceError as exc:
+            if exc.code == "persona_not_found":
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+                return
+            status = {
+                "learning_not_found": HTTPStatus.NOT_FOUND,
+                "memory_not_found": HTTPStatus.NOT_FOUND,
+                "invalid_style_profile": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_memory": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_review_state": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "learning_review_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_field": HTTPStatus.BAD_REQUEST,
+                "invalid_allowed_speaker_scopes": HTTPStatus.BAD_REQUEST,
+                "query_required": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_query": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_candidate_limit": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_token_limit": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_age_budget": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_speaker_scope": HTTPStatus.UNPROCESSABLE_ENTITY,
+            }.get(exc.code, HTTPStatus.SERVICE_UNAVAILABLE)
+            self._error(status, exc.code, str(exc))
         except Exception:
             diagnostic_id = str(uuid4())
             self._error(
@@ -323,6 +351,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
+        elif match := _LEARNING_PROFILE_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_style_profile(self.owner_id, match.group(1)))
+        elif match := _LEARNING_MEMORY_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_learning_memory(self.owner_id, match.group(1)))
         elif path == "/api/v1/imports":
             persona_id = query.get("persona_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.list_imports(self.owner_id, persona_id))
@@ -467,6 +499,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.CREATED, self.server.application.create_persona(self.owner_id, self._json_body()))
+        elif match := _LEARNING_RETRIEVE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.retrieve_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif path == "/api/v1/imports":
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
@@ -547,6 +588,26 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_put(self) -> None:
         path, _ = self._request_target()
+        if match := _LEARNING_PROFILE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.save_style_profile(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
+            return
+        if match := _LEARNING_MEMORY_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.save_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
+            return
         match = _CHUNK_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -580,6 +641,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_patch(self) -> None:
         path, _ = self._request_target()
+        if match := _LEARNING_REVIEW_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.review_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    match.group(2),
+                    self._json_body(),
+                ),
+            )
+            return
         match = _PERSONA_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -736,6 +808,14 @@ def _route_template(target: str) -> str:
     if path.startswith("/api/"):
         if path == "/api/v1/health":
             return "/api/v1/health"
+        if _LEARNING_PROFILE_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/style-profile"
+        if _LEARNING_RETRIEVE_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/retrieve"
+        if _LEARNING_REVIEW_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/memory/{memory_id}"
+        if _LEARNING_MEMORY_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/memory"
         if _PERSONA_PATH.fullmatch(path):
             return "/api/v1/personas/{persona_id}"
         if _IMPORT_PATH.fullmatch(path):

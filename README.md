@@ -153,11 +153,11 @@ P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商�
 P2-01 已扩展模型目录元数据，提供能力、上下文长度、区域、隐私标签、结构化价格和价格刷新时间；可通过 `PAST_PARTNER_MODEL_PRICING_JSON` 配置供应商/管理员价格。`POST /api/v1/models/cost-estimate` 按输入/输出 token 和媒体单位返回可复核估算，未配置价格时明确返回 `pricing_unavailable`，不生成伪造成本。价格是估算值，不替代供应商最终账单。
 P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义 OpenAI-compatible 继续使用兼容协议；Anthropic Messages 与 Google Gemini `generateContent` 使用原生请求/响应适配器。所有网络调用都经过统一 JSON 传输边界，未配置凭据时仍返回 `provider_not_configured`；本任务不实现流式、Embedding、媒体分析或微调。
 
-P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商，当前仅在调用内存中生成，尚未持久化或提供独立画像 API。
+P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商。R1-01 已将画像按 owner/persona 使用 AES-GCM 加密持久化，并提供 `PUT/GET /api/v1/personas/{persona_id}/learning/style-profile`。
 
-P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实、事件、关系、偏好和时间线候选，支持限定已接受的 `record_id`，对重复证据合并，并为每条候选提供稳定 ID、有限证据文本、来源、时间、置信度和 `needs_review` 审核状态。`ChatDataParser.generate_long_term_memory` 不调用模型、不上传原始内容；审核通过前候选不会被视为事实，当前尚未持久化或提供独立记忆 API。
+P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实、事件、关系、偏好和时间线候选，支持限定已接受的 `record_id`，对重复证据合并，并为每条候选提供稳定 ID、有限证据文本、来源、时间、置信度和 `needs_review` 审核状态。`ChatDataParser.generate_long_term_memory` 不调用模型、不上传原始内容；审核通过前候选不会被视为事实。R1-01 已将长期记忆按 owner/persona 加密持久化，并提供 `PUT/GET /api/v1/personas/{persona_id}/learning/memory` 与 `PATCH /api/v1/personas/{persona_id}/learning/memory/{memory_id}` 审核接口。
 
-P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商，也不持久化向量索引。
+P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商。R1-01 同时加密保存版本化稀疏索引，并提供 `POST /api/v1/personas/{persona_id}/learning/retrieve`；索引损坏或与记忆不一致时 fail closed。
 
 P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
 

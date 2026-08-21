@@ -26,6 +26,8 @@ from src.services.consent_service import ConsentService
 from src.services.multimodal_consent import MultimodalConsentGate
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
+from src.services.learning_repository import LearningRepository
+from src.services.learning_service import LearningService
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.metadata_store import MetadataStore, build_metadata_store
@@ -70,6 +72,7 @@ class Application:
         auth: LocalAuthService,
         training: FineTuningService,
         conversations: ConversationService,
+        learning: LearningService,
         metadata_store: MetadataStore | None = None,
         task_queue: TaskQueue | None = None,
         audit_repository: AuditRepository | None = None,
@@ -86,6 +89,7 @@ class Application:
         self.auth = auth
         self.training = training
         self.conversations = conversations
+        self.learning = learning
         self.metadata_store = metadata_store
         self.task_queue = task_queue
         self.audit_repository = audit_repository
@@ -145,6 +149,7 @@ class Application:
         persona_repository.assign_unowned(auth.owner_id)
         persona_repository.migrate_legacy_json(storage.root / "personas", auth.owner_id)
         personas = PersonaService(persona_repository)
+        learning = LearningService(LearningRepository(metadata_store, encryption), personas)
         import_repository = ImportRepository(metadata_store, encryption)
         import_repository.assign_unowned(auth.owner_id)
         import_repository.migrate_legacy_json(
@@ -207,6 +212,7 @@ class Application:
             auth,
             training,
             conversations,
+            learning,
             metadata_store,
             task_queue,
             audit_repository,
@@ -297,6 +303,79 @@ class Application:
     def get_persona(self, owner_id: str, persona_id: str) -> dict[str, Any]:
         return self.personas.get(owner_id, persona_id).to_dict()
 
+    def save_style_profile(
+        self,
+        owner_id: str,
+        persona_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            profile = payload["profile"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing profile") from exc
+        return self.learning.save_style_profile_payload(owner_id, persona_id, profile).to_dict()
+
+    def get_style_profile(self, owner_id: str, persona_id: str) -> dict[str, Any]:
+        return self.learning.get_style_profile(owner_id, persona_id).to_dict()
+
+    def save_learning_memory(
+        self,
+        owner_id: str,
+        persona_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            memory = payload["memory"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing memory") from exc
+        return self.learning.save_memory_payload(owner_id, persona_id, memory).to_dict()
+
+    def get_learning_memory(self, owner_id: str, persona_id: str) -> dict[str, Any]:
+        return self.learning.get_memory(owner_id, persona_id).to_dict()
+
+    def review_learning_memory(
+        self,
+        owner_id: str,
+        persona_id: str,
+        memory_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            review_state = _required_text(payload["review_state"], "review_state")
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing review_state") from exc
+        return self.learning.review_memory(owner_id, persona_id, memory_id, review_state).to_dict()
+
+    def retrieve_learning_memory(
+        self,
+        owner_id: str,
+        persona_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            query = _required_text(payload["query"], "query")
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", "missing query") from exc
+        scopes = payload.get("allowed_speaker_scopes", ("persona", "user"))
+        if isinstance(scopes, (str, bytes)) or not isinstance(scopes, (list, tuple)):
+            raise RequestValidationError("invalid_allowed_speaker_scopes", "allowed_speaker_scopes must be a list")
+        max_candidates = _learning_int(payload.get("max_candidates", 5), "max_candidates")
+        max_tokens = _learning_int(payload.get("max_tokens", 800), "max_tokens")
+        max_age_days = payload.get("max_age_days")
+        if max_age_days is not None:
+            max_age_days = _learning_int(max_age_days, "max_age_days")
+        result = self.learning.retrieve(
+            owner_id,
+            persona_id,
+            query,
+            as_of=payload.get("as_of"),
+            max_candidates=max_candidates,
+            max_tokens=max_tokens,
+            max_age_days=max_age_days,
+            allowed_speaker_scopes=tuple(scopes),
+        )
+        return result.to_dict()
+
     def update_persona(
         self,
         owner_id: str,
@@ -316,6 +395,7 @@ class Application:
             deleted_imports = self.uploads.delete_persona_imports(owner_id, persona_id)
             deleted_consents = self.consents.delete_for_persona(owner_id, persona_id)
             deleted_conversations = self.conversations.delete_for_persona(owner_id, persona_id)
+            deleted_learning = self.learning.delete_for_persona(owner_id, persona_id)
             self.personas.delete(owner_id, persona_id)
             result = {
                 "persona_id": persona_id,
@@ -323,6 +403,7 @@ class Application:
                 "deleted_imports": deleted_imports,
                 "deleted_consents": deleted_consents,
                 "deleted_conversations": deleted_conversations,
+                "deleted_learning": deleted_learning,
                 **training_cleanup,
             }
             self._record_audit(
@@ -757,3 +838,9 @@ def _required_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RequestValidationError("invalid_field", f"{field_name} must be a non-empty string")
     return value.strip()
+
+
+def _learning_int(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RequestValidationError("invalid_field", f"{field_name} must be an integer")
+    return value

@@ -44,6 +44,24 @@ class LearningRepository:
         self.encryption = encryption
         self.metadata_store.migrate()
 
+    @staticmethod
+    def parse_style_profile(value: object) -> StyleProfile:
+        if not isinstance(value, Mapping):
+            raise LearningRepositoryError("invalid_style_profile", "profile must be an object")
+        try:
+            return _profile_from_dict(value)
+        except LearningRepositoryError as exc:
+            raise LearningRepositoryError("invalid_style_profile", "profile is invalid") from exc
+
+    @staticmethod
+    def parse_memory(value: object) -> LongTermMemory:
+        if not isinstance(value, Mapping):
+            raise LearningRepositoryError("invalid_memory", "memory must be an object")
+        try:
+            return _memory_from_dict(value)
+        except LearningRepositoryError as exc:
+            raise LearningRepositoryError("invalid_memory", "memory is invalid") from exc
+
     def save_style_profile(self, owner_id: str, persona_id: str, profile: StyleProfile) -> StyleProfile:
         owner, persona = _scope(owner_id, persona_id)
         if not isinstance(profile, StyleProfile):

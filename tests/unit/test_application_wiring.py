@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.server.application import Application
 from src.server.config import ConfigurationError, ServerConfig
 from src.services.blob_store import LocalBlobStore
+from src.services.learning_service import LearningService
 from src.services.master_key import (
     EnvironmentMasterKeyProvider,
     MASTER_KEY_BYTES,
@@ -49,6 +50,11 @@ class ApplicationStorageWiringTests(unittest.TestCase):
 
         self.assertIsInstance(application.uploads.blob_store, LocalBlobStore)
         self.assertEqual(self.root.resolve(), application.uploads.blob_store.layout.root)
+
+    def test_default_backend_wires_persistent_learning_service(self) -> None:
+        application = Application.from_config(self.config())
+
+        self.assertIsInstance(application.learning, LearningService)
 
     def test_explicit_local_backend_wires_the_same_local_adapter(self) -> None:
         application = Application.from_config(self.config("local"))
