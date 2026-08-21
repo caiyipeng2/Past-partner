@@ -1,0 +1,31 @@
+services:
+  companion-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "src.server", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      PAST_PARTNER_MODE: development
+      PAST_PARTNER_HOST: 0.0.0.0
+      PAST_PARTNER_PORT: 8080
+      PAST_PARTNER_DATA_DIR: /var/lib/past-partner/data
+    ports:
+      - "${PAST_PARTNER_COMPOSE_PORT:-8080}:8080"
+    volumes:
+      - past_partner_data:/var/lib/past-partner/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=3);
+          raise SystemExit(0 if response.status == 200 else 1)
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  past_partner_data:

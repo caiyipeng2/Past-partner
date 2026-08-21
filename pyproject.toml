@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "past-partner"
+version = "0.1.0"
+description = "Past-partner personal companion service"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.78.0",
+    "uvicorn>=0.18.0",
+    "pydantic>=1.9.0",
+    "loguru>=0.6.0",
+    "python-dotenv>=0.20.0",
+    "cryptography>=49.0.0",
+    "psycopg[binary,pool]>=3.2.0",
+]
+
+[project.scripts]
+companion-server = "src.server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
