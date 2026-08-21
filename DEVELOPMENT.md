@@ -1,6 +1,6 @@
 # Past-partner 开发与跨电脑接续手册
 
-本文档是从 Git 克隆后继续开发的单一入口。当前代码基线以 `main` 最新提交为准；本文档编写时的基线是 `6dfabab`（Android 商店发布准备已合并）。开始工作前先执行 `git pull --ff-only origin main`。
+本文档是从 Git 克隆后继续开发的单一入口。当前代码基线以 `main` 最新提交为准；本文档编写时的基线是 `f7d9962`（跨电脑开发手册和路线图已合并）。开始工作前先执行 `git pull --ff-only origin main`。
 
 ## 1. 项目边界
 
@@ -107,6 +107,27 @@ python -m unittest tests.integration.test_s3_blob_store -v
 ```
 
 KMS 和真实任务队列测试也必须使用专用测试密钥/数据库，并设置各自的 `*_TEST_ENABLED` 或 disposable 开关。测试结束后删除临时 bucket、数据库、密钥和环境变量；绝不使用生产数据。
+
+R0-01 使用统一 runner 执行四组真实 disposable 回归。runner 会拒绝未显式确认的资源，逐组报告成功/失败，并对输出做脱敏处理；不输出 DSN、密钥或完整连接 URL。PostgreSQL schema、S3 测试对象、KMS 密文文件和临时目录由 fixture 清理；KMS key 必须是预先创建的专用测试 key，生命周期由创建它的环境负责。
+
+```powershell
+$env:PAST_PARTNER_DISPOSABLE_RUN = "1"
+$env:PAST_PARTNER_METADATA_DSN = "postgresql://<user>:<password>@127.0.0.1:5432/past_partner_test"
+$env:PAST_PARTNER_METADATA_TEST_DISPOSABLE = "1"
+$env:PAST_PARTNER_S3_TEST_ENDPOINT = "http://127.0.0.1:9000"
+$env:PAST_PARTNER_S3_TEST_BUCKET = "past-partner-test"
+$env:PAST_PARTNER_S3_TEST_ACCESS_KEY = "<disposable-access-key>"
+$env:PAST_PARTNER_S3_TEST_SECRET_KEY = "<disposable-secret-key>"
+$env:PAST_PARTNER_S3_TEST_DISPOSABLE = "1"
+$env:PAST_PARTNER_KMS_TEST_ENDPOINT = "http://127.0.0.1:4566"
+$env:PAST_PARTNER_KMS_TEST_KEY_ID = "alias/past-partner-disposable"
+$env:PAST_PARTNER_KMS_TEST_ACCESS_KEY = "<disposable-access-key>"
+$env:PAST_PARTNER_KMS_TEST_SECRET_KEY = "<disposable-secret-key>"
+$env:PAST_PARTNER_KMS_TEST_DISPOSABLE = "1"
+.\scripts\run_disposable_integrations.ps1 -ReportPath .test-runtime\r0-01-report.json
+```
+
+该入口不会自动启动或停止外部服务，也不会清理调用方的 KMS key；建议使用本机专用 PostgreSQL 数据库、MinIO bucket 和 LocalStack KMS key。没有这些资源时保持默认跳过，不得把普通 `npm test` 的跳过结果写成真实集成证据。
 
 CodeGraph 用于结构化检查。Windows 下需要在提升权限的终端执行：
 

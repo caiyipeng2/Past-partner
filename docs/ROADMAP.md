@@ -36,7 +36,7 @@
 
 | 编号 | 任务 | 依赖 | 验收证据 |
 | --- | --- | --- | --- |
-| R0-01 | 真实 disposable 集成回归：PostgreSQL 元数据、S3/MinIO 对象、KMS 主密钥和任务队列 | 可删除的本地容器或测试账号 | 测试日志包含成功和故障分支；测试结束资源为空；无 DSN/密钥泄露 |
+| R0-01 | 真实 disposable 集成回归：PostgreSQL 元数据、S3/MinIO 对象、KMS 主密钥和任务队列 | 可删除的本地容器或测试账号 | 统一 runner；测试日志包含成功和故障分支；测试结束资源为空；无 DSN/密钥泄露 |
 | R0-02 | 增加 Docker Compose 和可安装 `companion-server` CLI，确保 Python 模块、CLI、Compose、npm wrapper 行为一致 | R0-01 的后端配置契约 | 四种启动方式均通过 health/API smoke；README 给出一条跨平台启动命令 |
 | R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过最小真实文本请求验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
 | R0-04 | 至少一个真实微调 Provider 适配器；未支持的供应商继续明确 `capability_not_supported` | P2-07 任务门控、授权、成本和取消合同 | 真实提交/查询/取消、工件 ID、评测、重试和远端清理均有测试；禁止用测试确定性适配器冒充生产训练 |
@@ -62,7 +62,7 @@
 ## 5. 推荐执行顺序
 
 1. 先完成本次跨电脑开发手册和路线图（本分支）。
-2. 执行 `R0-01`，把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
+2. 执行 `R0-01`，使用统一 runner 把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
 3. 执行 `R0-02`，补齐 Docker Compose 和安装 CLI，消除“只能用 npm/源码目录启动”的环境差异。
 4. 执行 `R0-03`，验证用户已选择的 DeepSeek、小米、阿里千问和自定义模型真实 HTTP 链路。
 5. 执行 `R0-04`，再进入 R1 的持久化学习与数据治理；如果供应商暂不提供微调能力，保持明确不可用，不伪造成功。

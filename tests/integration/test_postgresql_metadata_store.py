@@ -32,20 +32,21 @@ class PostgreSQLMetadataIntegrationTests(unittest.TestCase):
         import psycopg
 
         cls._dsn = dsn
+        cls._psycopg = psycopg
         cls._reset_schema(psycopg)
-        cls._data_root = Path(tempfile.mkdtemp(prefix="past-partner-pg-integration-"))
-        config = ServerConfig(
-            host="127.0.0.1",
-            port=0,
-            data_dir=cls._data_root,
-            web_dir=Path.cwd() / "web",
-            mode="test",
-            metadata_backend="postgresql",
-            metadata_dsn=dsn,
-            metadata_pool_min_size=1,
-            metadata_pool_max_size=3,
-        ).validated()
         try:
+            cls._data_root = Path(tempfile.mkdtemp(prefix="past-partner-pg-integration-"))
+            config = ServerConfig(
+                host="127.0.0.1",
+                port=0,
+                data_dir=cls._data_root,
+                web_dir=Path.cwd() / "web",
+                mode="test",
+                metadata_backend="postgresql",
+                metadata_dsn=dsn,
+                metadata_pool_min_size=1,
+                metadata_pool_max_size=3,
+            ).validated()
             cls.application = Application.from_config(config)
             session = cls.application.issue_session("127.0.0.1", None)
             cls.owner_id = session["owner_id"]
@@ -54,7 +55,10 @@ class PostgreSQLMetadataIntegrationTests(unittest.TestCase):
             application = getattr(cls, "application", None)
             if application is not None:
                 application.close()
-            shutil.rmtree(cls._data_root, ignore_errors=True)
+            data_root = getattr(cls, "_data_root", None)
+            if data_root is not None:
+                shutil.rmtree(data_root, ignore_errors=True)
+            cls._reset_schema(psycopg)
             raise
 
     @classmethod
@@ -65,6 +69,9 @@ class PostgreSQLMetadataIntegrationTests(unittest.TestCase):
         data_root = getattr(cls, "_data_root", None)
         if data_root is not None:
             shutil.rmtree(data_root, ignore_errors=True)
+        psycopg = getattr(cls, "_psycopg", None)
+        if psycopg is not None:
+            cls._reset_schema(psycopg)
 
     @staticmethod
     def _reset_schema(psycopg: object) -> None:
