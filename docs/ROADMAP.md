@@ -38,7 +38,7 @@
 | --- | --- | --- | --- |
 | R0-01 | 真实 disposable 集成回归：PostgreSQL 元数据、S3/MinIO 对象、KMS 主密钥和任务队列 | 可删除的本地容器或测试账号 | 统一 runner；测试日志包含成功和故障分支；测试结束资源为空；无 DSN/密钥泄露 |
 | R0-02 | 增加 Docker Compose 和可安装 `companion-server` CLI，确保 Python 模块、CLI、Compose、npm wrapper 行为一致 | R0-01 的后端配置契约 | 四种启动方式均通过 health/API smoke；README 给出一条跨平台启动命令 |
-| R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过最小真实文本请求验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
+| R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过 `PAST_PARTNER_PROVIDER_SMOKE=1 python scripts/provider_smoke.py` 发起脱敏最小文本请求，验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
 | R0-04 | 至少一个真实微调 Provider 适配器；未支持的供应商继续明确 `capability_not_supported` | P2-07 任务门控、授权、成本和取消合同 | 真实提交/查询/取消、工件 ID、评测、重试和远端清理均有测试；禁止用测试确定性适配器冒充生产训练 |
 
 ### R1：核心产品持久化和数据治理
