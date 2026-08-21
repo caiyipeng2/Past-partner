@@ -6,6 +6,21 @@
 
 当前里程碑提供安全的本地开发闭环：先创建人物身份，再通过可恢复分片上传导入资料，并从统一供应商目录选择模型。架构与后续移动端、混合学习和生产化路线见 `docs/superpowers/specs/2026-07-30-personalized-companion-platform-design.md`。
 
+## 跨电脑接续开发
+
+从 GitHub 拉取后，先阅读 [DEVELOPMENT.md](DEVELOPMENT.md) 完成 Python、Node、Flutter、Android SDK/JDK 和可选媒体工具配置，再阅读 [docs/ROADMAP.md](docs/ROADMAP.md) 确认当前完成矩阵与下一项优先级。最小启动路径：
+
+```powershell
+git clone https://github.com/caiyipeng2/Past-partner.git
+Set-Location Past-partner
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-core.txt
+python -m src.server
+```
+
+当前主分支以 Python 模块为正式服务入口，`npm start` 和 `scripts/run_server.ps1` 是等价调试包装。Docker Compose 和可安装服务 CLI 尚未提供，路线图中以 `R0-02` 排队；不要把 npm 视为唯一运行方式。新增开发工作使用 `R0/R1/R2` 路线图编号，不再派生新的 `P0` 编号。
+
 ## 核心功能
 
 1. **风格模仿**：AI必须学习和复现聊天记录中目标人物的语气、情绪起伏、常用口头禅、回复长度以及标点符号和表情符号的使用习惯。
