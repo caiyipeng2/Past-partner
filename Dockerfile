@@ -13,4 +13,4 @@ COPY web ./web
 
 RUN mkdir -p /var/lib/past-partner/data
 EXPOSE 8080
-ENTRYPOINT ["python", "-m", "src.server"]
+CMD ["python", "-m", "src.server"]
