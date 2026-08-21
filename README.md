@@ -19,7 +19,9 @@ python -m pip install -r requirements-core.txt
 python -m src.server
 ```
 
-当前主分支以 Python 模块为正式服务入口，`npm start` 和 `scripts/run_server.ps1` 是等价调试包装。Docker Compose 和可安装服务 CLI 尚未提供，路线图中以 `R0-02` 排队；不要把 npm 视为唯一运行方式。新增开发工作使用 `R0/R1/R2` 路线图编号，不再派生新的 `P0` 编号。
+当前主分支提供统一 Python 模块、可安装 `companion-server` CLI、Docker Compose、npm 和
+PowerShell 启动面，所有入口都调用同一服务。新增开发工作使用 `R0/R1/R2` 路线图编号，
+不再派生新的 `P0` 编号。
 
 ## 核心功能
 
@@ -89,9 +91,20 @@ Python 是服务的正式入口，npm 和 PowerShell 只是 PC 调试包装：
 
 ```powershell
 python -m src.server
+python -m pip install -e .
+companion-server
 npm start
 .\scripts\run_server.ps1
+docker compose up --build
 ```
+
+统一执行 health/API smoke：
+
+```powershell
+python scripts/launch_smoke.py --surface module --surface cli --surface npm --surface compose
+```
+
+Compose smoke 使用临时端口和命名卷，结束后自动执行 `docker compose down --volumes --remove-orphans`。
 
 默认地址为 `http://127.0.0.1:8080`。运行测试：
 

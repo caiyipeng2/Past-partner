@@ -63,15 +63,30 @@ Copy-Item .env.example .env
 
 ## 4. 启动服务
 
-Python 模块是正式入口；npm 和 PowerShell 是等价的 PC 调试包装，不是唯一运行方式：
+Python 模块、可安装的 `companion-server` CLI、Docker Compose、npm 和 PowerShell
+都调用同一套服务入口；npm/PowerShell 仍只是 PC 调试包装，不是唯一运行方式：
 
 ```powershell
 python -m src.server
+python -m pip install -e .
+companion-server
 npm start
 .\scripts\run_server.ps1
+docker compose up --build
 ```
 
-默认监听 `127.0.0.1:8080`。服务启动后可访问 `http://127.0.0.1:8080/api/v1/health`。当前仓库还没有 Docker Compose 文件和已安装的 `companion-server` CLI；这两项属于 `docs/ROADMAP.md` 中的后续收口任务，不要在新电脑上假设它们已经可用。
+默认监听 `127.0.0.1:8080`，Compose 默认把容器映射到同一端口。服务启动后可访问
+`http://127.0.0.1:8080/api/v1/health`。安装 CLI 前先安装 `requirements-core.txt`，
+或直接执行 `python -m pip install -e .` 让构建后端安装核心依赖。Compose 使用命名数据卷，
+停止并清理本次开发资源时执行 `docker compose down --volumes --remove-orphans`。
+
+统一检查四种入口的真实 health/API 链路（CLI 需要先安装，Compose 会构建并在结束时清理）：
+
+```powershell
+python scripts/launch_smoke.py --surface module --surface cli --surface npm --surface compose
+```
+
+没有 Docker Desktop 时，前三种入口仍可独立 smoke；不要把 Compose 未执行写成容器运行证据。
 
 服务端可选后端只在显式配置时启用：
 
