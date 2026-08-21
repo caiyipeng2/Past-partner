@@ -100,6 +100,8 @@ P4-10 增加进程内监控基础：`GET /api/v1/health` 继续作为不需要�
 
 移动端代码位于 `mobile/`，包含端点白名单、设备配对会话、Secure Storage 会话恢复，以及简化/活泼两套静态对话预览。生成 Android/iOS runner、执行 `flutter pub get`、`flutter analyze`、`flutter test` 和 APK 构建前，需要先安装 Flutter SDK；未安装 SDK 的环境不能将该目录宣称为已构建的 Android/iOS 应用。
 
+Android 发布准备提供两条明确路径。PC/真机日常验收继续使用 `scripts/build_mobile_apk.ps1 -OutputDirectory E:\Tools`，保持现有 debug/release 本地签名兼容；面向商店的构建必须显式使用 `-StoreRelease`，并在进程环境中提供 `PAST_PARTNER_ANDROID_KEYSTORE_FILE`、`PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD`、`PAST_PARTNER_ANDROID_KEY_ALIAS` 和 `PAST_PARTNER_ANDROID_KEY_PASSWORD`。StoreRelease 缺少任一配置或找不到 keystore 会在构建前失败，不回退到 debug 签名，也不会把秘密写入仓库。该模式只生成 release APK，输出目录会先清理旧的 `Past-partner_*.apk`，产物命名为 `Past-partner_<版本>_<yyyyMMdd_HHmm>_release.apk`；APK 不提交 Git。iOS 当前只做版本和 ATS 静态检查，不宣称已完成 Xcode archive、商店签名或真机打包。
+
 P3-05 增加移动端导入任务的进程重启恢复：上传开始后，Secure Storage 只保存导入任务 ID、人物 ID、文件显示元数据和系统文件引用，不保存访问令牌、文件正文或完整路径到页面/日志。网络失败或应用进程被终止后，重新进入未完成任务会优先使用恢复清单继续缺片上传；清单缺失或文件已不可读时会明确提示重新选择原文件。上传完成不等同于操作系统级后台任务，当前仍由用户重新打开应用触发恢复。APK 使用 `scripts/build_mobile_apk.ps1` 生成，产物命名为 `Past-partner_<版本>_<yyyyMMdd_HHmm>_<debug|release>.apk`，输出目录只保留最新一组命名 APK。
 
 P3-06 增加移动端导入预览与审核：在上传完成后读取有限的规范化预览，支持参与者身份映射、记录状态修正和失败重试；客户端不解析原始微信/QQ 文件，也不保存原始正文。

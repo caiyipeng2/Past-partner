@@ -3,7 +3,8 @@ param(
     [string]$ProjectRoot = (Join-Path $PSScriptRoot '..'),
     [string]$OutputDirectory = 'E:\Tools',
     [string]$FlutterExecutable = 'flutter',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$StoreRelease
 )
 
 Set-StrictMode -Version Latest
@@ -41,12 +42,39 @@ function Remove-MobileApkOutputs {
         Remove-Item -Force
 }
 
+function Assert-StoreReleaseEnvironment {
+    $required = @(
+        'PAST_PARTNER_ANDROID_KEYSTORE_FILE',
+        'PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD',
+        'PAST_PARTNER_ANDROID_KEY_ALIAS',
+        'PAST_PARTNER_ANDROID_KEY_PASSWORD'
+    )
+    $missing = @()
+    foreach ($name in $required) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $missing += $name
+        }
+    }
+
+    $keystorePath = [Environment]::GetEnvironmentVariable('PAST_PARTNER_ANDROID_KEYSTORE_FILE')
+    if (![string]::IsNullOrWhiteSpace($keystorePath) -and !(Test-Path -LiteralPath $keystorePath -PathType Leaf)) {
+        $missing += 'PAST_PARTNER_ANDROID_KEYSTORE_FILE'
+    }
+
+    if ($missing.Count -gt 0) {
+        $uniqueMissing = $missing | Sort-Object -Unique
+        throw "Android store-release signing configuration is incomplete: $($uniqueMissing -join ', ')."
+    }
+}
+
 function Invoke-MobileApkBuild {
     param(
         [Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)][string]$Flutter,
-        [switch]$NoBuild
+        [switch]$NoBuild,
+        [switch]$StoreRelease
     )
 
     $mobileRoot = (Resolve-Path -LiteralPath (Join-Path $Root 'mobile')).Path
@@ -54,16 +82,34 @@ function Invoke-MobileApkBuild {
     $version = Get-MobileVersion -PubspecPath $pubspecPath
     $timestamp = Get-Date
     Remove-MobileApkOutputs -Directory $Output
+    $buildKinds = if ($StoreRelease) { @('release') } else { @('debug', 'release') }
+    if ($StoreRelease) {
+        Assert-StoreReleaseEnvironment
+    }
 
     if (!$NoBuild) {
         Push-Location $mobileRoot
         try {
             & $Flutter pub get
             if ($LASTEXITCODE -ne 0) { throw 'Flutter dependency resolution failed.' }
-            & $Flutter build apk --debug
-            if ($LASTEXITCODE -ne 0) { throw 'Debug APK build failed.' }
-            & $Flutter build apk --release
-            if ($LASTEXITCODE -ne 0) { throw 'Release APK build failed.' }
+            $previousStoreRelease = [Environment]::GetEnvironmentVariable('PAST_PARTNER_ANDROID_STORE_RELEASE')
+            if ($StoreRelease) {
+                $env:PAST_PARTNER_ANDROID_STORE_RELEASE = 'true'
+            }
+            try {
+                foreach ($kind in $buildKinds) {
+                    & $Flutter build apk "--$kind"
+                    if ($LASTEXITCODE -ne 0) { throw "$kind APK build failed." }
+                }
+            }
+            finally {
+                if ($null -eq $previousStoreRelease) {
+                    Remove-Item Env:PAST_PARTNER_ANDROID_STORE_RELEASE -ErrorAction SilentlyContinue
+                }
+                else {
+                    $env:PAST_PARTNER_ANDROID_STORE_RELEASE = $previousStoreRelease
+                }
+            }
         }
         finally {
             Pop-Location
@@ -75,7 +121,7 @@ function Invoke-MobileApkBuild {
         release = Join-Path $mobileRoot 'build\app\outputs\flutter-apk\app-release.apk'
     }
     $artifacts = @()
-    foreach ($kind in @('debug', 'release')) {
+    foreach ($kind in $buildKinds) {
         $source = $sources[$kind]
         if (!(Test-Path -LiteralPath $source)) {
             throw "Missing $kind APK build artifact."
@@ -87,13 +133,13 @@ function Invoke-MobileApkBuild {
 
     # Keep the named delivery APKs only; Flutter's generated APKs can be rebuilt
     # and otherwise consume disk space across every acceptance cycle.
-    foreach ($kind in @('debug', 'release')) {
+    foreach ($kind in $buildKinds) {
         Remove-Item -LiteralPath $sources[$kind] -Force -ErrorAction SilentlyContinue
     }
     return $artifacts
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-MobileApkBuild -Root $ProjectRoot -Output $OutputDirectory -Flutter $FlutterExecutable -NoBuild:$SkipBuild |
+    Invoke-MobileApkBuild -Root $ProjectRoot -Output $OutputDirectory -Flutter $FlutterExecutable -NoBuild:$SkipBuild -StoreRelease:$StoreRelease |
         Select-Object FullName, Length, LastWriteTime
 }

@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -25,11 +27,49 @@ android {
         versionName = flutter.versionName
     }
 
+    val storeRelease = providers.environmentVariable("PAST_PARTNER_ANDROID_STORE_RELEASE")
+        .map { it.equals("true", ignoreCase = true) }
+        .orElse(false)
+        .get()
+    val keystorePath = providers.environmentVariable("PAST_PARTNER_ANDROID_KEYSTORE_FILE").orNull
+    val keystorePassword = providers.environmentVariable("PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD").orNull
+    val releaseKeyAlias = providers.environmentVariable("PAST_PARTNER_ANDROID_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.environmentVariable("PAST_PARTNER_ANDROID_KEY_PASSWORD").orNull
+    val missingSigningValues = buildList {
+        if (keystorePath.isNullOrBlank() || !File(keystorePath).isFile) {
+            add("PAST_PARTNER_ANDROID_KEYSTORE_FILE")
+        }
+        if (keystorePassword.isNullOrBlank()) {
+            add("PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD")
+        }
+        if (releaseKeyAlias.isNullOrBlank()) {
+            add("PAST_PARTNER_ANDROID_KEY_ALIAS")
+        }
+        if (releaseKeyPassword.isNullOrBlank()) {
+            add("PAST_PARTNER_ANDROID_KEY_PASSWORD")
+        }
+    }
+    if (storeRelease && missingSigningValues.isNotEmpty()) {
+        throw GradleException(
+            "Android store-release signing configuration is incomplete: " +
+                missingSigningValues.joinToString(", ") + "."
+        )
+    }
+    val releaseSigningConfig = if (storeRelease && missingSigningValues.isEmpty()) {
+        signingConfigs.create("release") {
+            storeFile = File(keystorePath!!)
+            storePassword = keystorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+    } else {
+        null
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Keep local release acceptance compatible; store mode is fail-closed above.
+            signingConfig = releaseSigningConfig ?: signingConfigs.getByName("debug")
         }
     }
 }
