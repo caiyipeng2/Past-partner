@@ -254,6 +254,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "unknown_model": HTTPStatus.NOT_FOUND,
                 "provider_not_configured": HTTPStatus.SERVICE_UNAVAILABLE,
                 "provider_unavailable": HTTPStatus.BAD_GATEWAY,
+                "provider_timeout": HTTPStatus.GATEWAY_TIMEOUT,
+                "provider_rate_limited": HTTPStatus.TOO_MANY_REQUESTS,
                 "provider_http_error": HTTPStatus.BAD_GATEWAY,
                 "invalid_provider_response": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)

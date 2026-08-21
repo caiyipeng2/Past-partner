@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -31,8 +32,16 @@ def urllib_json_transport(
         with urlopen(request, timeout=timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
+        if exc.code == 429:
+            raise AdapterError("provider_rate_limited", "provider rate limit was reached") from exc
+        if exc.code in {408, 504}:
+            raise AdapterError("provider_timeout", "provider request timed out") from exc
         raise AdapterError("provider_http_error", f"provider returned HTTP {exc.code}") from exc
-    except (URLError, TimeoutError) as exc:
+    except (socket.timeout, TimeoutError) as exc:
+        raise AdapterError("provider_timeout", "provider request timed out") from exc
+    except URLError as exc:
+        if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+            raise AdapterError("provider_timeout", "provider request timed out") from exc
         raise AdapterError("provider_unavailable", "provider could not be reached") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterError("invalid_provider_response", "provider returned invalid JSON") from exc
