@@ -21,6 +21,49 @@ try {
         throw "APK naming assertion failed: $name"
     }
 
+    $keystore = Join-Path $temp 'release.keystore'
+    Set-Content -LiteralPath $keystore -Value 'disposable'
+    $signingNames = @(
+        'PAST_PARTNER_ANDROID_KEYSTORE_FILE',
+        'PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD',
+        'PAST_PARTNER_ANDROID_KEY_ALIAS',
+        'PAST_PARTNER_ANDROID_KEY_PASSWORD'
+    )
+    $previousSigning = @{}
+    foreach ($name in $signingNames) {
+        $previousSigning[$name] = [Environment]::GetEnvironmentVariable($name)
+    }
+    try {
+        $env:PAST_PARTNER_ANDROID_KEYSTORE_FILE = $keystore
+        $env:PAST_PARTNER_ANDROID_KEYSTORE_PASSWORD = 'store-secret'
+        $env:PAST_PARTNER_ANDROID_KEY_ALIAS = 'past-partner'
+        $env:PAST_PARTNER_ANDROID_KEY_PASSWORD = 'key-secret'
+        Assert-StoreReleaseEnvironment
+
+        Remove-Item Env:PAST_PARTNER_ANDROID_KEY_ALIAS
+        $rejected = $false
+        try {
+            Assert-StoreReleaseEnvironment
+        }
+        catch {
+            $rejected = $true
+            if ($_.Exception.Message -match 'key-secret|store-secret|release\.keystore') {
+                throw 'Signing validation leaked a secret value or path.'
+            }
+        }
+        if (!$rejected) { throw 'Missing signing value was accepted.' }
+    }
+    finally {
+        foreach ($name in $signingNames) {
+            if ($null -eq $previousSigning[$name]) {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+            }
+            else {
+                Set-Item "Env:$name" $previousSigning[$name]
+            }
+        }
+    }
+
     $output = Join-Path $temp 'output'
     New-Item -ItemType Directory -Path $output | Out-Null
     Set-Content -LiteralPath (Join-Path $output 'Past-partner_0.0.1_20200101_0000_debug.apk') -Value 'old'
