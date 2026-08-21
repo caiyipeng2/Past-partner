@@ -118,6 +118,27 @@ class ApplicationStorageWiringTests(unittest.TestCase):
 
         self.assertIs(application.task_queue.metadata_store, application.metadata_store)
 
+    def test_explicit_qwen_fine_tuning_opt_in_updates_runtime_catalog(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PAST_PARTNER_QWEN_API_KEY": "qwen-secret",
+                "PAST_PARTNER_QWEN_FINE_TUNING_ENABLED": "true",
+                "PAST_PARTNER_QWEN_FINE_TUNING_MODELS": "qwen3.7-plus",
+            },
+        ):
+            application = Application.from_config(self.config())
+
+        try:
+            provider = application.catalog.provider("qwen")
+            model = application.catalog.find_model("qwen", "qwen3.7-plus")
+            self.assertIn("fine_tuning", provider.capabilities)
+            self.assertIsNotNone(model)
+            assert model is not None
+            self.assertIn("fine_tuning", model.capabilities)
+        finally:
+            application.close()
+
 
 if __name__ == "__main__":
     unittest.main()

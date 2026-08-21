@@ -188,6 +188,10 @@ P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片�
 
 P2-07 的媒体检测 `provider_transfer` 标记不适用于训练任务。只有目录 `fine_tuning` 能力、价格、配置的微调适配器和独立训练授权都满足时，Provider 网关才会接收训练文本；缺少能力会返回 `capability_not_supported`，绝不回退为聊天请求。任务只有收到非空 `artifact_id` 与非空 `evaluation` 后才进入 `completed`，两者仅是有限结果元数据。
 
+R0-04 已接入阿里云百炼/Model Studio 的真实千问微调适配器，但默认保持关闭。只有同时配置 `PAST_PARTNER_QWEN_API_KEY`、`PAST_PARTNER_QWEN_FINE_TUNING_ENABLED=true` 和显式的 `PAST_PARTNER_QWEN_FINE_TUNING_MODELS` 白名单，目录才会为对应千问模型声明 `fine_tuning`；普通 OpenAI-compatible 聊天端点、DeepSeek、小米、自定义模型不会被伪装成训练 Provider。适配器使用原生 `/api/v1/files` 分块上传 JSONL，再调用 `/api/v1/fine-tunes` 提交、列表恢复、详情查询和 `/cancel` 取消；提交时把本地 job ID 写入供应商 `job_name`，以便本地持久化失败后对账。供应商返回的非空 `finetuned_output` 和 usage/metrics 等有限证据才会进入训练工件与评测字段，缺少证据会保持未验证状态。千问微调接口按官方文档要求使用华北 2（北京）地域权限和 API Key，真实训练会产生供应商费用，必须先完成独立训练同意与成本授权。
+
+R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 python scripts/qwen_fine_tuning_smoke.py --model <model>`；脚本只上传合成样本，输出脱敏的任务状态/工件/评测存在性，并会取消仍在排队或运行的任务。未提供真实凭据时，自动化验收使用本地 HTTP 服务器覆盖同一分块上传和提交/恢复/查询/取消传输路径，不把确定性测试 Provider 当作生产训练。
+
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 
 OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 只需配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL`、API Key 和逗号分隔的模型名即可接入；`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。

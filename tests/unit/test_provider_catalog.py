@@ -126,6 +126,22 @@ class ProviderCatalogTests(unittest.TestCase):
         assert model is not None
         self.assertNotIn("fine_tuning", model.capabilities)
 
+    def test_runtime_fine_tuning_capabilities_are_added_only_for_explicit_models(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"qwen"},
+            fine_tuning_models={"qwen": frozenset({"qwen3.7-plus"})},
+        )
+
+        provider = catalog.provider("qwen")
+        model = catalog.find_model("qwen", "qwen3.7-plus")
+        other = catalog.find_model("qwen", "qwen3.7-max")
+        self.assertIn("fine_tuning", provider.capabilities)
+        self.assertIsNotNone(model)
+        self.assertIsNotNone(other)
+        assert model is not None and other is not None
+        self.assertIn("fine_tuning", model.capabilities)
+        self.assertNotIn("fine_tuning", other.capabilities)
+
     def test_runtime_model_can_receive_the_same_pricing_metadata(self) -> None:
         catalog = ProviderCatalog.default().with_configured(
             {"ollama"},

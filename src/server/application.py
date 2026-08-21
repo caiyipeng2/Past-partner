@@ -172,7 +172,12 @@ class Application:
             for provider_id, adapter in adapters.items()
             if hasattr(adapter, "config")
         }
-        catalog = catalog.with_configured(set(adapters), runtime_models)
+        fine_tuning_models = {
+            provider_id: adapter.config.fine_tuning_models
+            for provider_id, adapter in adapters.items()
+            if hasattr(adapter, "config") and hasattr(adapter.config, "fine_tuning_models")
+        }
+        catalog = catalog.with_configured(set(adapters), runtime_models, fine_tuning_models)
         catalog = catalog.with_pricing_json(config.model_pricing_json)
         gateway = ProviderGateway(catalog, mode=config.mode, adapters=adapters)
         datasets = TrainingDatasetBuilder(storage, uploads)

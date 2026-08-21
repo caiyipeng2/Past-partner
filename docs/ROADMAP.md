@@ -74,7 +74,8 @@
 
 - Docker Compose 和可安装服务 CLI 尚未提供。
 - 真实 PostgreSQL/S3/KMS/外部 worker 集成尚未在当前环境执行，默认只跑了安全跳过分支。
-- 默认真实 Provider 只声明文本 chat；流式、Embedding、媒体分析和生产微调适配器尚未完成。
+- 默认真实 Provider 仍只声明文本 chat；R0-04 仅为显式开启的千问模型增加原生微调能力，流式、Embedding 和媒体分析仍未完成。
+- R0-04 分支已实现显式开启的千问原生微调适配器；合并前仍需按 `.env.example` 提供真实百炼凭据运行一次外部 smoke，未配置时保持 `capability_not_supported`。
 - 画像、长期记忆和本地检索当前是内存能力，尚未持久化向量索引。
 - 成功数据保留期、原始完整导出、账户级删除、匿名化和 OIDC/OAuth 尚未完成。
 - Android 当前优先，后台上传和真实媒体处理尚未完成；iOS 只做静态检查，未完成 Xcode archive/签名/真机/商店流程。

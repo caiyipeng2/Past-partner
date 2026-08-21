@@ -4,7 +4,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from src.providers.base import AdapterError
-from src.providers.transport import urllib_json_transport
+from src.providers.transport import urllib_json_request_transport, urllib_json_transport
 
 
 class ProviderTransportTests(unittest.TestCase):
@@ -46,6 +46,31 @@ class ProviderTransportTests(unittest.TestCase):
                 urllib_json_transport("https://provider.invalid", {}, {}, 1.0)
 
         self.assertEqual("invalid_provider_response", captured.exception.code)
+
+    def test_json_request_transport_supports_get_without_sending_a_body(self) -> None:
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"output": {"status": "ok"}}'
+
+        with patch("src.providers.transport.urlopen", return_value=_Response()) as opened:
+            payload = urllib_json_request_transport(
+                "GET",
+                "https://provider.invalid/fine-tunes/job",
+                {"Authorization": "Bearer secret"},
+                None,
+                1.0,
+            )
+
+        self.assertEqual("ok", payload["output"]["status"])
+        request = opened.call_args.args[0]
+        self.assertEqual("GET", request.get_method())
+        self.assertIsNone(request.data)
 
 
 if __name__ == "__main__":
