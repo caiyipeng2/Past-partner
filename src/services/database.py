@@ -19,6 +19,7 @@ class Migration:
     name: str
     statements: tuple[str, ...]
     requires_foreign_keys_off: bool = False
+    postgres_statements: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.version <= 0:
@@ -340,6 +341,22 @@ DEFAULT_MIGRATIONS = (
             "SELECT id, kind, record_version, encrypted_payload FROM local_users",
             "DROP TABLE local_users",
             "ALTER TABLE local_users_r1_03 RENAME TO local_users",
+            """
+            CREATE TABLE local_identities (
+                user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                subject TEXT NOT NULL UNIQUE CHECK (length(subject) BETWEEN 1 AND 256),
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+        postgres_statements=(
+            "ALTER TABLE local_users DROP CONSTRAINT IF EXISTS local_users_kind_key",
+            "ALTER TABLE local_users DROP CONSTRAINT IF EXISTS local_users_kind_check",
+            "ALTER TABLE local_users ADD CONSTRAINT local_users_kind_check "
+            "CHECK (kind IN ('owner', 'member'))",
             """
             CREATE TABLE local_identities (
                 user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,

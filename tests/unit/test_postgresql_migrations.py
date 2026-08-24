@@ -74,6 +74,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertTrue(migration_ddl)
         self.assertTrue(all("BLOB" not in sql.upper() for sql in migration_ddl))
         self.assertTrue(any("BYTEA" in sql.upper() for sql in migration_ddl))
+        self.assertTrue(any("DROP CONSTRAINT IF EXISTS LOCAL_USERS_KIND_KEY" in sql.upper() for sql in sql_statements))
+        self.assertFalse(any("DROP TABLE LOCAL_USERS" in sql.upper() for sql in sql_statements))
 
         recorded = {version: checksum for version, (_, checksum) in connection.applied.items()}
         self.assertEqual(
