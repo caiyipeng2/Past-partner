@@ -766,9 +766,15 @@ class UploadService:
                         "truncated": truncated,
                         "file_count": len(file_specs),
                     }
+                # The import is considered normalized only after every declared
+                # file parsed, the payload boundary was verified, and all preview
+                # temporary objects were removed. This timestamp is the retention
+                # anchor; upload completion alone must never start that clock.
+                normalized_job = self.imports.mark_normalized(owner_id, job.id)
                 return {
                     "import_id": job.id,
                     "state": job.state.value,
+                    "normalized_at": normalized_job.normalized_at,
                     "source_name": source_name,
                     "media_type": media_type,
                     "source_type": source_type,

@@ -60,8 +60,9 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         connection = _MigrationConnection()
         migrator = PostgreSQLMigrator(lambda: connection)
 
-        self.assertEqual(14, migrator.migrate())
-        self.assertEqual(tuple(range(1, 15)), tuple(sorted(connection.applied)))
+        expected_version = len(DEFAULT_MIGRATIONS)
+        self.assertEqual(expected_version, migrator.migrate())
+        self.assertEqual(tuple(range(1, expected_version + 1)), tuple(sorted(connection.applied)))
         self.assertEqual(1, connection.commit_count)
         self.assertEqual(0, connection.rollback_count)
         self.assertEqual(1, connection.close_count)
@@ -86,10 +87,11 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
         migrator.migrate()
         first_call_count = len(connection.calls)
-        self.assertEqual(14, migrator.migrate())
+        expected_version = len(DEFAULT_MIGRATIONS)
+        self.assertEqual(expected_version, migrator.migrate())
 
         self.assertEqual(2, connection.commit_count)
-        self.assertEqual(14, len(connection.applied))
+        self.assertEqual(expected_version, len(connection.applied))
         self.assertEqual(first_call_count + 3, len(connection.calls))
 
     def test_checksum_mismatch_fails_closed_and_rolls_back(self) -> None:

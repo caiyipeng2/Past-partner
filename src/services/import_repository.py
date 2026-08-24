@@ -171,6 +171,24 @@ class ImportRepository:
                 expired.append(job)
         return expired
 
+    def list_expired_normalized(self, owner_id: str, cutoff: datetime) -> list[Any]:
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("cutoff must be timezone-aware")
+        cutoff_utc = cutoff.astimezone(UTC)
+        expired = []
+        for job in self.list(owner_id):
+            if getattr(job, "normalized_at", None) is None:
+                continue
+            try:
+                normalized_at = datetime.fromisoformat(str(job.normalized_at).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if normalized_at.tzinfo is None or normalized_at.utcoffset() is None:
+                continue
+            if normalized_at.astimezone(UTC) < cutoff_utc:
+                expired.append(job)
+        return expired
+
     def delete(self, owner_id: str, import_id: str | None = None) -> bool:
         if import_id is None:
             import_id = owner_id

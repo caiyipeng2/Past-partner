@@ -19,6 +19,7 @@ from src.services.import_service import DEFAULT_MAX_IMPORT_BYTES
 from src.services.upload_service import DEFAULT_CHUNK_BYTES
 
 MAX_RAW_RETENTION_SECONDS = 5 * 365 * 24 * 60 * 60
+MAX_NORMALIZED_RETENTION_SECONDS = MAX_RAW_RETENTION_SECONDS
 MAX_METADATA_POOL_SIZE = 64
 _RFC1918_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -82,6 +83,7 @@ class ServerConfig:
     max_chunk_bytes: int = DEFAULT_CHUNK_BYTES
     max_import_bytes: int = DEFAULT_MAX_IMPORT_BYTES
     raw_retention_seconds: int = 0
+    normalized_retention_seconds: int = 0
     model_pricing_json: str | None = None
     device_bootstrap_token: str | None = None
     device_allowed_networks: tuple[str, ...] = ()
@@ -136,6 +138,9 @@ class ServerConfig:
             raw_retention_seconds=_int_env(
                 "PAST_PARTNER_RAW_RETENTION_SECONDS", default.raw_retention_seconds
             ),
+            normalized_retention_seconds=_int_env(
+                "PAST_PARTNER_NORMALIZED_RETENTION_SECONDS", default.normalized_retention_seconds
+            ),
             model_pricing_json=os.getenv("PAST_PARTNER_MODEL_PRICING_JSON"),
             device_bootstrap_token=os.getenv("PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN"),
             device_allowed_networks=_csv_env("PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS"),
@@ -182,6 +187,8 @@ class ServerConfig:
             raise ValueError("request and import limits must be positive")
         if not 0 <= self.raw_retention_seconds <= MAX_RAW_RETENTION_SECONDS:
             raise ValueError("raw retention must be between 0 and five years")
+        if not 0 <= self.normalized_retention_seconds <= MAX_NORMALIZED_RETENTION_SECONDS:
+            raise ValueError("normalized retention must be between 0 and five years")
         pairing_fields = (
             self.device_bootstrap_token,
             self.device_allowed_networks,

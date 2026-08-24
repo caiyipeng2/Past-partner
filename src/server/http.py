@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import re
 import socket
+import shutil
 import ssl
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -28,6 +29,7 @@ from src.server.config import ServerConfig
 from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
+from src.services.export_service import ExportServiceError
 from src.services.local_auth import LocalAuthError
 from src.services.learning_service import LearningServiceError
 from src.services.metrics import MetricsRegistry
@@ -73,6 +75,8 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _USAGE_PATH = "/api/v1/usage"
+_DATA_EXPORT_ARCHIVE_PATH = "/api/v1/data-export/archive"
+_DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
 _METRICS_PATH = "/api/v1/metrics"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -269,6 +273,13 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._error(status, exc.code, str(exc))
         except AuditServiceError as exc:
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
+        except ExportServiceError as exc:
+            status = {
+                "export_payload_unavailable": HTTPStatus.CONFLICT,
+                "export_payload_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "export_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+            }.get(exc.code, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._error(status, exc.code, str(exc))
         except TrainingServiceError as exc:
             status = {
                 "training_job_not_found": HTTPStatus.NOT_FOUND,
@@ -367,6 +378,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
         elif path == "/api/v1/data-export":
             self._json(HTTPStatus.OK, self.server.application.export_data(self.owner_id))
+        elif path == _DATA_EXPORT_ARCHIVE_PATH:
+            self._archive(self.server.application.export_archive(self.owner_id))
         elif path == _CONSENTS_PATH:
             persona_id = query.get("persona_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.list_consents(self.owner_id, persona_id))
@@ -499,6 +512,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.CREATED, self.server.application.create_persona(self.owner_id, self._json_body()))
+        elif path == _DATA_DELETION_PATH:
+            self._json(HTTPStatus.OK, self.server.application.delete_owner_data(self.owner_id, self._json_body()))
         elif match := _LEARNING_RETRIEVE_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -719,6 +734,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _archive(self, artifact) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(artifact.content_length))
+        self.send_header("Content-Disposition", 'attachment; filename="Past-partner-data-export.zip"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            with artifact.path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        finally:
+            artifact.cleanup()
+
     def _request_target(self) -> tuple[str, dict[str, list[str]]]:
         parsed = urlsplit(self.path)
         decoded = unquote(parsed.path)
@@ -862,6 +891,10 @@ def _route_template(target: str) -> str:
             return _READY_PATH
         if path == _METRICS_PATH:
             return _METRICS_PATH
+        if path == _DATA_EXPORT_ARCHIVE_PATH:
+            return _DATA_EXPORT_ARCHIVE_PATH
+        if path == _DATA_DELETION_PATH:
+            return _DATA_DELETION_PATH
         return "/api/*"
     return "/static"
 

@@ -183,6 +183,17 @@ class ServerConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "retention"):
             ServerConfig(raw_retention_seconds=-1).validated()
 
+    def test_normalized_retention_is_disabled_by_default_and_configurable(self) -> None:
+        with patch.dict(os.environ, {"PAST_PARTNER_NORMALIZED_RETENTION_SECONDS": "172800"}, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual(172800, config.normalized_retention_seconds)
+        self.assertEqual(0, ServerConfig().normalized_retention_seconds)
+
+    def test_normalized_retention_rejects_values_above_policy_maximum(self) -> None:
+        with self.assertRaisesRegex(ValueError, "retention"):
+            ServerConfig(normalized_retention_seconds=5 * 365 * 24 * 60 * 60 + 1).validated()
+
     def test_env_template_exposes_disabled_raw_retention_setting(self) -> None:
         template = Path(__file__).parents[2] / ".env.example"
 

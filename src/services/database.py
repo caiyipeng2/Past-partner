@@ -54,6 +54,8 @@ class Migration:
 # Version 13 adds encrypted owner-scoped usage records. Version 14 adds encrypted
 # style profiles, reviewed long-term memory aggregates, and deterministic vector
 # index envelopes scoped to the owning persona.
+# Version 15 adds an owner-free deletion receipt containing only a random receipt ID,
+# timestamp, and bounded resource counts.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -300,6 +302,20 @@ DEFAULT_MIGRATIONS = (
             )
             """,
             "CREATE INDEX vector_indexes_owner_persona_idx ON vector_indexes(owner_id, persona_id)",
+        ),
+    ),
+    Migration(
+        version=15,
+        name="anonymous_deletion_receipts",
+        statements=(
+            """
+            CREATE TABLE deletion_receipts (
+                id TEXT PRIMARY KEY,
+                deleted_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                counts_json TEXT NOT NULL CHECK (length(counts_json) BETWEEN 2 AND 4096)
+            )
+            """,
         ),
     ),
 )

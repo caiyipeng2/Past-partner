@@ -173,8 +173,8 @@ P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 
 预览记录会带有稳定 `record_id` 和 `review_state`；可通过 `POST /api/v1/imports/{import_id}/corrections` 提交单文件或多文件预览中的字段修正及 `accepted`、`needs_review` 或 `rejected` 状态，修正同样写入加密导入清单并在后续预览中回显。
 可通过 `DELETE /api/v1/imports/{import_id}` 删除单个导入及其加密分片、合并对象和清单；该操作按当前 owner 校验，删除后导入接口返回 404。
 可通过 `DELETE /api/v1/personas/{persona_id}` 删除人物及其 owner 名下的全部导入任务、加密分片、合并对象和清单；删除后人物和关联导入接口返回 404。
-可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化人物、导入任务和加密清单元数据；原始导入载荷、第三方供应商数据和审计记录会在导出范围中明确标记为未包含。
-可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 启用启动时保留期清理；正数表示清理当前 owner 名下更新时间早于阈值且状态为 `failed` 或 `cancelled` 的导入及其加密对象，默认 `0` 关闭。由于当前尚未记录成功标准化事件，`uploaded`、`processing` 和 `completed` 导入不会被该策略自动删除。
+可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化元数据 JSON，或通过 `GET /api/v1/data-export/archive` 获取服务端按块生成的 ZIP 完整归档（包含原始 payload、导入清单、人物、画像、记忆、会话和训练元数据）。两种导出均明确省略第三方供应商数据和审计记录，归档不会把大文件一次性读入内存。
+可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 清理超时的 `failed`/`cancelled` 原始导入，或通过 `PAST_PARTNER_NORMALIZED_RETENTION_SECONDS` 清理已完成预览/归一化且超过保留期的导入；两者默认 `0` 关闭且硬上限为五年。可通过 `POST /api/v1/data-deletion` 携带 `{"confirm":"DELETE"}` 删除当前 owner 控制的所有本地数据并取得匿名回执；provider-side 副本和已提交的外部训练作业会明确列为限制，不会伪称已删除。
 
 P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准化消息现在包含服务端稳定 `record_id`，并在解析阶段生成后供预览、修正和后续持久化复用；P0-20 的 TXT 解析支持常见时间/发送者格式、多行消息、UTF-8/UTF-16 编码和无时间发送者行；P0-21 的 JSON/JSONL 解析统一支持 UTF-8/UTF-16 编码并保持 JSONL 流式读取；P0-22 的导入预览按多文件清单边界逐文件解析并聚合有限记录；P0-25 增加微信 TXT/HTML 导出解析；P0-26 增加 QQ TXT/HTML 导出解析；P0-27 增加默认关闭、启动时执行的终态原始导入保留期清理；P0-28 提供 owner 级版本化数据导出，包含人物、导入任务、参与者映射、预览修正和加密清单元数据，并明确排除原始载荷；P0-29 提供 owner 级人物删除级联清理，并拒绝会造成部分删除的处理中任务；P0-30 增加微信 3.x/4.x 明文 SQLite 数据库目录解析；P0-31 增加 QQ 通用消息表明文 SQLite 数据库目录解析；P0-32 增加带 manifest v1 的微信 ZIP 备份包安全解析；P0-33 增加带 manifest v1 的 QQ ZIP 备份包安全解析；P1-01 增加通用 CSV 聊天记录解析；P1-02 增加通用 XML 聊天记录解析；P1-03 增加通用 HTML 解析；P1-04 增加通用 SQLite schema 自动探测；P1-05 增加跨格式附件引用元数据标准化；P1-08 增加 DOCX 对话文本解析；P1-09 增加 PDF 对话文本解析；P1-10 增加第三方媒体处理授权记录、精确作用域校验和撤回接口；P2-01 增加模型能力、上下文、隐私和可刷新价格元数据及成本估算接口。数据库解析仅接受用户主动选择的目录，先形成包含现有 WAL/SHM 的一致只读快照，再识别已支持 schema；单个 `.db`、加密库和未知 schema 会返回明确错误。私有加密备份、媒体内容分析、浏览器目录聚合和第三方模型处理仍按后续任务推进；媒体原始内容不会因本地上传而自动发送给第三方。
 

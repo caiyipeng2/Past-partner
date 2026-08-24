@@ -23,11 +23,14 @@ from src.services.audit_repository import AuditRepository, AuditRepositoryError
 from src.services.blob_store import S3BlobStoreSettings, build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
+from src.services.deletion_receipt_repository import DeletionReceiptRepository
+from src.services.export_service import ExportArtifact, ExportService
+from src.services.export_service import ExportServiceError
 from src.services.multimodal_consent import MultimodalConsentGate
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
 from src.services.learning_repository import LearningRepository
-from src.services.learning_service import LearningService
+from src.services.learning_service import LearningService, LearningServiceError
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.metadata_store import MetadataStore, build_metadata_store
@@ -77,6 +80,8 @@ class Application:
         task_queue: TaskQueue | None = None,
         audit_repository: AuditRepository | None = None,
         usage_repository: UsageRepository | None = None,
+        export_service: ExportService | None = None,
+        deletion_receipts: DeletionReceiptRepository | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -94,6 +99,8 @@ class Application:
         self.task_queue = task_queue
         self.audit_repository = audit_repository
         self.usage_repository = usage_repository
+        self.export_service = export_service
+        self.deletion_receipts = deletion_receipts
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
@@ -137,6 +144,7 @@ class Application:
         encryption = AuthenticatedEncryptionService(master_keys)
         audit_repository = AuditRepository(metadata_store, encryption)
         usage_repository = UsageRepository(metadata_store, encryption)
+        deletion_receipts = DeletionReceiptRepository(metadata_store)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
             metadata_store,
@@ -165,8 +173,14 @@ class Application:
             max_chunk_bytes=config.max_chunk_bytes,
             blob_store=blob_store,
         )
-        if config.raw_retention_seconds > 0:
-            RetentionService(imports, uploads, config.raw_retention_seconds).cleanup(auth.owner_id)
+        export_service = ExportService(storage, imports, uploads)
+        if config.raw_retention_seconds > 0 or config.normalized_retention_seconds > 0:
+            RetentionService(
+                imports,
+                uploads,
+                config.raw_retention_seconds,
+                config.normalized_retention_seconds,
+            ).cleanup(auth.owner_id)
         catalog = ProviderCatalog.default()
         adapters = build_provider_adapters(catalog)
         if config.mode == "test":
@@ -217,6 +231,8 @@ class Application:
             task_queue,
             audit_repository,
             usage_repository,
+            export_service,
+            deletion_receipts,
         )
         return application
 
@@ -429,6 +445,20 @@ class Application:
             }
             for job in self.imports.list(owner_id)
         ]
+        learning: list[dict[str, Any]] = []
+        for persona in self.personas.list(owner_id):
+            entry: dict[str, Any] = {"persona_id": persona.id}
+            try:
+                entry["style_profile"] = self.learning.get_style_profile(owner_id, persona.id).to_dict()
+            except LearningServiceError as exc:
+                if exc.code != "learning_not_found":
+                    raise
+            try:
+                entry["memory"] = self.learning.get_memory(owner_id, persona.id).to_dict()
+            except LearningServiceError as exc:
+                if exc.code != "learning_not_found":
+                    raise
+            learning.append(entry)
         return {
             "export_version": 1,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -441,7 +471,91 @@ class Application:
             "consents": [consent.to_dict() for consent in self.consents.list(owner_id)],
             "training_jobs": [job.to_dict() for job in self.training.list(owner_id)],
             "conversations": [conversation.to_dict() for conversation in self.conversations.list(owner_id)],
+            "learning": learning,
         }
+
+    def export_archive(self, owner_id: str) -> ExportArtifact:
+        if self.export_service is None:
+            raise ExportServiceError("export_unavailable", "owner archive export is unavailable")
+        metadata = self.export_data(owner_id)
+        metadata["export_version"] = 2
+        metadata["scope"] = {
+            "raw_payloads_included": True,
+            "omitted": ["provider_side_data", "audit_records"],
+        }
+        metadata["archive"] = {
+            "format": "zip",
+            "payload_encoding": "original_plain_bytes",
+            "streamed": True,
+        }
+        return self.export_service.create_archive(owner_id, metadata)
+
+    def delete_owner_data(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if payload.get("confirm") != "DELETE":
+            raise RequestValidationError(
+                "deletion_confirmation_required",
+                "explicit deletion confirmation is required",
+            )
+        if self.metadata_store is None or self.deletion_receipts is None:
+            raise AuditServiceError("deletion_unavailable", "data deletion is unavailable")
+        with self._persona_lifecycle_lock:
+            personas = self.personas.list(owner_id)
+            imports = self.imports.list(owner_id)
+            if any(job.state.value == "processing" for job in imports):
+                raise UploadError("deletion_unavailable", "processing imports must finish before deletion")
+            training_jobs = self.training.list(owner_id)
+            if any(job.state.value in {"pending", "running"} for job in training_jobs):
+                raise UploadError("deletion_unavailable", "processing training jobs must finish before deletion")
+
+            # Remove object-store bytes before the metadata transaction. A failed
+            # object deletion aborts the request and never creates a success receipt.
+            for job in imports:
+                self.uploads.delete_import(owner_id, job.id)
+
+            counts: dict[str, int] = {
+                "personas": len(personas),
+                "imports": len(imports),
+                "training_jobs": len(training_jobs),
+                "provider_side_cleanup_limitations": sum(
+                    1 for job in training_jobs if job.provider_job_id is not None or job.submission_started
+                ),
+            }
+            with self.metadata_store.transaction(immediate=self.metadata_store.backend_name == "sqlite") as connection:
+                for table, key in (
+                    ("style_profiles", "style_profiles"),
+                    ("long_term_memories", "long_term_memories"),
+                    ("vector_indexes", "vector_indexes"),
+                    ("conversations", "conversations"),
+                    ("consents", "consents"),
+                    ("training_jobs", "training_jobs"),
+                    ("usage_records", "usage_records"),
+                    ("audit_events", "audit_events"),
+                    ("task_queue", "task_queue"),
+                    ("personas", "personas"),
+                    ("imports", "imports"),
+                ):
+                    counts[key] = connection.execute(
+                        f"DELETE FROM {table} WHERE owner_id = ?",
+                        (owner_id,),
+                    ).rowcount
+                # Import and training rows were already enumerated/preflighted;
+                # import object cleanup removes their rows before this transaction.
+                counts["imports"] = len(imports)
+                counts["training_jobs"] = len(training_jobs)
+                counts["personas"] = len(personas)
+                counts["sessions"] = connection.execute(
+                    "DELETE FROM local_sessions WHERE user_id = ?", (owner_id,)
+                ).rowcount
+                receipt = self.deletion_receipts.create(counts, connection=connection)
+            return {
+                "deleted": True,
+                "receipt_id": receipt["receipt_id"],
+                "deleted_at": receipt["deleted_at"],
+                "deleted_imports": counts["imports"],
+                "deleted_personas": counts["personas"],
+                "provider_side_cleanup_limitations": counts["provider_side_cleanup_limitations"],
+                "anonymized": True,
+            }
 
     def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
