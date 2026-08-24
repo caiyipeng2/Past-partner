@@ -212,6 +212,66 @@ class LocalAuthTests(unittest.TestCase):
         with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
             auth.authenticate(f"Bearer {session['access_token']}")
 
+    def test_creates_distinct_local_accounts_and_returns_principal_metadata(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+
+        first = auth.create_local_account("oidc:user-a", tenant_id="tenant-a", role="member")
+        second = auth.create_local_account("oidc:user-b", tenant_id="tenant-b", role="admin")
+
+        self.assertNotEqual(first["user_id"], second["user_id"])
+        self.assertEqual("tenant-a", first["tenant_id"])
+        self.assertEqual("admin", second["role"])
+
+        first_session = auth.issue_account_session(first["user_id"])
+        second_session = auth.issue_account_session(second["user_id"])
+        first_principal = auth.authenticate(f"Bearer {first_session['access_token']}")
+        second_principal = auth.authenticate(f"Bearer {second_session['access_token']}")
+
+        self.assertEqual((first["user_id"], "tenant-a", "oidc:user-a", "member"), (
+            first_principal.user_id,
+            first_principal.tenant_id,
+            first_principal.subject,
+            first_principal.role,
+        ))
+        self.assertEqual((second["user_id"], "tenant-b", "oidc:user-b", "admin"), (
+            second_principal.user_id,
+            second_principal.tenant_id,
+            second_principal.subject,
+            second_principal.role,
+        ))
+
+    def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        auth.create_local_account("oidc:duplicate")
+
+        with self.assertRaises(LocalAuthError) as duplicate:
+            auth.create_local_account("oidc:duplicate")
+        self.assertEqual("account_subject_exists", duplicate.exception.code)
+
+        production = LocalAuthService(
+            self.database_path,
+            self.encryption,
+            mode="production",
+            bootstrap_token="production-secret",
+        )
+        with self.assertRaises(LocalAuthError) as disabled:
+            production.create_local_account("oidc:blocked")
+        self.assertEqual("account_management_unavailable", disabled.exception.code)
+
+    def test_identity_mapping_tampering_fails_closed(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        account = auth.create_local_account("oidc:tampered")
+        session = auth.issue_account_session(account["user_id"])
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE local_identities SET role = 'admin', tenant_id = 'other-tenant' WHERE user_id = ?",
+                (account["user_id"],),
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(LocalAuthError, "valid owner session"):
+            auth.authenticate(f"Bearer {session['access_token']}")
+
 
 if __name__ == "__main__":
     unittest.main()
