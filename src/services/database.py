@@ -18,6 +18,7 @@ class Migration:
     version: int
     name: str
     statements: tuple[str, ...]
+    requires_foreign_keys_off: bool = False
 
     def __post_init__(self) -> None:
         if self.version <= 0:
@@ -318,6 +319,39 @@ DEFAULT_MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        version=16,
+        name="multi_account_identity",
+        requires_foreign_keys_off=True,
+        statements=(
+            # SQLite cannot drop a CHECK constraint in place. Rebuilding this
+            # small root table while foreign-key enforcement is temporarily
+            # disabled preserves every existing child row and lets the new
+            # member kind coexist with the legacy owner record.
+            """
+            CREATE TABLE local_users_r1_03 (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN ('owner', 'member')),
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "INSERT INTO local_users_r1_03 (id, kind, record_version, encrypted_payload) "
+            "SELECT id, kind, record_version, encrypted_payload FROM local_users",
+            "DROP TABLE local_users",
+            "ALTER TABLE local_users_r1_03 RENAME TO local_users",
+            """
+            CREATE TABLE local_identities (
+                user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                subject TEXT NOT NULL UNIQUE CHECK (length(subject) BETWEEN 1 AND 256),
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
@@ -335,6 +369,7 @@ class SQLiteMigrator:
     def migrate(self) -> int:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.database_path, isolation_level=None)
+        foreign_keys_off = False
         try:
             connection.execute("PRAGMA foreign_keys = ON")
             # One immediate transaction serializes concurrent startup attempts and
@@ -352,6 +387,15 @@ class SQLiteMigrator:
             for migration in self.migrations:
                 if migration.version in applied:
                     continue
+                if migration.requires_foreign_keys_off and not foreign_keys_off:
+                    # PRAGMA foreign_keys is a connection setting and is a
+                    # no-op inside a transaction. Commit the preceding
+                    # migrations, toggle it outside the transaction, and
+                    # start a new atomic unit for the table rebuild.
+                    connection.commit()
+                    connection.execute("PRAGMA foreign_keys = OFF")
+                    foreign_keys_off = True
+                    connection.execute("BEGIN IMMEDIATE")
                 for statement in migration.statements:
                     connection.execute(statement)
                 connection.execute(
@@ -366,6 +410,8 @@ class SQLiteMigrator:
                 connection.rollback()
             raise
         finally:
+            if foreign_keys_off:
+                connection.execute("PRAGMA foreign_keys = ON")
             connection.close()
 
     def _validate_plan(self) -> None:
