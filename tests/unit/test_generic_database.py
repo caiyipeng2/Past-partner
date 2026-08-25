@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -112,7 +113,9 @@ class GenericDatabaseTests(unittest.TestCase):
                 dst.write_bytes(src.read_bytes())
                 calls += 1
                 if calls == 1:
+                    previous_mtime = database.stat().st_mtime_ns
                     database.write_bytes(b"SQLite format 3\x00changed")
+                    os.utime(database, ns=(previous_mtime, previous_mtime + 1_000_000))
 
             with self.assertRaises(SnapshotChangedError):
                 create_generic_snapshot(source, cache, retries=1, copy_file=mutate_after_copy)
