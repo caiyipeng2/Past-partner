@@ -24,7 +24,12 @@ from src.services.authenticated_encryption import (
     InvalidEncryptedPayloadError,
 )
 from src.domain.access_scope import AccessScopeError, AccessScopes
-from src.services.metadata_store import MetadataConnection, MetadataStore, require_metadata_store
+from src.services.metadata_store import (
+    MetadataConnection,
+    MetadataIntegrityError,
+    MetadataStore,
+    require_metadata_store,
+)
 
 if TYPE_CHECKING:
     from src.server.config import DevicePairingSettings
@@ -40,6 +45,9 @@ class LocalAuthError(RuntimeError):
 class OwnerPrincipal:
     user_id: str
     scopes: AccessScopes = field(default_factory=AccessScopes.full)
+    tenant_id: str | None = None
+    subject: str | None = None
+    role: str = "owner"
 
     def require(self, scope: str) -> None:
         if not self.scopes.allows(scope):
@@ -86,11 +94,13 @@ class PairingAttemptLimiter:
 
 
 class LocalAuthService:
-    """Creates one local owner and authenticates short-lived bearer sessions."""
+    """Authenticates owner-compatible local principals and short-lived sessions."""
 
     _USER_RECORD_VERSION = 1
     _USER_AAD_PREFIX = "past-partner/local-user/v1/"
     _DEFAULT_SESSION_TTL = timedelta(hours=24)
+    _IDENTIFIER_MAX_LENGTH = 256
+    _ACCOUNT_ROLES = frozenset({"admin", "member"})
 
     def __init__(
         self,
@@ -115,6 +125,82 @@ class LocalAuthService:
             raise ValueError("session_ttl must be positive")
         self.metadata_store.migrate()
         self.owner_id = self._ensure_owner()
+
+    def create_local_account(
+        self,
+        subject: str,
+        *,
+        tenant_id: str | None = None,
+        role: str = "member",
+    ) -> dict[str, str]:
+        """Create a deterministic local account for development/test identity adapters.
+
+        This is deliberately not a production registration endpoint. Production
+        accounts must be created by a later OIDC/OAuth provisioning flow; keeping
+        this method mode-gated prevents a local subject string from becoming an
+        accidental authentication mechanism when the service is deployed.
+        """
+
+        if self.mode not in {"development", "test"}:
+            raise LocalAuthError(
+                "account_management_unavailable",
+                "local account management is unavailable",
+            )
+        subject = self._identity_text(subject, "subject")
+        tenant_id = self._identity_text(tenant_id or secrets.token_hex(16), "tenant_id")
+        if role not in self._ACCOUNT_ROLES:
+            raise LocalAuthError("account_role_invalid", "local account role is invalid")
+
+        user_id = secrets.token_hex(16)
+        created_at = datetime.now(UTC).isoformat()
+        payload = json.dumps(
+            {
+                "id": user_id,
+                "role": role,
+                "subject": subject,
+                "tenant_id": tenant_id,
+                "created_at": created_at,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        envelope = self.encryption.encrypt(payload, self._aad(user_id))
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO local_users (id, kind, record_version, encrypted_payload)
+                    VALUES (?, 'member', ?, ?)
+                    """,
+                    (user_id, self._USER_RECORD_VERSION, envelope),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO local_identities (user_id, tenant_id, subject, role, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user_id, tenant_id, subject, role, created_at),
+                )
+                connection.commit()
+            except MetadataIntegrityError as exc:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise LocalAuthError(
+                    "account_subject_exists",
+                    "local account subject already exists",
+                ) from exc
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+        return {
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "subject": subject,
+            "role": role,
+        }
 
     def issue_session(
         self,
@@ -144,6 +230,45 @@ class LocalAuthService:
         ):
             raise LocalAuthError("auth_bootstrap_required", "owner bootstrap token is required")
 
+        return self._issue_session(
+            self.owner_id,
+            scope_set,
+            session_origin=session_origin,
+            pairing_fingerprint=pairing_fingerprint,
+        )
+
+    def issue_account_session(
+        self,
+        user_id: str,
+        remote_address: str = "127.0.0.1",
+        *,
+        scopes: AccessScopes | Iterable[str] | None = None,
+    ) -> dict[str, str]:
+        """Issue a loopback-only session for a provisioned local account."""
+
+        if self.mode not in {"development", "test"} or remote_address not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            raise LocalAuthError("account_session_forbidden", "local account session is unavailable")
+        try:
+            scope_set = AccessScopes.full() if scopes is None else (
+                scopes if isinstance(scopes, AccessScopes) else AccessScopes.from_values(scopes)
+            )
+        except AccessScopeError as exc:
+            raise LocalAuthError("scope_invalid", "session scope is invalid") from exc
+        self._load_identity(user_id)
+        return self._issue_session(user_id, scope_set)
+
+    def _issue_session(
+        self,
+        user_id: str,
+        scope_set: AccessScopes,
+        *,
+        session_origin: str = "loopback",
+        pairing_fingerprint: bytes | None = None,
+    ) -> dict[str, str]:
         issued_at = datetime.now(UTC)
         ttl = min(self.session_ttl, timedelta(hours=1)) if session_origin == "device" else self.session_ttl
         expires_at = issued_at + ttl
@@ -163,7 +288,7 @@ class LocalAuthService:
                 """,
                 (
                     token_hash,
-                    self.owner_id,
+                    user_id,
                     expires_at.isoformat(),
                     session_origin,
                     pairing_fingerprint,
@@ -171,10 +296,15 @@ class LocalAuthService:
                 ),
             )
             connection.commit()
+        identity = self._load_identity(user_id)
         return {
             "access_token": token,
             "token_type": "Bearer",
-            "owner_id": self.owner_id,
+            "owner_id": user_id,
+            "user_id": user_id,
+            "tenant_id": identity["tenant_id"],
+            "subject": identity["subject"],
+            "role": identity["role"],
             "expires_at": expires_at.isoformat(),
             "scopes": scope_set.serialize(),
         }
@@ -185,11 +315,19 @@ class LocalAuthService:
         now = datetime.now(UTC).isoformat()
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT user_id, expires_at, session_origin, pairing_token_fingerprint, scopes "
-                "FROM local_sessions WHERE token_hash = ?",
+                """
+                SELECT s.user_id, s.expires_at, s.session_origin,
+                       s.pairing_token_fingerprint, s.scopes,
+                       u.kind, u.record_version, u.encrypted_payload,
+                       i.tenant_id, i.subject, i.role
+                FROM local_sessions AS s
+                JOIN local_users AS u ON u.id = s.user_id
+                JOIN local_identities AS i ON i.user_id = s.user_id
+                WHERE s.token_hash = ?
+                """,
                 (token_hash,),
             ).fetchone()
-        if row is None or row[0] != self.owner_id or str(row[1]) <= now:
+        if row is None or str(row[1]) <= now:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
         if row[2] not in {"loopback", "device"}:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
@@ -201,11 +339,34 @@ class LocalAuthService:
                 raise LocalAuthError("authentication_required", "a valid owner session is required")
             if not hmac.compare_digest(stored, current.token_fingerprint):
                 raise LocalAuthError("authentication_required", "a valid owner session is required")
+        identity = {
+            "user_id": str(row[0]),
+            "tenant_id": str(row[8]),
+            "subject": str(row[9]),
+            "role": str(row[10]),
+        }
+        try:
+            if row[5] == "owner":
+                self._decode_owner(identity["user_id"], row[6], row[7])
+                if identity["role"] != "owner":
+                    raise ValueError("owner identity role mismatch")
+            elif row[5] == "member":
+                self._decode_account(identity, row[6], row[7])
+            else:
+                raise ValueError("unknown local user kind")
+        except (LocalAuthError, ValueError):
+            raise LocalAuthError("authentication_required", "a valid owner session is required")
         try:
             scope_set = AccessScopes.parse(str(row[4]))
         except (AccessScopeError, TypeError, ValueError) as exc:
             raise LocalAuthError("authentication_required", "a valid owner session is required") from exc
-        return OwnerPrincipal(str(row[0]), scope_set)
+        return OwnerPrincipal(
+            identity["user_id"],
+            scope_set,
+            identity["tenant_id"],
+            identity["subject"],
+            identity["role"],
+        )
 
     def _authorize_device_pairing(
         self,
@@ -238,6 +399,7 @@ class LocalAuthService:
             if row is not None:
                 owner_id = str(row[0])
                 self._decode_owner(owner_id, row[1], row[2])
+                self._ensure_owner_identity(connection, owner_id)
                 connection.commit()
                 return owner_id
 
@@ -256,8 +418,75 @@ class LocalAuthService:
                 """,
                 (owner_id, self._USER_RECORD_VERSION, envelope),
             )
+            self._ensure_owner_identity(connection, owner_id)
             connection.commit()
             return owner_id
+
+    def _ensure_owner_identity(self, connection: MetadataConnection, owner_id: str) -> None:
+        row = connection.execute(
+            "SELECT tenant_id, subject, role FROM local_identities WHERE user_id = ?",
+            (owner_id,),
+        ).fetchone()
+        expected = (owner_id, owner_id, "local-owner", "owner")
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO local_identities (user_id, tenant_id, subject, role, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (owner_id, *expected[1:], datetime.now(UTC).isoformat()),
+            )
+            return
+        if tuple(str(value) for value in row) != expected[1:]:
+            raise LocalAuthError("auth_owner_record_invalid", "owner identity record is invalid")
+
+    def _load_identity(self, user_id: str) -> dict[str, str]:
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise LocalAuthError("account_not_found", "local account was not found")
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT u.kind, u.record_version, u.encrypted_payload,
+                       i.tenant_id, i.subject, i.role
+                FROM local_users AS u
+                JOIN local_identities AS i ON i.user_id = u.id
+                WHERE u.id = ?
+                """,
+                (user_id.strip(),),
+            ).fetchone()
+        if row is None or row[0] not in {"owner", "member"}:
+            raise LocalAuthError("account_not_found", "local account was not found")
+        identity = {
+            "user_id": user_id.strip(),
+            "tenant_id": str(row[3]),
+            "subject": str(row[4]),
+            "role": str(row[5]),
+        }
+        try:
+            if row[0] == "owner":
+                self._decode_owner(identity["user_id"], row[1], row[2])
+                if identity["role"] != "owner":
+                    raise ValueError("owner identity role mismatch")
+            else:
+                self._decode_account(identity, row[1], row[2])
+        except (LocalAuthError, ValueError) as exc:
+            raise LocalAuthError("account_record_invalid", "local account record is invalid") from exc
+        return identity
+
+    def _decode_account(self, identity: dict[str, str], record_version: object, envelope: object) -> None:
+        if record_version != self._USER_RECORD_VERSION or not isinstance(envelope, bytes):
+            raise ValueError("account record version is unsupported")
+        try:
+            payload = self.encryption.decrypt(envelope, self._aad(identity["user_id"]))
+            value = json.loads(payload.decode("utf-8"))
+        except (AuthenticationError, InvalidEncryptedPayloadError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise LocalAuthError("account_record_invalid", "local account record is invalid") from exc
+        if (
+            not isinstance(value, dict)
+            or value.get("id") != identity["user_id"]
+            or any(value.get(key) != identity[key] for key in ("tenant_id", "subject", "role"))
+        ):
+            raise ValueError("account identity does not match encrypted record")
 
     def _decode_owner(self, owner_id: str, record_version: object, envelope: object) -> None:
         if record_version != self._USER_RECORD_VERSION or not isinstance(envelope, bytes):
@@ -286,6 +515,15 @@ class LocalAuthService:
     @classmethod
     def _aad(cls, owner_id: str) -> bytes:
         return f"{cls._USER_AAD_PREFIX}{owner_id}".encode("utf-8")
+
+    @classmethod
+    def _identity_text(cls, value: object, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise LocalAuthError("account_identity_invalid", f"local account {field_name} is invalid")
+        normalized = value.strip()
+        if not normalized or len(normalized) > cls._IDENTIFIER_MAX_LENGTH:
+            raise LocalAuthError("account_identity_invalid", f"local account {field_name} is invalid")
+        return normalized
 
     def _connect(self) -> MetadataConnection:
         return self.metadata_store.connect()
