@@ -99,6 +99,19 @@ class WorkerRunnerTests(unittest.TestCase):
 
         self.assertEqual(1, runner.stats.idle_polls)
 
+    @patch("src.worker.TaskWorker")
+    def test_passes_optional_observability_sink_to_task_worker(self, worker_type: Mock) -> None:
+        observer = Mock()
+
+        WorkerRunner(
+            self.queue,
+            self.handlers,
+            self.settings,
+            observability=observer,
+        )
+
+        self.assertEqual(worker_type.call_args.kwargs["observation_sink"], observer.record)
+
     def test_probe_handler_is_test_only_and_does_not_echo_payload(self) -> None:
         self.assertEqual({}, test_probe_handlers("production"))
         result = test_probe_handlers("test")["worker.probe"](

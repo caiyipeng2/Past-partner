@@ -114,9 +114,11 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-04 增加可选的 S3-compatible 适配器：`s3` 和 `minio` 需要显式安装 `requirements-storage.txt`、配置服务端 bucket/region/endpoint 和成对凭据；生产 endpoint 必须使用 HTTPS，缺少 SDK、配置错误或远端错误都会明确失败，不会静默回退到本地。逻辑对象 key、AES-GCM 密文和上传 API 不变，S3 endpoint 与凭据不会进入日志、响应或客户端配置。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。P4-05 增加可选的 KMS-backed 主密钥源。P4-06 增加共享元数据后端上的 owner 范围持久化任务队列：任务路由和租约状态可查询，任务载荷和结果继续使用 AES-GCM 加密；worker 通过短租约、续租、幂等完成、有限重试和稳定失败码处理任务。该切片不自动启动 worker、不引入 broker，也不宣称单机 worker 已具备多节点调度能力；部署者可以启动多个相同 worker 进程，后续导入和训练任务再逐步接入该队列。
 
-R1-04 第一切片增加独立的外部 worker 启动面：`python -m src.worker --once --worker-id <id>` 或安装后的 `companion-worker --once --worker-id <id>` 会复用同一 `ServerConfig`、共享元数据后端和主密钥，执行一次加密队列租约并退出；不带 `--once` 时可通过 SIGINT/SIGTERM 协作停止，`--max-tasks` 用于有界批处理。worker 日志只记录有界 worker ID、轮询和领取计数，不记录任务 payload、密钥、DSN 或本地路径。生产模式不会注册隐式业务 handler，未知任务继续以稳定失败码结束；测试模式的 `worker.probe` 只返回 payload 键名用于链路验收。该切片仍不提供 broker、跨进程指标聚合、告警、追踪、日志外发或 SIEM。
+R1-04 第一切片增加独立的外部 worker 启动面：`python -m src.worker --once --worker-id <id>` 或安装后的 `companion-worker --once --worker-id <id>` 会复用同一 `ServerConfig`、共享元数据后端和主密钥，执行一次加密队列租约并退出；不带 `--once` 时可通过 SIGINT/SIGTERM 协作停止，`--max-tasks` 用于有界批处理。worker 日志只记录有界 worker ID、轮询和领取计数，不记录任务 payload、密钥、DSN 或本地路径。生产模式不会注册隐式业务 handler，未知任务继续以稳定失败码结束；测试模式的 `worker.probe` 只返回 payload 键名用于链路验收。
 
 R1-04 broker 契约切片增加任务通知 outbox：每次任务入队会在同一元数据事务中写入一条只含 `message_id`、`task_id`、`task_type` 和时间的待发布通知；任务正文、owner、密钥、供应商响应和路径不会进入 outbox 或 broker 消息。发布器采用“先发布、后标记”的幂等顺序，失败只保存有界错误码和重试时间。当前仅提供内存 broker 作为确定性测试替身，支持去重、消费方绑定 ack/nack 和可见性超时重投；Redis、RabbitMQ、云消息服务、broker 凭据和生产部署适配器仍未选择或实现。
+
+R1-04 worker 观测切片在共享元数据后端追加有界 `worker_observations`：每次 worker 轮询只保存 worker/task 类型、固定生命周期结果、UTC 时间、耗时和稳定失败码。记录不含 owner、任务 ID、载荷、异常文本、provider、凭据或文件路径，并按保留时间和每 worker 数量自动清理。`WorkerObservability.evaluate_alerts()` 可在内部演练高失败率和无心跳告警；当前仍不提供客户端路由、Prometheus 外部推送/抓取、追踪、日志外发或 SIEM。
 
 P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容；本任务不伪造 OIDC/OAuth 注册、账户管理、管理员角色、计费或公网部署能力，这些仍属于后续生产化任务。
 

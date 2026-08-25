@@ -61,6 +61,9 @@ class Migration:
 # Version 16 adds local account identity mappings while preserving the legacy owner row.
 # Version 17 adds a redacted task notification outbox. It contains no owner, payload,
 # provider, credential, or filesystem fields, and is written with each task enqueue.
+# Version 18 adds bounded, redacted worker lifecycle observations. These rows are
+# operational metadata only: they contain no owner, task payload, provider response,
+# exception text, token, or filesystem path.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -392,6 +395,33 @@ DEFAULT_MIGRATIONS = (
             """,
             "CREATE INDEX task_broker_outbox_pending_idx "
             "ON task_broker_outbox(published_at, available_at, created_at, id)",
+        ),
+    ),
+    Migration(
+        version=18,
+        name="worker_observations",
+        statements=(
+            """
+            CREATE TABLE worker_observations (
+                id TEXT PRIMARY KEY,
+                worker_id TEXT NOT NULL CHECK (length(worker_id) BETWEEN 1 AND 128),
+                task_type TEXT NOT NULL CHECK (length(task_type) BETWEEN 1 AND 128),
+                outcome TEXT NOT NULL CHECK (outcome IN (
+                    'idle', 'succeeded', 'retryable_failure', 'terminal_failure', 'lease_lost'
+                )),
+                observed_at TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 0 AND 3600000),
+                failure_code TEXT,
+                CHECK (failure_code IS NULL OR length(failure_code) BETWEEN 1 AND 128),
+                CHECK ((outcome IN ('retryable_failure', 'terminal_failure', 'lease_lost')
+                        AND failure_code IS NOT NULL)
+                    OR (outcome IN ('idle', 'succeeded') AND failure_code IS NULL))
+            )
+            """,
+            "CREATE INDEX worker_observations_worker_cursor_idx "
+            "ON worker_observations(worker_id, observed_at DESC, id DESC)",
+            "CREATE INDEX worker_observations_recent_idx "
+            "ON worker_observations(observed_at, worker_id, task_type)",
         ),
     ),
 )

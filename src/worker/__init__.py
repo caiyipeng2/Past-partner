@@ -10,6 +10,7 @@ from typing import Any
 
 from src.services.task_queue import TaskQueue
 from src.services.task_worker import TaskHandler, TaskWorker
+from src.services.worker_observability import WorkerObservability
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -84,6 +85,7 @@ class WorkerRunner:
         queue: TaskQueue,
         handlers: Mapping[str, TaskHandler],
         settings: WorkerSettings,
+        observability: WorkerObservability | None = None,
     ) -> None:
         self.settings = settings
         self.worker = TaskWorker(
@@ -92,6 +94,7 @@ class WorkerRunner:
             worker_id=settings.worker_id,
             lease_seconds=settings.lease_seconds,
             poll_seconds=settings.poll_seconds,
+            observation_sink=None if observability is None else observability.record,
         )
         self.stats = WorkerStats()
 

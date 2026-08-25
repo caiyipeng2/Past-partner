@@ -79,6 +79,6 @@
 - 画像、长期记忆和本地检索当前是内存能力，尚未持久化向量索引。
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
 - R1-03 当前已完成第一切片：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离，并以加密记录与身份映射校验防篡改；OIDC/OAuth2、刷新令牌、账户恢复和正式租户管理仍待后续切片。
-- R1-04 当前已完成第一切片和 broker 契约切片：第一切片增加独立 `python -m src.worker`/`companion-worker` 外部进程入口，复用共享加密元数据队列，支持有界一次运行、批处理和协作退出；第二切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。Redis、RabbitMQ、云消息服务、跨进程指标、告警、追踪、日志外发和 SIEM 仍待后续切片。
+- R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
 - Android 当前优先，后台上传和真实媒体处理尚未完成；iOS 只做静态检查，未完成 Xcode archive/签名/真机/商店流程。
-- 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或跨进程监控。R1-04 当前切片仅增加可独立启动的 worker、任务通知 outbox 和测试 broker 契约，不代表生产 broker、告警、追踪、日志外发或 SIEM 已完成。
+- 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或完整运维监控。R1-04 已增加可独立启动的 worker、任务通知 outbox、测试 broker 契约以及共享后端的脱敏 worker 观测/内部告警计算；生产 broker、外部指标抓取/推送、追踪、日志外发和 SIEM 仍未完成。

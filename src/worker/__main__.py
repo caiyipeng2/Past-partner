@@ -13,6 +13,7 @@ from typing import Sequence
 
 from src.server.application import Application
 from src.server.config import ServerConfig
+from src.services.worker_observability import WorkerObservability
 
 from . import WorkerRunner, WorkerSettings, test_probe_handlers
 
@@ -79,6 +80,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         application.task_queue,
         test_probe_handlers(config.mode),
         settings,
+        observability=(
+            None
+            if application.metadata_store is None
+            else WorkerObservability(application.metadata_store)
+        ),
     )
     try:
         if args.once:

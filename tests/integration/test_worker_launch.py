@@ -78,6 +78,16 @@ class ExternalWorkerLaunchTests(unittest.TestCase):
                 completed.result,
             )
             self.assertNotIn("do-not-persist", repr(completed.result))
+            with application.metadata_store.transaction() as connection:
+                observations = connection.execute(
+                    "SELECT worker_id, task_type, outcome, failure_code "
+                    "FROM worker_observations WHERE worker_id = ?",
+                    ("integration-worker",),
+                ).fetchall()
+            self.assertEqual(
+                [("integration-worker", "worker.probe", "succeeded", None)],
+                observations,
+            )
         finally:
             application.close()
 
@@ -86,6 +96,23 @@ class ExternalWorkerLaunchTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn("Serving on", result.stdout + result.stderr)
+        with patch.dict(os.environ, self.environment):
+            application = Application.from_config(
+                ServerConfig(data_dir=self.root, web_dir=Path.cwd() / "web", mode="test")
+            )
+        try:
+            with application.metadata_store.transaction() as connection:
+                observations = connection.execute(
+                    "SELECT worker_id, task_type, outcome, failure_code "
+                    "FROM worker_observations WHERE worker_id = ?",
+                    ("idle-worker",),
+                ).fetchall()
+            self.assertEqual(
+                [("idle-worker", "worker.idle", "idle", None)],
+                observations,
+            )
+        finally:
+            application.close()
 
 
 if __name__ == "__main__":
