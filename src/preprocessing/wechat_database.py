@@ -387,6 +387,11 @@ def _message(*, sender_id: str, sender_name: str, content: str, timestamp: str, 
 def _database_paths(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
+    # Windows can receive a user-selected directory through an 8.3 alias
+    # (for example, TEMP may be E:\\CODEXC~1\\Temp). Resolve the trust
+    # boundary before comparing resolved children so aliases do not look like
+    # directory escapes while symlink/junction escapes remain rejected.
+    root = root.resolve()
     result = []
     for path in sorted(root.rglob("*.db")):
         resolved = path.resolve()
