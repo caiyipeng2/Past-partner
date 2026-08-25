@@ -18,6 +18,7 @@ from src.domain.task_queue import (
     parse_timestamp,
     utc_now,
 )
+from src.domain.task_broker import TaskNotification
 from src.services.authenticated_encryption import (
     AuthenticationError,
     AuthenticatedEncryptionService,
@@ -115,11 +116,86 @@ class TaskQueue:
                         envelope,
                     ),
                 )
+                connection.execute(
+                    """
+                    INSERT INTO task_broker_outbox
+                        (id, task_id, task_type, created_at, available_at,
+                         published_at, attempts, last_error_code)
+                    VALUES (?, ?, ?, ?, ?, NULL, 0, NULL)
+                    """,
+                    (task.id, task.id, task.task_type, task.created_at, task.available_at),
+                )
         except MetadataIntegrityError as exc:
             raise TaskQueueError(
                 "task_exists", "task ID already exists or owner is unavailable"
             ) from exc
         return task
+
+    def list_broker_notifications(
+        self,
+        *,
+        now: str | None = None,
+        limit: int = 100,
+    ) -> list[TaskNotification]:
+        timestamp = self._timestamp(now)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise TaskQueueError("task_invalid", "notification batch limit is invalid")
+        with closing(self.metadata_store.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, task_type, created_at
+                FROM task_broker_outbox
+                WHERE published_at IS NULL AND available_at <= ?
+                ORDER BY available_at, created_at, id
+                LIMIT ?
+                """,
+                (timestamp, limit),
+            ).fetchall()
+        try:
+            return [TaskNotification(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+        except (TypeError, ValueError) as exc:
+            raise TaskQueueError("task_record_corrupt", "broker notification is invalid") from exc
+
+    def mark_broker_notification_published(
+        self,
+        task_id: str,
+        *,
+        now: str | None = None,
+    ) -> bool:
+        timestamp = self._timestamp(now)
+        with self.metadata_store.transaction(immediate=self._is_sqlite) as connection:
+            result = connection.execute(
+                """
+                UPDATE task_broker_outbox
+                SET published_at = ?, available_at = ?, last_error_code = NULL
+                WHERE task_id = ? AND published_at IS NULL
+                """,
+                (timestamp, timestamp, task_id),
+            )
+            return getattr(result, "rowcount", 0) == 1
+
+    def defer_broker_notification(
+        self,
+        task_id: str,
+        error_code: str,
+        *,
+        now: str | None = None,
+        retry_after_seconds: int = 5,
+    ) -> bool:
+        if not isinstance(error_code, str) or not self._FAILURE_CODE.fullmatch(error_code):
+            raise TaskQueueError("task_invalid", "notification failure code is invalid")
+        timestamp = self._timestamp(now)
+        available_at = self._plus_seconds(timestamp, retry_after_seconds)
+        with self.metadata_store.transaction(immediate=self._is_sqlite) as connection:
+            result = connection.execute(
+                """
+                UPDATE task_broker_outbox
+                SET available_at = ?, attempts = attempts + 1, last_error_code = ?
+                WHERE task_id = ? AND published_at IS NULL
+                """,
+                (available_at, error_code, task_id),
+            )
+            return getattr(result, "rowcount", 0) == 1
 
     def get(self, owner_id: str, task_id: str) -> TaskRecord | None:
         owner = self._owner(owner_id)

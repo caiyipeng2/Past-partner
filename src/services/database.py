@@ -58,6 +58,9 @@ class Migration:
 # index envelopes scoped to the owning persona.
 # Version 15 adds an owner-free deletion receipt containing only a random receipt ID,
 # timestamp, and bounded resource counts.
+# Version 16 adds local account identity mappings while preserving the legacy owner row.
+# Version 17 adds a redacted task notification outbox. It contains no owner, payload,
+# provider, credential, or filesystem fields, and is written with each task enqueue.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -367,6 +370,28 @@ DEFAULT_MIGRATIONS = (
             )
             """,
             "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+    ),
+    Migration(
+        version=17,
+        name="task_broker_outbox",
+        statements=(
+            """
+            CREATE TABLE task_broker_outbox (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(id) ON DELETE CASCADE,
+                task_type TEXT NOT NULL CHECK (length(task_type) BETWEEN 1 AND 128),
+                created_at TEXT NOT NULL,
+                available_at TEXT NOT NULL,
+                published_at TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error_code TEXT,
+                CHECK (published_at IS NULL OR length(published_at) > 0),
+                CHECK (last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 128)
+            )
+            """,
+            "CREATE INDEX task_broker_outbox_pending_idx "
+            "ON task_broker_outbox(published_at, available_at, created_at, id)",
         ),
     ),
 )

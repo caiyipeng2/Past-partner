@@ -116,6 +116,8 @@ python -m unittest discover -s tests -p "test*.py" -v
 
 R1-04 第一切片增加独立的外部 worker 启动面：`python -m src.worker --once --worker-id <id>` 或安装后的 `companion-worker --once --worker-id <id>` 会复用同一 `ServerConfig`、共享元数据后端和主密钥，执行一次加密队列租约并退出；不带 `--once` 时可通过 SIGINT/SIGTERM 协作停止，`--max-tasks` 用于有界批处理。worker 日志只记录有界 worker ID、轮询和领取计数，不记录任务 payload、密钥、DSN 或本地路径。生产模式不会注册隐式业务 handler，未知任务继续以稳定失败码结束；测试模式的 `worker.probe` 只返回 payload 键名用于链路验收。该切片仍不提供 broker、跨进程指标聚合、告警、追踪、日志外发或 SIEM。
 
+R1-04 broker 契约切片增加任务通知 outbox：每次任务入队会在同一元数据事务中写入一条只含 `message_id`、`task_id`、`task_type` 和时间的待发布通知；任务正文、owner、密钥、供应商响应和路径不会进入 outbox 或 broker 消息。发布器采用“先发布、后标记”的幂等顺序，失败只保存有界错误码和重试时间。当前仅提供内存 broker 作为确定性测试替身，支持去重、消费方绑定 ack/nack 和可见性超时重投；Redis、RabbitMQ、云消息服务、broker 凭据和生产部署适配器仍未选择或实现。
+
 P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容；本任务不伪造 OIDC/OAuth 注册、账户管理、管理员角色、计费或公网部署能力，这些仍属于后续生产化任务。
 
 P4-08 增加 owner 范围的加密追加式业务审计基础：人物/导入删除、第三方授权确认与撤回、已确认的训练取消会写入有限事件元数据，事件载荷使用 AES-GCM 加密且只允许固定的 provider/model/scope/数量/原因键；原始聊天正文、媒体、文件路径、token、API Key 和完整 Provider 响应不会写入审计记录。`GET /api/v1/audit-events` 需要 `owner:read`，支持 1-100 条分页和不透明游标；事件记录不可通过 API 修改或删除。该切片不等同于合规 WORM/监管审计，不记录失败或未授权请求，不提供外部 SIEM、计费或监控能力，数据导出摘要仍明确排除审计记录。
