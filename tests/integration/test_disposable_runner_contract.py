@@ -47,6 +47,26 @@ class DisposableIntegrationRunnerContractTests(unittest.TestCase):
             "PAST_PARTNER_S3_TEST_SECRET_KEY",
             "ConvertTo-SafeOutput",
             "skipped=\\d+",
+            "failure_code",
+            "failed_module",
+            "configuration_rejected",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, content)
+
+    def test_runner_report_is_machine_readable_and_records_each_failure_class(self) -> None:
+        content = self.runner.read_text(encoding="utf-8")
+        for marker in (
+            "module = $Module",
+            "status = $status",
+            "exit_code = $exitCode",
+            "failure_code = $failureCode",
+            "skipped_tests",
+            "module_failed",
+            "runner_process_failed",
+            "failed_module = $failedModule",
+            "results = $results",
+            "failure_code = $failureCode",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, content)

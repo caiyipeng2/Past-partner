@@ -89,21 +89,36 @@ function Invoke-IntegrationModule {
 
     Write-Host "[R0-01] running $Module"
     $started = Get-Date
-    $raw = (& $PythonExecutable -m unittest $Module -v 2>&1 | Out-String)
-    $exitCode = $LASTEXITCODE
-    $safe = ConvertTo-SafeOutput $raw
-    Write-Host $safe.TrimEnd()
-    $hasSkippedTests = $raw -match "(?im)^\s*(?:OK|FAILED) \(.*skipped=\d+"
-    $status = if ($exitCode -eq 0 -and !$hasSkippedTests) { "passed" } else { "failed" }
-    if ($hasSkippedTests) {
-        Write-Host "[R0-01] failed ${Module}: one or more tests were skipped; real disposable verification requires zero skips."
+    try {
+        $raw = (& $PythonExecutable -m unittest $Module -v 2>&1 | Out-String)
+        $exitCode = $LASTEXITCODE
+        $safe = ConvertTo-SafeOutput $raw
+        Write-Host $safe.TrimEnd()
+        $hasSkippedTests = $raw -match "(?im)^\s*(?:OK|FAILED) \(.*skipped=\d+"
+        $status = if ($exitCode -eq 0 -and !$hasSkippedTests) { "passed" } else { "failed" }
+        $failureCode = if ($hasSkippedTests) { "skipped_tests" } elseif ($exitCode -ne 0) { "module_failed" } else { $null }
+        if ($hasSkippedTests) {
+            Write-Host "[R0-01] failed ${Module}: one or more tests were skipped; real disposable verification requires zero skips."
+        }
+        Write-Host "[R0-01] $status $Module"
+        return [ordered]@{
+            module = $Module
+            status = $status
+            exit_code = $exitCode
+            failure_code = $failureCode
+            duration_seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 3)
+        }
     }
-    Write-Host "[R0-01] $status $Module"
-    return [ordered]@{
-        module = $Module
-        status = $status
-        exit_code = $exitCode
-        duration_seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 3)
+    catch {
+        $safeError = ConvertTo-SafeOutput $_.Exception.Message
+        Write-Error "[R0-01] failed ${Module}: $safeError" -ErrorAction Continue
+        return [ordered]@{
+            module = $Module
+            status = "failed"
+            exit_code = 1
+            failure_code = "runner_process_failed"
+            duration_seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 3)
+        }
     }
 }
 
@@ -115,6 +130,8 @@ $modules = @(
 )
 $results = @()
 $runStatus = "failed"
+$failureCode = $null
+$failedModule = $null
 
 try {
     Assert-DisposableConfiguration
@@ -123,6 +140,8 @@ try {
         $result = Invoke-IntegrationModule -Module $module
         $results += $result
         if ($result.status -ne "passed") {
+            $failedModule = $module
+            $failureCode = $result.failure_code
             throw "Disposable integration module failed: $module"
         }
     }
@@ -131,6 +150,9 @@ try {
 }
 catch {
     $safeError = ConvertTo-SafeOutput $_.Exception.Message
+    if ($null -eq $failureCode) {
+        $failureCode = "configuration_rejected"
+    }
     Write-Error "[R0-01] failure: $safeError"
     $runStatus = "failed"
 }
@@ -143,6 +165,8 @@ finally {
         }
         $report = [ordered]@{
             status = $runStatus
+            failure_code = $failureCode
+            failed_module = $failedModule
             results = $results
             resources = "test-owned resources are deleted by each integration fixture; external KMS key lifecycle remains caller-owned"
         }
