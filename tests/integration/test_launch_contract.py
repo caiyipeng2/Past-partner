@@ -23,6 +23,19 @@ class LaunchContractTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("--data-dir", result.stdout)
 
+    def test_external_worker_module_exposes_bounded_cli(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "src.worker", "--help"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("--worker-id", result.stdout)
+        self.assertIn("--once", result.stdout)
+
     def test_npm_is_only_a_wrapper_around_python_server(self) -> None:
         package = json.loads((self.root / "package.json").read_text(encoding="utf-8"))
 
@@ -44,6 +57,10 @@ class LaunchContractTests(unittest.TestCase):
         self.assertEqual(
             "src.server.__main__:main",
             manifest["project"]["scripts"]["companion-server"],
+        )
+        self.assertEqual(
+            "src.worker.__main__:main",
+            manifest["project"]["scripts"]["companion-worker"],
         )
 
     def test_compose_declares_health_checked_unified_service(self) -> None:

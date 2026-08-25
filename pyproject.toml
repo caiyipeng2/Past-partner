@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 companion-server = "src.server.__main__:main"
+companion-worker = "src.worker.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
