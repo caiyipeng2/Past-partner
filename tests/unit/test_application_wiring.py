@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.server.application import Application
 from src.server.config import ConfigurationError, ServerConfig
 from src.services.blob_store import LocalBlobStore
+from src.services.learning_service import LearningService
 from src.services.master_key import (
     EnvironmentMasterKeyProvider,
     MASTER_KEY_BYTES,
@@ -49,6 +50,11 @@ class ApplicationStorageWiringTests(unittest.TestCase):
 
         self.assertIsInstance(application.uploads.blob_store, LocalBlobStore)
         self.assertEqual(self.root.resolve(), application.uploads.blob_store.layout.root)
+
+    def test_default_backend_wires_persistent_learning_service(self) -> None:
+        application = Application.from_config(self.config())
+
+        self.assertIsInstance(application.learning, LearningService)
 
     def test_explicit_local_backend_wires_the_same_local_adapter(self) -> None:
         application = Application.from_config(self.config("local"))
@@ -117,6 +123,27 @@ class ApplicationStorageWiringTests(unittest.TestCase):
         application = Application.from_config(self.config())
 
         self.assertIs(application.task_queue.metadata_store, application.metadata_store)
+
+    def test_explicit_qwen_fine_tuning_opt_in_updates_runtime_catalog(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PAST_PARTNER_QWEN_API_KEY": "qwen-secret",
+                "PAST_PARTNER_QWEN_FINE_TUNING_ENABLED": "true",
+                "PAST_PARTNER_QWEN_FINE_TUNING_MODELS": "qwen3.7-plus",
+            },
+        ):
+            application = Application.from_config(self.config())
+
+        try:
+            provider = application.catalog.provider("qwen")
+            model = application.catalog.find_model("qwen", "qwen3.7-plus")
+            self.assertIn("fine_tuning", provider.capabilities)
+            self.assertIsNotNone(model)
+            assert model is not None
+            self.assertIn("fine_tuning", model.capabilities)
+        finally:
+            application.close()
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@
 | --- | --- | --- | --- |
 | R0-01 | 真实 disposable 集成回归：PostgreSQL 元数据、S3/MinIO 对象、KMS 主密钥和任务队列 | 可删除的本地容器或测试账号 | 统一 runner；测试日志包含成功和故障分支；测试结束资源为空；无 DSN/密钥泄露 |
 | R0-02 | 增加 Docker Compose 和可安装 `companion-server` CLI，确保 Python 模块、CLI、Compose、npm wrapper 行为一致 | R0-01 的后端配置契约 | 四种启动方式均通过 health/API smoke；README 给出一条跨平台启动命令 |
-| R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过最小真实文本请求验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
+| R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过 `PAST_PARTNER_PROVIDER_SMOKE=1 python scripts/provider_smoke.py` 发起脱敏最小文本请求，验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
 | R0-04 | 至少一个真实微调 Provider 适配器；未支持的供应商继续明确 `capability_not_supported` | P2-07 任务门控、授权、成本和取消合同 | 真实提交/查询/取消、工件 ID、评测、重试和远端清理均有测试；禁止用测试确定性适配器冒充生产训练 |
 
 ### R1：核心产品持久化和数据治理
@@ -74,8 +74,11 @@
 
 - Docker Compose 和可安装服务 CLI 尚未提供。
 - 真实 PostgreSQL/S3/KMS/外部 worker 集成尚未在当前环境执行，默认只跑了安全跳过分支。
-- 默认真实 Provider 只声明文本 chat；流式、Embedding、媒体分析和生产微调适配器尚未完成。
+- 默认真实 Provider 仍只声明文本 chat；R0-04 仅为显式开启的千问模型增加原生微调能力，流式、Embedding 和媒体分析仍未完成。
+- R0-04 分支已实现显式开启的千问原生微调适配器；合并前仍需按 `.env.example` 提供真实百炼凭据运行一次外部 smoke，未配置时保持 `capability_not_supported`。
 - 画像、长期记忆和本地检索当前是内存能力，尚未持久化向量索引。
-- 成功数据保留期、原始完整导出、账户级删除、匿名化和 OIDC/OAuth 尚未完成。
+- R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
+- R1-03 当前已完成第一切片：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离，并以加密记录与身份映射校验防篡改；OIDC/OAuth2、刷新令牌、账户恢复和正式租户管理仍待后续切片。
+- R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
 - Android 当前优先，后台上传和真实媒体处理尚未完成；iOS 只做静态检查，未完成 Xcode archive/签名/真机/商店流程。
-- 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或跨进程监控。
+- 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或完整运维监控。R1-04 已增加可独立启动的 worker、任务通知 outbox、测试 broker 契约以及共享后端的脱敏 worker 观测/内部告警计算；生产 broker、外部指标抓取/推送、追踪、日志外发和 SIEM 仍未完成。

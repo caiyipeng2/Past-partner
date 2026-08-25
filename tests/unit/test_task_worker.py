@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.domain.task_queue import TaskState
+from src.domain.worker_observability import WorkerObservationOutcome
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.local_auth import LocalAuthService
 from src.services.master_key import (
@@ -114,6 +115,74 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual("task_failed", broken_record.failure_code)
         self.assertNotIn("provider-key", repr(broken_record))
         self.assertFalse(worker.run_once(now="2026-08-20T10:00:03+00:00"))
+
+    def test_emits_sanitized_success_and_idle_observations(self) -> None:
+        task = self.queue.enqueue(
+            self.owner_id,
+            "echo",
+            {"secret": "must-not-leak"},
+            now="2026-08-20T10:00:00+00:00",
+        )
+        observations = []
+        worker = TaskWorker(
+            self.queue,
+            {"echo": lambda _payload: {"ok": True}},
+            worker_id="worker-a",
+            observation_sink=observations.append,
+        )
+
+        self.assertTrue(worker.run_once(now="2026-08-20T10:00:01+00:00"))
+        self.assertFalse(worker.run_once(now="2026-08-20T10:00:02+00:00"))
+
+        self.assertEqual(
+            [WorkerObservationOutcome.SUCCEEDED, WorkerObservationOutcome.IDLE],
+            [observation.outcome for observation in observations],
+        )
+        self.assertEqual("echo", observations[0].task_type)
+        self.assertEqual("worker.idle", observations[1].task_type)
+        self.assertNotIn("must-not-leak", repr(observations))
+        self.assertNotIn(task.owner_id, repr(observations))
+
+    def test_emits_retryable_failure_with_only_stable_code(self) -> None:
+        self.queue.enqueue(
+            self.owner_id,
+            "retry",
+            {},
+            max_attempts=2,
+            now="2026-08-20T10:00:00+00:00",
+        )
+        observations = []
+
+        def handler(_payload: object) -> object:
+            raise RetryableTaskError("provider_timeout", "provider-key=secret")
+
+        worker = TaskWorker(
+            self.queue,
+            {"retry": handler},
+            worker_id="worker-a",
+            observation_sink=observations.append,
+        )
+
+        self.assertTrue(worker.run_once(now="2026-08-20T10:00:01+00:00"))
+        self.assertEqual(WorkerObservationOutcome.RETRYABLE_FAILURE, observations[0].outcome)
+        self.assertEqual("provider_timeout", observations[0].failure_code)
+        self.assertNotIn("provider-key", repr(observations))
+
+    def test_observation_sink_failure_never_changes_queue_result(self) -> None:
+        task = self.queue.enqueue(self.owner_id, "echo", {}, now="2026-08-20T10:00:00+00:00")
+
+        def broken_sink(_observation: object) -> None:
+            raise RuntimeError("telemetry backend secret")
+
+        worker = TaskWorker(
+            self.queue,
+            {"echo": lambda _payload: {"ok": True}},
+            worker_id="worker-a",
+            observation_sink=broken_sink,
+        )
+
+        self.assertTrue(worker.run_once(now="2026-08-20T10:00:01+00:00"))
+        self.assertEqual(TaskState.SUCCEEDED, self.queue.get(self.owner_id, task.id).state)
 
 
 if __name__ == "__main__":

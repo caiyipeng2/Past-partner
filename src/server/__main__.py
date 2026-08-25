@@ -6,13 +6,14 @@ import argparse
 import logging
 from dataclasses import replace
 from pathlib import Path
+from typing import Sequence
 
 from src.server.application import Application
 from src.server.config import ServerConfig
 from src.server.http import create_server
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     defaults = ServerConfig.from_env()
     parser = argparse.ArgumentParser(description="Run the Past Partner backend and Web client")
     parser.add_argument("--host", default=defaults.host)
@@ -20,7 +21,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=defaults.data_dir)
     parser.add_argument("--web-dir", type=Path, default=defaults.web_dir)
     parser.add_argument("--mode", choices=("development", "test", "production"), default=defaults.mode)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     config = replace(
         defaults,
         host=args.host,

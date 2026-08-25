@@ -1,4 +1,6 @@
 import hashlib
+import ctypes
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -28,6 +30,21 @@ class WeChatDatabaseTests(unittest.TestCase):
         self.assertEqual("小雨", result.records[0].sender_name)
         self.assertEqual("wxid_self", result.records[1].sender_id)
         self.assertTrue(all(item.record_id for item in result.records))
+
+    def test_accepts_windows_short_path_alias_for_database_root(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows path alias behavior only applies on Windows")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "db_storage"
+            self._create_v3_fixture(root)
+            short_root = self._short_path(root)
+            if short_root is None or short_root == str(root):
+                self.skipTest("the current volume does not expose a short path alias")
+
+            result = self.registry.parse(Path(short_root), {"source_type": "wechat_database", "self_id": "wxid_self"})
+
+        self.assertEqual(["你好", "[unsupported message type: 3/0]"], [item.content for item in result.records])
 
     def test_parses_plaintext_wechat_v4_directory_for_explicit_chat_id(self) -> None:
         chat_id = "wxid_friend"
@@ -105,7 +122,9 @@ class WeChatDatabaseTests(unittest.TestCase):
                 dst.write_bytes(src.read_bytes())
                 calls += 1
                 if calls == 1:
+                    previous_mtime = database.stat().st_mtime_ns
                     database.write_bytes(b"SQLite format 3\x00changed")
+                    os.utime(database, ns=(previous_mtime, previous_mtime + 1_000_000))
 
             with self.assertRaises(SnapshotChangedError):
                 create_wechat_snapshot(source, cache, retries=1, copy_file=mutate_after_copy)
@@ -123,6 +142,7 @@ class WeChatDatabaseTests(unittest.TestCase):
                 """
             )
         connection.close()
+
         connection = sqlite3.connect(root / "MSG0.db")
         with connection:
             connection.executescript(
@@ -136,6 +156,15 @@ class WeChatDatabaseTests(unittest.TestCase):
                 """
             )
         connection.close()
+
+    @staticmethod
+    def _short_path(path: Path) -> str | None:
+        get_short_path_name = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short_path_name.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path_name(str(path), buffer, len(buffer))
+        return buffer.value if length else None
 
     @staticmethod
     def _create_v4_fixture(root: Path, chat_id: str) -> None:

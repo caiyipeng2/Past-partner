@@ -1,0 +1,12 @@
+.git
+.gitignore
+.codegraph
+.test-runtime
+.worktrees
+data
+mobile
+models
+tests
+*.db
+*.sqlite
+*.sqlite3

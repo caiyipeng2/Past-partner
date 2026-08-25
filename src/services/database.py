@@ -18,6 +18,8 @@ class Migration:
     version: int
     name: str
     statements: tuple[str, ...]
+    requires_foreign_keys_off: bool = False
+    postgres_statements: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.version <= 0:
@@ -51,6 +53,17 @@ class Migration:
 # single-owner development behavior while allowing future account boundaries to narrow it.
 # Version 12 adds encrypted owner-scoped business audit events. Only bounded routing
 # fields remain queryable; the event payload itself is encrypted by AuditRepository.
+# Version 13 adds encrypted owner-scoped usage records. Version 14 adds encrypted
+# style profiles, reviewed long-term memory aggregates, and deterministic vector
+# index envelopes scoped to the owning persona.
+# Version 15 adds an owner-free deletion receipt containing only a random receipt ID,
+# timestamp, and bounded resource counts.
+# Version 16 adds local account identity mappings while preserving the legacy owner row.
+# Version 17 adds a redacted task notification outbox. It contains no owner, payload,
+# provider, credential, or filesystem fields, and is written with each task enqueue.
+# Version 18 adds bounded, redacted worker lifecycle observations. These rows are
+# operational metadata only: they contain no owner, task payload, provider response,
+# exception text, token, or filesystem path.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -256,6 +269,161 @@ DEFAULT_MIGRATIONS = (
             "CREATE UNIQUE INDEX usage_records_owner_request_idx ON usage_records(owner_id, provider_id, provider_request_fingerprint) WHERE provider_request_fingerprint IS NOT NULL",
         ),
     ),
+    Migration(
+        version=14,
+        name="learning_repositories",
+        statements=(
+            """
+            CREATE TABLE style_profiles (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX style_profiles_owner_persona_idx ON style_profiles(owner_id, persona_id)",
+            """
+            CREATE TABLE long_term_memories (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX long_term_memories_owner_persona_idx ON long_term_memories(owner_id, persona_id)",
+            """
+            CREATE TABLE vector_indexes (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                index_version INTEGER NOT NULL CHECK (index_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_id, persona_id)
+            )
+            """,
+            "CREATE INDEX vector_indexes_owner_persona_idx ON vector_indexes(owner_id, persona_id)",
+        ),
+    ),
+    Migration(
+        version=15,
+        name="anonymous_deletion_receipts",
+        statements=(
+            """
+            CREATE TABLE deletion_receipts (
+                id TEXT PRIMARY KEY,
+                deleted_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                counts_json TEXT NOT NULL CHECK (length(counts_json) BETWEEN 2 AND 4096)
+            )
+            """,
+        ),
+    ),
+    Migration(
+        version=16,
+        name="multi_account_identity",
+        requires_foreign_keys_off=True,
+        statements=(
+            # SQLite cannot drop a CHECK constraint in place. Rebuilding this
+            # small root table while foreign-key enforcement is temporarily
+            # disabled preserves every existing child row and lets the new
+            # member kind coexist with the legacy owner record.
+            """
+            CREATE TABLE local_users_r1_03 (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN ('owner', 'member')),
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "INSERT INTO local_users_r1_03 (id, kind, record_version, encrypted_payload) "
+            "SELECT id, kind, record_version, encrypted_payload FROM local_users",
+            "DROP TABLE local_users",
+            "ALTER TABLE local_users_r1_03 RENAME TO local_users",
+            """
+            CREATE TABLE local_identities (
+                user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                subject TEXT NOT NULL UNIQUE CHECK (length(subject) BETWEEN 1 AND 256),
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+        postgres_statements=(
+            "ALTER TABLE local_users DROP CONSTRAINT IF EXISTS local_users_kind_key",
+            "ALTER TABLE local_users DROP CONSTRAINT IF EXISTS local_users_kind_check",
+            "ALTER TABLE local_users ADD CONSTRAINT local_users_kind_check "
+            "CHECK (kind IN ('owner', 'member'))",
+            """
+            CREATE TABLE local_identities (
+                user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                subject TEXT NOT NULL UNIQUE CHECK (length(subject) BETWEEN 1 AND 256),
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+    ),
+    Migration(
+        version=17,
+        name="task_broker_outbox",
+        statements=(
+            """
+            CREATE TABLE task_broker_outbox (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(id) ON DELETE CASCADE,
+                task_type TEXT NOT NULL CHECK (length(task_type) BETWEEN 1 AND 128),
+                created_at TEXT NOT NULL,
+                available_at TEXT NOT NULL,
+                published_at TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error_code TEXT,
+                CHECK (published_at IS NULL OR length(published_at) > 0),
+                CHECK (last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 128)
+            )
+            """,
+            "CREATE INDEX task_broker_outbox_pending_idx "
+            "ON task_broker_outbox(published_at, available_at, created_at, id)",
+        ),
+    ),
+    Migration(
+        version=18,
+        name="worker_observations",
+        statements=(
+            """
+            CREATE TABLE worker_observations (
+                id TEXT PRIMARY KEY,
+                worker_id TEXT NOT NULL CHECK (length(worker_id) BETWEEN 1 AND 128),
+                task_type TEXT NOT NULL CHECK (length(task_type) BETWEEN 1 AND 128),
+                outcome TEXT NOT NULL CHECK (outcome IN (
+                    'idle', 'succeeded', 'retryable_failure', 'terminal_failure', 'lease_lost'
+                )),
+                observed_at TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 0 AND 3600000),
+                failure_code TEXT,
+                CHECK (failure_code IS NULL OR length(failure_code) BETWEEN 1 AND 128),
+                CHECK ((outcome IN ('retryable_failure', 'terminal_failure', 'lease_lost')
+                        AND failure_code IS NOT NULL)
+                    OR (outcome IN ('idle', 'succeeded') AND failure_code IS NULL))
+            )
+            """,
+            "CREATE INDEX worker_observations_worker_cursor_idx "
+            "ON worker_observations(worker_id, observed_at DESC, id DESC)",
+            "CREATE INDEX worker_observations_recent_idx "
+            "ON worker_observations(observed_at, worker_id, task_type)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
@@ -273,6 +441,7 @@ class SQLiteMigrator:
     def migrate(self) -> int:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.database_path, isolation_level=None)
+        foreign_keys_off = False
         try:
             connection.execute("PRAGMA foreign_keys = ON")
             # One immediate transaction serializes concurrent startup attempts and
@@ -290,6 +459,15 @@ class SQLiteMigrator:
             for migration in self.migrations:
                 if migration.version in applied:
                     continue
+                if migration.requires_foreign_keys_off and not foreign_keys_off:
+                    # PRAGMA foreign_keys is a connection setting and is a
+                    # no-op inside a transaction. Commit the preceding
+                    # migrations, toggle it outside the transaction, and
+                    # start a new atomic unit for the table rebuild.
+                    connection.commit()
+                    connection.execute("PRAGMA foreign_keys = OFF")
+                    foreign_keys_off = True
+                    connection.execute("BEGIN IMMEDIATE")
                 for statement in migration.statements:
                     connection.execute(statement)
                 connection.execute(
@@ -304,6 +482,8 @@ class SQLiteMigrator:
                 connection.rollback()
             raise
         finally:
+            if foreign_keys_off:
+                connection.execute("PRAGMA foreign_keys = ON")
             connection.close()
 
     def _validate_plan(self) -> None:

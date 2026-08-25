@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 import re
@@ -103,6 +103,7 @@ class ImportJob:
     created_at: str
     updated_at: str
     files: tuple[ImportFile, ...] = ()
+    normalized_at: str | None = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ImportJob":
@@ -123,6 +124,7 @@ class ImportJob:
             created_at=str(value["created_at"]),
             updated_at=str(value["updated_at"]),
             files=files,
+            normalized_at=(str(value["normalized_at"]) if value.get("normalized_at") is not None else None),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,6 +142,8 @@ class ImportJob:
         }
         if self.files:
             result["files"] = [item.to_dict() for item in self.files]
+        if self.normalized_at is not None:
+            result["normalized_at"] = self.normalized_at
         return result
 
 
@@ -229,6 +233,31 @@ class ImportService:
 
     def list_expired_terminal(self, owner_id: str, cutoff: datetime) -> list[ImportJob]:
         return self.repository.list_expired_terminal(owner_id, cutoff)
+
+    def list_expired_normalized(self, owner_id: str, cutoff: datetime) -> list[ImportJob]:
+        return self.repository.list_expired_normalized(owner_id, cutoff)
+
+    def mark_normalized(
+        self,
+        owner_id: str,
+        import_id: str,
+        *,
+        normalized_at: str | None = None,
+    ) -> ImportJob:
+        job = self.get(owner_id, import_id)
+        timestamp = normalized_at or datetime.now(UTC).isoformat()
+        try:
+            parsed = datetime.fromisoformat(timestamp)
+        except (TypeError, ValueError) as exc:
+            raise ImportValidationError("invalid_normalized_at", "normalized_at must be a timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ImportValidationError("invalid_normalized_at", "normalized_at must include a timezone")
+        if job.normalized_at is not None:
+            return job
+        canonical = parsed.astimezone(UTC).isoformat()
+        updated = replace(job, normalized_at=canonical, updated_at=canonical)
+        self.save(owner_id, updated)
+        return updated
 
     def list_for_persona(self, owner_id: str, persona_id: str) -> list[ImportJob]:
         return self.repository.list_for_persona(owner_id, persona_id)

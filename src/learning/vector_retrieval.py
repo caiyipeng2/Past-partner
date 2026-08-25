@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Iterable
@@ -124,6 +125,14 @@ class MemoryRetrievalResult:
 class VectorMemoryRetriever:
     """Select reviewed evidence with deterministic privacy and context budgets."""
 
+    @staticmethod
+    def build_index(memory: LongTermMemory) -> dict[str, tuple[str, ...]]:
+        """Build a bounded token-only index suitable for encrypted persistence."""
+
+        if not isinstance(memory, LongTermMemory):
+            raise VectorRetrievalError("invalid_memory", "memory must be a LongTermMemory instance")
+        return {candidate.memory_id: _tokens(candidate.text) for candidate in memory.candidates}
+
     def retrieve(
         self,
         memory: LongTermMemory,
@@ -134,9 +143,11 @@ class VectorMemoryRetriever:
         max_tokens: int = 800,
         max_age_days: int | None = None,
         allowed_speaker_scopes: Iterable[str] = ("persona", "user"),
+        token_index: Mapping[str, Iterable[str]] | None = None,
     ) -> MemoryRetrievalResult:
         if not isinstance(memory, LongTermMemory):
             raise VectorRetrievalError("invalid_memory", "memory must be a LongTermMemory instance")
+        indexed_tokens = None if token_index is None else _validate_index(token_index, memory)
         normalized_query = _query_text(query)
         query_tokens = _tokens(normalized_query)
         if not query_tokens:
@@ -164,7 +175,11 @@ class VectorMemoryRetriever:
             if candidate.speaker_scope not in scopes:
                 excluded["speaker_scope"] += 1
                 continue
-            candidate_tokens = _tokens(candidate.text)
+            candidate_tokens = (
+                indexed_tokens[candidate.memory_id]
+                if indexed_tokens is not None
+                else _tokens(candidate.text)
+            )
             if not candidate_tokens:
                 excluded["no_query_overlap"] += 1
                 continue
@@ -238,6 +253,32 @@ def _query_text(value: object) -> str:
 
 def _tokens(value: str) -> tuple[str, ...]:
     return tuple(_TOKEN.findall(value.casefold()))
+
+
+def _validate_index(
+    value: Mapping[str, Iterable[str]],
+    memory: LongTermMemory,
+) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, Mapping):
+        raise VectorRetrievalError("invalid_vector_index", "token_index must be an object")
+    expected = {candidate.memory_id for candidate in memory.candidates}
+    if set(value) != expected:
+        raise VectorRetrievalError("invalid_vector_index", "token_index does not match memory candidates")
+    normalized: dict[str, tuple[str, ...]] = {}
+    for memory_id in sorted(expected):
+        tokens = value[memory_id]
+        if isinstance(tokens, (str, bytes)):
+            raise VectorRetrievalError("invalid_vector_index", "token_index entries must be token collections")
+        try:
+            normalized_tokens = tuple(tokens)
+        except TypeError as exc:
+            raise VectorRetrievalError("invalid_vector_index", "token_index entries must be token collections") from exc
+        if len(normalized_tokens) > _MAX_TOKENS or any(
+            not isinstance(token, str) or not token or len(token) > 128 for token in normalized_tokens
+        ):
+            raise VectorRetrievalError("invalid_vector_index", "token_index contains invalid tokens")
+        normalized[memory_id] = normalized_tokens
+    return normalized
 
 
 def _lexical_score(query_tokens: tuple[str, ...], candidate_tokens: tuple[str, ...], query: str, text: str) -> float:

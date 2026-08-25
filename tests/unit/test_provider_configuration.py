@@ -2,6 +2,7 @@ import unittest
 
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_openai_compatible_adapters, build_provider_adapters
+from src.providers.qwen_fine_tuning import QwenFineTuningAdapter
 
 
 class ProviderConfigurationTests(unittest.TestCase):
@@ -76,6 +77,37 @@ class ProviderConfigurationTests(unittest.TestCase):
         self.assertTrue(catalog.provider("deepseek").configured)
         self.assertTrue(catalog.provider("qwen").configured)
         self.assertFalse(catalog.provider("xiaomi_mimo").configured)
+
+    def test_qwen_fine_tuning_is_explicitly_opt_in_and_keeps_chat_endpoint(self) -> None:
+        adapters = build_provider_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_QWEN_API_KEY": "qwen-secret",
+                "PAST_PARTNER_QWEN_FINE_TUNING_ENABLED": "true",
+                "PAST_PARTNER_QWEN_FINE_TUNING_MODELS": "qwen3.7-plus",
+            },
+        )
+
+        self.assertIsInstance(adapters["qwen"], QwenFineTuningAdapter)
+        adapter = adapters["qwen"]
+        assert isinstance(adapter, QwenFineTuningAdapter)
+        self.assertEqual("https://dashscope.aliyuncs.com/api/v1", adapter.config.base_url)
+        self.assertEqual(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            adapter.config.chat_base_url,
+        )
+        self.assertTrue(adapter.supports_fine_tuning("qwen3.7-plus"))
+
+    def test_qwen_fine_tuning_without_explicit_model_allowlist_stays_disabled(self) -> None:
+        adapters = build_provider_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_QWEN_API_KEY": "qwen-secret",
+                "PAST_PARTNER_QWEN_FINE_TUNING_ENABLED": "true",
+            },
+        )
+
+        self.assertNotIsInstance(adapters["qwen"], QwenFineTuningAdapter)
 
 
 if __name__ == "__main__":

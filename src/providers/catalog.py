@@ -354,17 +354,25 @@ class ProviderCatalog:
         self,
         provider_ids: set[str],
         runtime_models: dict[str, frozenset[str]] | None = None,
+        fine_tuning_models: Mapping[str, frozenset[str]] | None = None,
     ) -> "ProviderCatalog":
         runtime_models = runtime_models or {}
+        fine_tuning_models = fine_tuning_models or {}
         providers: list[ProviderDefinition] = []
         for provider in self.providers():
             models = provider.models
+            supported_fine_tuning = fine_tuning_models.get(provider.id, frozenset())
+            provider_capabilities = provider.capabilities
+            if supported_fine_tuning and any(
+                model.id in supported_fine_tuning for model in models
+            ):
+                provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
             if provider.id in runtime_models and provider.model_discovery != "catalog":
                 models = tuple(
                     ModelDefinition(
                         model_id,
                         model_id,
-                        ("text", *provider.capabilities),
+                        ("text", *provider_capabilities),
                         pricing_source=provider.pricing_source,
                         pricing=ModelPricing(source=provider.pricing_source),
                     )
@@ -374,9 +382,23 @@ class ProviderCatalog:
                 replace(
                     provider,
                     configured=provider.id in provider_ids,
+                    capabilities=provider_capabilities,
                     models=models,
                 )
             )
+            if supported_fine_tuning:
+                providers[-1] = replace(
+                    providers[-1],
+                    models=tuple(
+                        replace(
+                            model,
+                            capabilities=_append_capability(model.capabilities, "fine_tuning")
+                            if model.id in supported_fine_tuning
+                            else model.capabilities,
+                        )
+                        for model in providers[-1].models
+                    ),
+                )
         return ProviderCatalog(tuple(providers))
 
 
@@ -409,6 +431,10 @@ def _provider(
         ),
         model_discovery=discovery,
     )
+
+
+def _append_capability(capabilities: tuple[str, ...], capability: str) -> tuple[str, ...]:
+    return capabilities if capability in capabilities else (*capabilities, capability)
 
 
 def _optional_price(value: object, field_name: str) -> float | None:

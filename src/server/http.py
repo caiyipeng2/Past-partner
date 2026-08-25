@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import re
 import socket
+import shutil
 import ssl
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -28,7 +29,9 @@ from src.server.config import ServerConfig
 from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
+from src.services.export_service import ExportServiceError
 from src.services.local_auth import LocalAuthError
+from src.services.learning_service import LearningServiceError
 from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.training_service import TrainingServiceError
@@ -48,6 +51,12 @@ _PARTICIPANT_MAPPING_PATH = re.compile(
 )
 _CORRECTIONS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/corrections$")
 _PERSONA_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)$")
+_LEARNING_PROFILE_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/style-profile$")
+_LEARNING_MEMORY_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/memory$")
+_LEARNING_RETRIEVE_PATH = re.compile(r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/retrieve$")
+_LEARNING_REVIEW_PATH = re.compile(
+    r"^/api/v1/personas/([A-Za-z0-9._-]+)/learning/memory/([A-Fa-f0-9]{64})$"
+)
 _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
@@ -66,6 +75,8 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _USAGE_PATH = "/api/v1/usage"
+_DATA_EXPORT_ARCHIVE_PATH = "/api/v1/data-export/archive"
+_DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
 _METRICS_PATH = "/api/v1/metrics"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -254,12 +265,21 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "unknown_model": HTTPStatus.NOT_FOUND,
                 "provider_not_configured": HTTPStatus.SERVICE_UNAVAILABLE,
                 "provider_unavailable": HTTPStatus.BAD_GATEWAY,
+                "provider_timeout": HTTPStatus.GATEWAY_TIMEOUT,
+                "provider_rate_limited": HTTPStatus.TOO_MANY_REQUESTS,
                 "provider_http_error": HTTPStatus.BAD_GATEWAY,
                 "invalid_provider_response": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except AuditServiceError as exc:
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
+        except ExportServiceError as exc:
+            status = {
+                "export_payload_unavailable": HTTPStatus.CONFLICT,
+                "export_payload_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "export_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+            }.get(exc.code, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._error(status, exc.code, str(exc))
         except TrainingServiceError as exc:
             status = {
                 "training_job_not_found": HTTPStatus.NOT_FOUND,
@@ -294,6 +314,27 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "provider_cancellation_unconfirmed": HTTPStatus.BAD_GATEWAY,
             }.get(exc.code, HTTPStatus.UNPROCESSABLE_ENTITY)
             self._error(status, exc.code, str(exc), diagnostic_id=exc.diagnostic_id)
+        except LearningServiceError as exc:
+            if exc.code == "persona_not_found":
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "resource not found")
+                return
+            status = {
+                "learning_not_found": HTTPStatus.NOT_FOUND,
+                "memory_not_found": HTTPStatus.NOT_FOUND,
+                "invalid_style_profile": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_memory": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_review_state": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "learning_review_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_field": HTTPStatus.BAD_REQUEST,
+                "invalid_allowed_speaker_scopes": HTTPStatus.BAD_REQUEST,
+                "query_required": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_query": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_candidate_limit": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_token_limit": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_age_budget": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_speaker_scope": HTTPStatus.UNPROCESSABLE_ENTITY,
+            }.get(exc.code, HTTPStatus.SERVICE_UNAVAILABLE)
+            self._error(status, exc.code, str(exc))
         except Exception:
             diagnostic_id = str(uuid4())
             self._error(
@@ -321,6 +362,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.OK, self.server.application.list_personas(self.owner_id))
+        elif match := _LEARNING_PROFILE_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_style_profile(self.owner_id, match.group(1)))
+        elif match := _LEARNING_MEMORY_PATH.fullmatch(path):
+            self._json(HTTPStatus.OK, self.server.application.get_learning_memory(self.owner_id, match.group(1)))
         elif path == "/api/v1/imports":
             persona_id = query.get("persona_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.list_imports(self.owner_id, persona_id))
@@ -333,6 +378,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.application.models_catalog(provider_id))
         elif path == "/api/v1/data-export":
             self._json(HTTPStatus.OK, self.server.application.export_data(self.owner_id))
+        elif path == _DATA_EXPORT_ARCHIVE_PATH:
+            self._archive(self.server.application.export_archive(self.owner_id))
         elif path == _CONSENTS_PATH:
             persona_id = query.get("persona_id", [None])[0]
             self._json(HTTPStatus.OK, self.server.application.list_consents(self.owner_id, persona_id))
@@ -465,6 +512,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/personas":
             self._json(HTTPStatus.CREATED, self.server.application.create_persona(self.owner_id, self._json_body()))
+        elif path == _DATA_DELETION_PATH:
+            self._json(HTTPStatus.OK, self.server.application.delete_owner_data(self.owner_id, self._json_body()))
+        elif match := _LEARNING_RETRIEVE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.retrieve_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif path == "/api/v1/imports":
             self._json(HTTPStatus.CREATED, self.server.application.create_import(self.owner_id, self._json_body()))
         elif path == "/api/v1/chat":
@@ -545,6 +603,26 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_put(self) -> None:
         path, _ = self._request_target()
+        if match := _LEARNING_PROFILE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.save_style_profile(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
+            return
+        if match := _LEARNING_MEMORY_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.save_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
+            return
         match = _CHUNK_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -578,6 +656,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_patch(self) -> None:
         path, _ = self._request_target()
+        if match := _LEARNING_REVIEW_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.review_learning_memory(
+                    self.owner_id,
+                    match.group(1),
+                    match.group(2),
+                    self._json_body(),
+                ),
+            )
+            return
         match = _PERSONA_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -644,6 +733,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(content)
+
+    def _archive(self, artifact) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(artifact.content_length))
+        self.send_header("Content-Disposition", 'attachment; filename="Past-partner-data-export.zip"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            with artifact.path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        finally:
+            artifact.cleanup()
 
     def _request_target(self) -> tuple[str, dict[str, list[str]]]:
         parsed = urlsplit(self.path)
@@ -734,6 +837,14 @@ def _route_template(target: str) -> str:
     if path.startswith("/api/"):
         if path == "/api/v1/health":
             return "/api/v1/health"
+        if _LEARNING_PROFILE_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/style-profile"
+        if _LEARNING_RETRIEVE_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/retrieve"
+        if _LEARNING_REVIEW_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/memory/{memory_id}"
+        if _LEARNING_MEMORY_PATH.fullmatch(path):
+            return "/api/v1/personas/{persona_id}/learning/memory"
         if _PERSONA_PATH.fullmatch(path):
             return "/api/v1/personas/{persona_id}"
         if _IMPORT_PATH.fullmatch(path):
@@ -780,6 +891,10 @@ def _route_template(target: str) -> str:
             return _READY_PATH
         if path == _METRICS_PATH:
             return _METRICS_PATH
+        if path == _DATA_EXPORT_ARCHIVE_PATH:
+            return _DATA_EXPORT_ARCHIVE_PATH
+        if path == _DATA_DELETION_PATH:
+            return _DATA_DELETION_PATH
         return "/api/*"
     return "/static"
 

@@ -11,6 +11,7 @@ from src.providers.catalog import ProviderCatalog
 from src.providers.base import ProviderAdapter
 from src.providers.native import AnthropicAdapter, AnthropicConfig, GeminiAdapter, GeminiConfig
 from src.providers.openai_compatible import OpenAICompatibleAdapter, OpenAICompatibleConfig
+from src.providers.qwen_fine_tuning import QwenFineTuningAdapter, QwenFineTuningConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,8 @@ _NATIVE_PROVIDERS = (
         ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     ),
 )
+
+_QWEN_FINE_TUNING_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 
 
 def build_openai_compatible_adapters(
@@ -92,9 +95,9 @@ def build_provider_adapters(
     """Build all supported runtime adapters while keeping secrets at process scope."""
 
     environment = os.environ if environ is None else environ
-    adapters: dict[str, ProviderAdapter] = dict(
-        build_openai_compatible_adapters(catalog, environment)
-    )
+    compatible_adapters = build_openai_compatible_adapters(catalog, environment)
+    adapters: dict[str, ProviderAdapter] = dict(compatible_adapters)
+    _configure_qwen_fine_tuning(adapters, compatible_adapters, environment)
     for definition in _NATIVE_PROVIDERS:
         provider = catalog.find_provider(definition.provider_id)
         if provider is None:
@@ -135,6 +138,40 @@ def build_provider_adapters(
     return adapters
 
 
+def _configure_qwen_fine_tuning(
+    adapters: dict[str, ProviderAdapter],
+    compatible_adapters: Mapping[str, OpenAICompatibleAdapter],
+    environment: Mapping[str, str],
+) -> None:
+    """Replace only an explicitly opted-in Qwen chat adapter with its native API."""
+
+    if not _flag(environment.get("PAST_PARTNER_QWEN_FINE_TUNING_ENABLED")):
+        return
+    chat = compatible_adapters.get("qwen")
+    if chat is None:
+        return
+    configured_models = _models(environment.get("PAST_PARTNER_QWEN_FINE_TUNING_MODELS"))
+    fine_tuning_models = configured_models & chat.config.allowed_models
+    if not fine_tuning_models:
+        return
+    native_base_url = (
+        _first_value(environment, "PAST_PARTNER_QWEN_FINE_TUNING_BASE_URL")
+        or _QWEN_FINE_TUNING_BASE_URL
+    )
+    _validate_base_url(native_base_url, "qwen fine-tuning")
+    adapters["qwen"] = QwenFineTuningAdapter(
+        QwenFineTuningConfig(
+            provider_id="qwen",
+            base_url=native_base_url,
+            api_key=chat.config.api_key or "",
+            allowed_models=chat.config.allowed_models,
+            fine_tuning_models=fine_tuning_models,
+            chat_base_url=chat.config.base_url,
+            timeout_seconds=chat.config.timeout_seconds,
+        )
+    )
+
+
 def _first_value(environment: Mapping[str, str], *names: str) -> str | None:
     for name in names:
         value = environment.get(name)
@@ -147,6 +184,17 @@ def _models(value: str | None) -> frozenset[str]:
     if not value:
         return frozenset()
     return frozenset(item.strip() for item in value.split(",") if item.strip())
+
+
+def _flag(value: str | None) -> bool:
+    if value is None or not value.strip():
+        return False
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("PAST_PARTNER_QWEN_FINE_TUNING_ENABLED must be a boolean")
 
 
 def _validate_base_url(value: str, provider_id: str) -> None:

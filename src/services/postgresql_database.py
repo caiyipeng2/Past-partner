@@ -46,7 +46,8 @@ class PostgreSQLMigrator:
             for migration in self.migrations:
                 if migration.version in applied:
                     continue
-                for statement in migration.statements:
+                statements = migration.postgres_statements or migration.statements
+                for statement in statements:
                     connection.execute(self._compile_statement(statement))
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, checksum) VALUES (%s, %s, %s)",

@@ -19,7 +19,9 @@ python -m pip install -r requirements-core.txt
 python -m src.server
 ```
 
-当前主分支以 Python 模块为正式服务入口，`npm start` 和 `scripts/run_server.ps1` 是等价调试包装。Docker Compose 和可安装服务 CLI 尚未提供，路线图中以 `R0-02` 排队；不要把 npm 视为唯一运行方式。新增开发工作使用 `R0/R1/R2` 路线图编号，不再派生新的 `P0` 编号。
+当前主分支提供统一 Python 模块、可安装 `companion-server` CLI、Docker Compose、npm 和
+PowerShell 启动面，所有入口都调用同一服务。新增开发工作使用 `R0/R1/R2` 路线图编号，
+不再派生新的 `P0` 编号。
 
 ## 核心功能
 
@@ -89,9 +91,20 @@ Python 是服务的正式入口，npm 和 PowerShell 只是 PC 调试包装：
 
 ```powershell
 python -m src.server
+python -m pip install -e .
+companion-server
 npm start
 .\scripts\run_server.ps1
+docker compose up --build
 ```
+
+统一执行 health/API smoke：
+
+```powershell
+python scripts/launch_smoke.py --surface module --surface cli --surface npm --surface compose
+```
+
+Compose smoke 使用临时端口和命名卷，结束后自动执行 `docker compose down --volumes --remove-orphans`。
 
 默认地址为 `http://127.0.0.1:8080`。运行测试：
 
@@ -100,6 +113,12 @@ python -m unittest discover -s tests -p "test*.py" -v
 ```
 
 对象字节存储通过 `PAST_PARTNER_STORAGE_BACKEND` 选择，默认值为 `local`，继续使用当前 `<data-dir>` 本地布局。P4-04 增加可选的 S3-compatible 适配器：`s3` 和 `minio` 需要显式安装 `requirements-storage.txt`、配置服务端 bucket/region/endpoint 和成对凭据；生产 endpoint 必须使用 HTTPS，缺少 SDK、配置错误或远端错误都会明确失败，不会静默回退到本地。逻辑对象 key、AES-GCM 密文和上传 API 不变，S3 endpoint 与凭据不会进入日志、响应或客户端配置。加密元数据通过 `PAST_PARTNER_METADATA_BACKEND` 选择，默认值为 `sqlite`，所有仓储共享一个适配器和同一迁移账本；`postgres`/`postgresql` 可选使用 PostgreSQL 适配器，并通过服务端环境变量 `PAST_PARTNER_METADATA_DSN` 配置连接串，`PAST_PARTNER_METADATA_POOL_MIN_SIZE` 与 `PAST_PARTNER_METADATA_POOL_MAX_SIZE` 控制有界连接池。DSN 不会进入日志、响应或客户端配置，缺少 DSN、驱动或非法连接池范围会在启动阶段明确失败，不会静默回退到 SQLite。P4-05 增加可选的 KMS-backed 主密钥源。P4-06 增加共享元数据后端上的 owner 范围持久化任务队列：任务路由和租约状态可查询，任务载荷和结果继续使用 AES-GCM 加密；worker 通过短租约、续租、幂等完成、有限重试和稳定失败码处理任务。该切片不自动启动 worker、不引入 broker，也不宣称单机 worker 已具备多节点调度能力；部署者可以启动多个相同 worker 进程，后续导入和训练任务再逐步接入该队列。
+
+R1-04 第一切片增加独立的外部 worker 启动面：`python -m src.worker --once --worker-id <id>` 或安装后的 `companion-worker --once --worker-id <id>` 会复用同一 `ServerConfig`、共享元数据后端和主密钥，执行一次加密队列租约并退出；不带 `--once` 时可通过 SIGINT/SIGTERM 协作停止，`--max-tasks` 用于有界批处理。worker 日志只记录有界 worker ID、轮询和领取计数，不记录任务 payload、密钥、DSN 或本地路径。生产模式不会注册隐式业务 handler，未知任务继续以稳定失败码结束；测试模式的 `worker.probe` 只返回 payload 键名用于链路验收。
+
+R1-04 broker 契约切片增加任务通知 outbox：每次任务入队会在同一元数据事务中写入一条只含 `message_id`、`task_id`、`task_type` 和时间的待发布通知；任务正文、owner、密钥、供应商响应和路径不会进入 outbox 或 broker 消息。发布器采用“先发布、后标记”的幂等顺序，失败只保存有界错误码和重试时间。当前仅提供内存 broker 作为确定性测试替身，支持去重、消费方绑定 ack/nack 和可见性超时重投；Redis、RabbitMQ、云消息服务、broker 凭据和生产部署适配器仍未选择或实现。
+
+R1-04 worker 观测切片在共享元数据后端追加有界 `worker_observations`：每次 worker 轮询只保存 worker/task 类型、固定生命周期结果、UTC 时间、耗时和稳定失败码。记录不含 owner、任务 ID、载荷、异常文本、provider、凭据或文件路径，并按保留时间和每 worker 数量自动清理。`WorkerObservability.evaluate_alerts()` 可在内部演练高失败率和无心跳告警；当前仍不提供客户端路由、Prometheus 外部推送/抓取、追踪、日志外发或 SIEM。
 
 P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容；本任务不伪造 OIDC/OAuth 注册、账户管理、管理员角色、计费或公网部署能力，这些仍属于后续生产化任务。
 
@@ -140,11 +159,11 @@ P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商�
 P2-01 已扩展模型目录元数据，提供能力、上下文长度、区域、隐私标签、结构化价格和价格刷新时间；可通过 `PAST_PARTNER_MODEL_PRICING_JSON` 配置供应商/管理员价格。`POST /api/v1/models/cost-estimate` 按输入/输出 token 和媒体单位返回可复核估算，未配置价格时明确返回 `pricing_unavailable`，不生成伪造成本。价格是估算值，不替代供应商最终账单。
 P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义 OpenAI-compatible 继续使用兼容协议；Anthropic Messages 与 Google Gemini `generateContent` 使用原生请求/响应适配器。所有网络调用都经过统一 JSON 传输边界，未配置凭据时仍返回 `provider_not_configured`；本任务不实现流式、Embedding、媒体分析或微调。
 
-P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商，当前仅在调用内存中生成，尚未持久化或提供独立画像 API。
+P2-03 已增加 provider-independent 风格画像提取：解析器输出先统一为 `NormalizedMessage`，再只使用人物发送者的文本统计消息长度、词汇、标点、表情、节奏、情绪倾向、偏好称呼和关系行为。`ChatDataParser.generate_style_profile` 可复用现有解析器注册表；画像不携带原始正文，不调用供应商。R1-01 已将画像按 owner/persona 使用 AES-GCM 加密持久化，并提供 `PUT/GET /api/v1/personas/{persona_id}/learning/style-profile`。
 
-P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实、事件、关系、偏好和时间线候选，支持限定已接受的 `record_id`，对重复证据合并，并为每条候选提供稳定 ID、有限证据文本、来源、时间、置信度和 `needs_review` 审核状态。`ChatDataParser.generate_long_term_memory` 不调用模型、不上传原始内容；审核通过前候选不会被视为事实，当前尚未持久化或提供独立记忆 API。
+P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实、事件、关系、偏好和时间线候选，支持限定已接受的 `record_id`，对重复证据合并，并为每条候选提供稳定 ID、有限证据文本、来源、时间、置信度和 `needs_review` 审核状态。`ChatDataParser.generate_long_term_memory` 不调用模型、不上传原始内容；审核通过前候选不会被视为事实。R1-01 已将长期记忆按 owner/persona 加密持久化，并提供 `PUT/GET /api/v1/personas/{persona_id}/learning/memory` 与 `PATCH /api/v1/personas/{persona_id}/learning/memory/{memory_id}` 审核接口。
 
-P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商，也不持久化向量索引。
+P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商。R1-01 同时加密保存版本化稀疏索引，并提供 `POST /api/v1/personas/{persona_id}/learning/retrieve`；索引损坏或与记忆不一致时 fail closed。
 
 P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
 
@@ -160,8 +179,8 @@ P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 
 预览记录会带有稳定 `record_id` 和 `review_state`；可通过 `POST /api/v1/imports/{import_id}/corrections` 提交单文件或多文件预览中的字段修正及 `accepted`、`needs_review` 或 `rejected` 状态，修正同样写入加密导入清单并在后续预览中回显。
 可通过 `DELETE /api/v1/imports/{import_id}` 删除单个导入及其加密分片、合并对象和清单；该操作按当前 owner 校验，删除后导入接口返回 404。
 可通过 `DELETE /api/v1/personas/{persona_id}` 删除人物及其 owner 名下的全部导入任务、加密分片、合并对象和清单；删除后人物和关联导入接口返回 404。
-可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化人物、导入任务和加密清单元数据；原始导入载荷、第三方供应商数据和审计记录会在导出范围中明确标记为未包含。
-可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 启用启动时保留期清理；正数表示清理当前 owner 名下更新时间早于阈值且状态为 `failed` 或 `cancelled` 的导入及其加密对象，默认 `0` 关闭。由于当前尚未记录成功标准化事件，`uploaded`、`processing` 和 `completed` 导入不会被该策略自动删除。
+可通过 `GET /api/v1/data-export` 获取当前 owner 的版本化元数据 JSON，或通过 `GET /api/v1/data-export/archive` 获取服务端按块生成的 ZIP 完整归档（包含原始 payload、导入清单、人物、画像、记忆、会话和训练元数据）。两种导出均明确省略第三方供应商数据和审计记录，归档不会把大文件一次性读入内存。
+可通过 `PAST_PARTNER_RAW_RETENTION_SECONDS` 清理超时的 `failed`/`cancelled` 原始导入，或通过 `PAST_PARTNER_NORMALIZED_RETENTION_SECONDS` 清理已完成预览/归一化且超过保留期的导入；两者默认 `0` 关闭且硬上限为五年。可通过 `POST /api/v1/data-deletion` 携带 `{"confirm":"DELETE"}` 删除当前 owner 控制的所有本地数据并取得匿名回执；provider-side 副本和已提交的外部训练作业会明确列为限制，不会伪称已删除。
 
 P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准化消息现在包含服务端稳定 `record_id`，并在解析阶段生成后供预览、修正和后续持久化复用；P0-20 的 TXT 解析支持常见时间/发送者格式、多行消息、UTF-8/UTF-16 编码和无时间发送者行；P0-21 的 JSON/JSONL 解析统一支持 UTF-8/UTF-16 编码并保持 JSONL 流式读取；P0-22 的导入预览按多文件清单边界逐文件解析并聚合有限记录；P0-25 增加微信 TXT/HTML 导出解析；P0-26 增加 QQ TXT/HTML 导出解析；P0-27 增加默认关闭、启动时执行的终态原始导入保留期清理；P0-28 提供 owner 级版本化数据导出，包含人物、导入任务、参与者映射、预览修正和加密清单元数据，并明确排除原始载荷；P0-29 提供 owner 级人物删除级联清理，并拒绝会造成部分删除的处理中任务；P0-30 增加微信 3.x/4.x 明文 SQLite 数据库目录解析；P0-31 增加 QQ 通用消息表明文 SQLite 数据库目录解析；P0-32 增加带 manifest v1 的微信 ZIP 备份包安全解析；P0-33 增加带 manifest v1 的 QQ ZIP 备份包安全解析；P1-01 增加通用 CSV 聊天记录解析；P1-02 增加通用 XML 聊天记录解析；P1-03 增加通用 HTML 解析；P1-04 增加通用 SQLite schema 自动探测；P1-05 增加跨格式附件引用元数据标准化；P1-08 增加 DOCX 对话文本解析；P1-09 增加 PDF 对话文本解析；P1-10 增加第三方媒体处理授权记录、精确作用域校验和撤回接口；P2-01 增加模型能力、上下文、隐私和可刷新价格元数据及成本估算接口。数据库解析仅接受用户主动选择的目录，先形成包含现有 WAL/SHM 的一致只读快照，再识别已支持 schema；单个 `.db`、加密库和未知 schema 会返回明确错误。私有加密备份、媒体内容分析、浏览器目录聚合和第三方模型处理仍按后续任务推进；媒体原始内容不会因本地上传而自动发送给第三方。
 
@@ -175,6 +194,22 @@ P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片�
 
 P2-07 的媒体检测 `provider_transfer` 标记不适用于训练任务。只有目录 `fine_tuning` 能力、价格、配置的微调适配器和独立训练授权都满足时，Provider 网关才会接收训练文本；缺少能力会返回 `capability_not_supported`，绝不回退为聊天请求。任务只有收到非空 `artifact_id` 与非空 `evaluation` 后才进入 `completed`，两者仅是有限结果元数据。
 
+R0-04 已接入阿里云百炼/Model Studio 的真实千问微调适配器，但默认保持关闭。只有同时配置 `PAST_PARTNER_QWEN_API_KEY`、`PAST_PARTNER_QWEN_FINE_TUNING_ENABLED=true` 和显式的 `PAST_PARTNER_QWEN_FINE_TUNING_MODELS` 白名单，目录才会为对应千问模型声明 `fine_tuning`；普通 OpenAI-compatible 聊天端点、DeepSeek、小米、自定义模型不会被伪装成训练 Provider。适配器使用原生 `/api/v1/files` 分块上传 JSONL，再调用 `/api/v1/fine-tunes` 提交、列表恢复、详情查询和 `/cancel` 取消；提交时把本地 job ID 写入供应商 `job_name`，以便本地持久化失败后对账。供应商返回的非空 `finetuned_output` 和 usage/metrics 等有限证据才会进入训练工件与评测字段，缺少证据会保持未验证状态。千问微调接口按官方文档要求使用华北 2（北京）地域权限和 API Key，真实训练会产生供应商费用，必须先完成独立训练同意与成本授权。
+
+R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 python scripts/qwen_fine_tuning_smoke.py --model <model>`；脚本只上传合成样本，输出脱敏的任务状态/工件/评测存在性，并会取消仍在排队或运行的任务。未提供真实凭据时，自动化验收使用本地 HTTP 服务器覆盖同一分块上传和提交/恢复/查询/取消传输路径，不把确定性测试 Provider 当作生产训练。
+
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 
-OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 HTTP 仍需后续插件 SDK，不会因为目录可见而伪造可用状态。
+OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 只需配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL`、API Key 和逗号分隔的模型名即可接入；`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
+
+### Provider smoke
+
+配置任一供应商的服务端凭据后，可显式开启一次脱敏文本 smoke。命令不会打印提示词、回复正文或 API Key：
+
+```powershell
+$env:PAST_PARTNER_PROVIDER_SMOKE = "1"
+$env:PAST_PARTNER_PROVIDER_SMOKE_PROVIDER = "deepseek"
+python scripts/provider_smoke.py
+```
+
+也可以将 provider 设为 `openai`、`xiaomi_mimo`、`qwen`、`ollama` 或 `custom_openai`，自定义端点需要同时配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL`、`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 和 `PAST_PARTNER_CUSTOM_OPENAI_MODELS`。未配置、超时、限流和非 JSON 响应会在 Provider 网关边界转换为稳定错误码；真实 smoke 必须使用可撤销或可控额度的测试凭据。
