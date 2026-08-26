@@ -1,6 +1,6 @@
 # Past-partner 开发与跨电脑接续手册
 
-本文档是从 Git 克隆后继续开发的单一入口。当前代码基线以 `main` 最新提交为准；本文档编写时的基线是 `f7d9962`（跨电脑开发手册和路线图已合并）。开始工作前先执行 `git pull --ff-only origin main`。
+本文档是从 Git 克隆后继续开发的单一入口。当前代码基线以 `main` 最新提交为准；R2-01 Android-first 三个实现切片已合并到 `main`，整体验证文档随本分支提交。开始工作前先执行 `git pull --ff-only origin main`，再用 `git log -1 --oneline` 核对实际基线。
 
 ## 1. 项目边界
 
@@ -184,6 +184,12 @@ $env:PAST_PARTNER_ANDROID_KEY_PASSWORD = "<仅当前进程可见>"
 脚本会清理输出目录中旧的 `Past-partner_*.apk`，产物命名为 `Past-partner_<版本>_<yyyyMMdd_HHmm>_<debug|release>.apk`。APK、JKS 和密码不提交 Git。真机直连需要开发模式的四项 `PAST_PARTNER_DEV_DEVICE_*` TLS 配置；模拟器或 `adb reverse/port-forward` 走回环 HTTP 时不要发送设备配对 header。
 
 如果 Flutter/Gradle 在 Windows 非 ASCII 路径下出现工具链兼容问题，可临时使用 ASCII 目录映射，例如将仓库映射到 `W:` 后再运行 Flutter。映射只是本机临时手段，不改变 Git 路径；`mobile/build/`、`mobile/.dart_tool/` 和生成 APK 已在忽略规则中，不应手工提交。
+
+### R2-01 Android-first 验证记录
+
+R2-01 已完成三个可独立回滚的切片：模型选择按 owner 持久化、会话与上传清单恢复、Android WorkManager 后台唤醒与通知边界。对应实现提交为 `90c224e`、`ae95e3f`、`5af87c3`，当前 `main` 合并提交为 `411d8e4`。在 Windows 开发机上的验证结果为：`flutter test --no-pub` 96 项通过，`flutter analyze` 无问题，Android Debug/Release 构建通过，并在两台在线 Android 真机上完成安装、强停、重新启动和主界面恢复冒烟。
+
+后台 worker 只接收 import ID，网络约束、退避重试和通知由原生层管理；带 bearer/配对令牌的请求、缺片查询和上传协议仍在 Flutter/Dart 恢复流程中执行。Android 13+ 的通知权限、Doze、电池优化、网络变化和系统强停可能延迟或取消唤醒，因此当前验收证明的是代码契约、构建和可恢复入口，不是 OS 级后台执行保证。iOS 仅保留 no-op 调度器和代码级兼容，未进行 Xcode archive、签名、真机或商店验证。
 
 ## 7. 代码结构
 
