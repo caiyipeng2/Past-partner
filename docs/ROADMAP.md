@@ -28,6 +28,11 @@
 - `python -m compileall -q src tests` 和 `git diff --check` 通过。
 - CodeGraph 同步后状态为索引已更新。
 
+### R0 当前状态
+
+- `R0-01` 已合并到 `main`（`f598c28`）。统一 disposable runner 已在本机可删除的 PostgreSQL、Moto S3/KMS 和任务队列环境中完成回归，报告与资源清理证据随该提交保留。
+- `R0-02` 的四种启动入口实现已在当前验证分支：Python 模块、安装后的 `companion-server` CLI 和 npm wrapper 均已完成 health/API smoke。当前机器未安装 Docker Desktop 或 Podman，因此 Compose 只完成静态合同检查，尚未形成容器运行证据；验收时不得将该项写成“四种均已通过”。
+
 以下测试当前会在未配置 disposable 环境时跳过，不能把“跳过”写成“真实集成已验证”：PostgreSQL 元数据、S3-compatible 对象存储、KMS 主密钥和真实外部任务队列。所有真实集成测试必须使用可删除资源，证据和资源清理记录应附在对应功能验收中。
 
 ### R2-01 当前状态
@@ -71,7 +76,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 ## 5. 推荐执行顺序
 
 1. 本次跨电脑开发手册、路线图和 R2-01 整体验证完成后，优先执行 `R0-01`，使用统一 runner 把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
-2. 执行 `R0-02`，补齐 Docker Compose 和安装 CLI，消除“只能用 npm/源码目录启动”的环境差异。
+2. `R0-01` 已完成后执行 `R0-02` 验证，确认 Docker Compose、安装 CLI、Python 模块和 npm wrapper 使用同一服务入口；在没有 Docker 的开发机上保留 Compose 未执行状态，不以静态检查替代容器运行证据。
 3. 执行 `R0-03`，验证用户已选择的 DeepSeek、小米、阿里千问和自定义模型真实 HTTP 链路。
 4. 执行 `R0-04`，再进入 R1 的持久化学习与数据治理；如果供应商暂不提供微调能力，保持明确不可用，不伪造成功。
 5. R1 完成后再做 `R2-02` 媒体模型、`R2-03` iOS 发布和商业化能力；支付、运营和合规 WORM 放在最后。
@@ -80,8 +85,8 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 
 ## 6. 已知未完成能力
 
-- Docker Compose 和可安装服务 CLI 尚未提供。
-- 真实 PostgreSQL/S3/KMS/外部 worker 集成尚未在当前环境执行，默认只跑了安全跳过分支。
+- R0-02 的 Docker Compose、可安装服务 CLI 和统一 smoke runner 已提供；当前验证分支已实测模块、CLI、npm 三个入口，Compose 仍需安装 Docker Desktop（或兼容 Compose 的运行时）后执行真实 health/API smoke。
+- R0-01 的本机 disposable PostgreSQL/S3/KMS/任务队列回归已完成；其他开发机若未配置可删除资源仍会安全跳过，不能把跳过结果写成真实集成证据。
 - 默认真实 Provider 仍只声明文本 chat；R0-04 仅为显式开启的千问模型增加原生微调能力，流式、Embedding 和媒体分析仍未完成。
 - R0-04 分支已实现显式开启的千问原生微调适配器；合并前仍需按 `.env.example` 提供真实百炼凭据运行一次外部 smoke，未配置时保持 `capability_not_supported`。
 - 画像、长期记忆和本地检索当前是内存能力，尚未持久化向量索引。
