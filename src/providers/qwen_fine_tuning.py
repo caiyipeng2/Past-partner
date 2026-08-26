@@ -234,7 +234,9 @@ def _status_from_output(output: Mapping[str, object]) -> FineTuningStatus:
     if state in {"canceled", "cancelled", "canceling", "cancelling"}:
         return FineTuningStatus(state="cancelled", progress_percent=0)
     if state in {"failed", "error"}:
-        return FineTuningStatus(state="failed", retryable=False)
+        # Only an explicit boolean from the provider may make a terminal error
+        # retryable; truthy strings or numbers must not broaden retry behavior.
+        return FineTuningStatus(state="failed", retryable=output.get("retryable") is True)
     if state in {"succeeded", "success", "completed", "complete"}:
         artifact_id = output.get("finetuned_output")
         evaluation: dict[str, object] = {}

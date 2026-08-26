@@ -101,6 +101,21 @@ class QwenFineTuningAdapterTests(unittest.TestCase):
         self.assertEqual("qwen-ft-model", status.artifact_id)
         self.assertEqual({"usage": 8192, "output_cnt": 1}, status.evaluation)
 
+    def test_failed_status_preserves_explicit_provider_retryable_signal(self) -> None:
+        def retryable_failure(method, url, headers, body, timeout_seconds):
+            return {"output": {"status": "FAILED", "retryable": True}}
+
+        adapter = QwenFineTuningAdapter(
+            self.adapter.config,
+            json_request=retryable_failure,
+            multipart_request=self.adapter.multipart_request,
+        )
+
+        status = adapter.get_fine_tuning_job("ft-qwen-123")
+
+        self.assertEqual("failed", status.state)
+        self.assertTrue(status.retryable)
+
     def test_cancel_maps_successful_provider_response_to_cancelled(self) -> None:
         status = self.adapter.cancel_fine_tuning_job("ft-qwen-123")
 

@@ -67,6 +67,20 @@ def main(argv: list[str] | None = None) -> int:
             status = adapter.get_fine_tuning_job(submission.provider_job_id)
             if status.state in {"queued", "running"}:
                 status = adapter.cancel_fine_tuning_job(submission.provider_job_id)
+            elif status.state == "completed":
+                if not status.artifact_id or not status.evaluation:
+                    _print_result("failed", error_code="training_result_unverified")
+                    return 1
+            elif status.state == "failed":
+                _print_result(
+                    "failed",
+                    error_code="provider_training_failed",
+                    retryable=status.retryable,
+                )
+                return 1
+            elif status.state != "cancelled":
+                _print_result("failed", error_code="provider_status_invalid")
+                return 1
         except Exception as exc:
             _print_result("failed", error_code=getattr(exc, "code", "provider_smoke_failed"))
             return 1
