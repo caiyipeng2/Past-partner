@@ -14,6 +14,20 @@ if (![string]::IsNullOrWhiteSpace($ReportPath)) {
 }
 Push-Location $projectRoot
 
+# Disposable integration tests must never reuse a developer or production
+# encryption key. Generate an in-memory 256-bit key for this process and put
+# the caller's value back in the environment when the runner exits.
+$previousMasterKey = [Environment]::GetEnvironmentVariable("PAST_PARTNER_MASTER_KEY", "Process")
+$temporaryMasterKeyBytes = New-Object byte[] 32
+$randomNumberGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $randomNumberGenerator.GetBytes($temporaryMasterKeyBytes)
+}
+finally {
+    $randomNumberGenerator.Dispose()
+}
+$env:PAST_PARTNER_MASTER_KEY = [Convert]::ToBase64String($temporaryMasterKeyBytes)
+
 function ConvertTo-SafeOutput {
     param([AllowNull()][string]$Value)
 
@@ -23,6 +37,7 @@ function ConvertTo-SafeOutput {
 
     $safe = $Value
     foreach ($name in @(
+        "PAST_PARTNER_MASTER_KEY",
         "PAST_PARTNER_METADATA_DSN",
         "PAST_PARTNER_S3_TEST_ENDPOINT",
         "PAST_PARTNER_S3_TEST_ACCESS_KEY",
@@ -157,6 +172,12 @@ catch {
     $runStatus = "failed"
 }
 finally {
+    if ($null -eq $previousMasterKey) {
+        Remove-Item Env:PAST_PARTNER_MASTER_KEY -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:PAST_PARTNER_MASTER_KEY = $previousMasterKey
+    }
     Pop-Location
     if ($null -ne $reportTarget) {
         $reportParent = Split-Path -Parent $reportTarget
