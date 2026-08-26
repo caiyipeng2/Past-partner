@@ -20,15 +20,24 @@
 
 ## 3. 验证基线
 
-最近一次主分支回归证据：
+最近一次主分支回归证据（`411d8e4`，包含 R2-01 前三分片）：
 
-- `npm test`：Python 563 通过、4 跳过；Node Web 4 通过。
-- Flutter：`flutter analyze` 无问题；`flutter test` 76 通过。
-- Android：Debug/Release/StoreRelease 构建通过，`apksigner` 验证 v2 签名通过；临时 JKS 和 APK 已清理。
+- `npm test`：Python 653 通过、4 跳过；Node Web 4 通过。
+- Flutter：`flutter analyze` 无问题；`flutter test` 96 通过。
+- Android：Debug/Release 构建通过；双 Android 真机安装、强停后重新启动和主界面恢复冒烟通过。
 - `python -m compileall -q src tests` 和 `git diff --check` 通过。
-- CodeGraph 同步后状态为 `Index is up to date`。
+- CodeGraph 同步后状态为索引已更新。
 
 以下测试当前会在未配置 disposable 环境时跳过，不能把“跳过”写成“真实集成已验证”：PostgreSQL 元数据、S3-compatible 对象存储、KMS 主密钥和真实外部任务队列。所有真实集成测试必须使用可删除资源，证据和资源清理记录应附在对应功能验收中。
+
+### R2-01 当前状态
+
+R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c224e`）、会话/上传恢复（`ae95e3f`）和 Android 后台上传边界（`5af87c3`，合并提交 `411d8e4`）。第四分片负责整体验证与文档收口，当前分支完成后仍遵循“用户验收 -> 合并 -> 主分支全量回归 -> 推送远端”的交付顺序。
+
+- Android 客户端：WorkManager 只负责网络约束下的唤醒和低优先级通知，实际鉴权、缺片查询和上传仍由 Dart 恢复编排执行。
+- 后台执行：Doze、电池策略、网络约束、通知权限和系统强停都会影响调度，不能承诺强杀后必定执行；通知点击会回到可恢复上传页面。
+- 安全边界：WorkManager 输入、通知文本和原生日志不包含 bearer、配对令牌或 Provider API Key。
+- iOS：本阶段仅保留 no-op 调度器和代码级兼容，不宣称 Xcode archive、签名、真机或商店验证完成。
 
 ## 4. 下一阶段优先级
 
@@ -54,19 +63,18 @@
 
 | 编号 | 任务 | 依赖 | 验收证据 |
 | --- | --- | --- | --- |
-| R2-01 | Android 后台上传、通知、模型选择持久化和真实会话恢复 | P3-05/P3-07/P3-09 | 进程被系统杀死后可恢复任务；弱网、断网和重试不重复计费/提交 |
+| R2-01 | Android 后台上传、通知、模型选择持久化和真实会话恢复（Android-first 实现完成） | P3-05/P3-07/P3-09 | 分支测试、Debug/Release 构建和双真机进程重启冒烟；系统强停后的后台执行仍受 OS 调度约束 |
 | R2-02 | OCR、ASR、视觉/音视频语义处理和媒体模型实际调用 | P1-10/P2-06 授权门控、R0-03 Provider | 未授权不会传输；授权撤回、费用上限和供应商失败均可在页面观察 |
 | R2-03 | macOS/Xcode iOS archive、签名、真机和商店发布验证 | R2-01/R2-02 | Release ATS/Manifest 检查、Xcode archive、设备安装和签名产物均有 CI/人工证据；Windows 静态检查不算完成 |
 | R2-04 | 支付/订阅/余额、合规审计 WORM、数据主体通知和运营后台 | R1-03/R1-04 | 账单对账、权限审计、保留策略、删除证明和异常告警可追溯 |
 
 ## 5. 推荐执行顺序
 
-1. 先完成本次跨电脑开发手册和路线图（本分支）。
-2. 执行 `R0-01`，使用统一 runner 把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
-3. 执行 `R0-02`，补齐 Docker Compose 和安装 CLI，消除“只能用 npm/源码目录启动”的环境差异。
-4. 执行 `R0-03`，验证用户已选择的 DeepSeek、小米、阿里千问和自定义模型真实 HTTP 链路。
-5. 执行 `R0-04`，再进入 R1 的持久化学习与数据治理；如果供应商暂不提供微调能力，保持明确不可用，不伪造成功。
-6. R1 完成后再做 Android 后台能力、媒体模型和 iOS 发布；支付、运营和合规 WORM 放在最后。
+1. 本次跨电脑开发手册、路线图和 R2-01 整体验证完成后，优先执行 `R0-01`，使用统一 runner 把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
+2. 执行 `R0-02`，补齐 Docker Compose 和安装 CLI，消除“只能用 npm/源码目录启动”的环境差异。
+3. 执行 `R0-03`，验证用户已选择的 DeepSeek、小米、阿里千问和自定义模型真实 HTTP 链路。
+4. 执行 `R0-04`，再进入 R1 的持久化学习与数据治理；如果供应商暂不提供微调能力，保持明确不可用，不伪造成功。
+5. R1 完成后再做 `R2-02` 媒体模型、`R2-03` iOS 发布和商业化能力；支付、运营和合规 WORM 放在最后。
 
 每个条目都使用独立 feature 分支，完成聚焦测试和全量回归后交用户验收；验收通过才合并 `main` 并推送远端。路线图本身不代表任务已开始或已验收。
 
@@ -80,5 +88,5 @@
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
 - R1-03 当前已完成第一切片：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离，并以加密记录与身份映射校验防篡改；OIDC/OAuth2、刷新令牌、账户恢复和正式租户管理仍待后续切片。
 - R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
-- Android 当前优先，后台上传和真实媒体处理尚未完成；iOS 只做静态检查，未完成 Xcode archive/签名/真机/商店流程。
+- R2-01 Android-first 后台上传、通知、模型选择持久化和会话恢复已完成分支实现及验证；仍受 Doze、电池策略、通知权限、网络约束和系统强停影响，不能视为 OS 级后台执行保证。iOS 目前只做 no-op 代码兼容和静态检查，未完成 Xcode archive/签名/真机/商店流程。
 - 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或完整运维监控。R1-04 已增加可独立启动的 worker、任务通知 outbox、测试 broker 契约以及共享后端的脱敏 worker 观测/内部告警计算；生产 broker、外部指标抓取/推送、追踪、日志外发和 SIEM 仍未完成。
