@@ -23,6 +23,7 @@ class DisposableIntegrationRunnerContractTests(unittest.TestCase):
         content = self.runner.read_text(encoding="utf-8")
         for marker in (
             "PAST_PARTNER_DISPOSABLE_RUN",
+            "PAST_PARTNER_MASTER_KEY",
             "PAST_PARTNER_METADATA_DSN",
             "PAST_PARTNER_METADATA_TEST_DISPOSABLE",
             "PAST_PARTNER_S3_TEST_DISPOSABLE",
@@ -46,6 +47,9 @@ class DisposableIntegrationRunnerContractTests(unittest.TestCase):
             "postgres(?:ql)?://",
             "PAST_PARTNER_S3_TEST_SECRET_KEY",
             "ConvertTo-SafeOutput",
+            "RandomNumberGenerator",
+            "ToBase64String",
+            "Remove-Item Env:PAST_PARTNER_MASTER_KEY",
             "skipped=\\d+",
             "failure_code",
             "failed_module",
