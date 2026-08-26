@@ -21,6 +21,12 @@ abstract interface class LocalImportFile {
   /// mistaken for a process-restart-safe file handle.
   String? get resumablePath => null;
 
+  /// Checks that the source can still be read after a process restart.
+  ///
+  /// In-memory sources are valid only for the current process and therefore
+  /// are never written to a resume manifest; they can use the default value.
+  Future<bool> isAvailable() async => true;
+
   Future<List<int>> readRange(int offset, int length);
 }
 
@@ -45,6 +51,9 @@ class MemoryImportFile implements LocalImportFile {
 
   @override
   String? get resumablePath => null;
+
+  @override
+  Future<bool> isAvailable() async => true;
 
   @override
   int get length => _bytes.length;
@@ -78,8 +87,8 @@ class FilePickerImportSource implements ImportFileSource {
   Future<List<LocalImportFile>> pick() async {
     final FilePickerResult? result;
     try {
-      result = await (_picker ?? FilePicker.platform).pickFiles(
-          allowMultiple: true, withData: false, type: FileType.any);
+      result = await (_picker ?? FilePicker.platform)
+          .pickFiles(allowMultiple: true, withData: false, type: FileType.any);
     } on Object {
       throw const ImportFileError('文件选择器暂时不可用，请重试。');
     }
@@ -155,8 +164,21 @@ class RandomAccessImportFile implements LocalImportFile {
   String get resumablePath => path;
 
   @override
+  Future<bool> isAvailable() async {
+    try {
+      final FileStat stat = await File(path).stat();
+      return stat.type == FileSystemEntityType.file && stat.size == length;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  @override
   Future<List<int>> readRange(int offset, int count) async {
-    if (offset < 0 || count <= 0 || offset >= length || offset + count > length) {
+    if (offset < 0 ||
+        count <= 0 ||
+        offset >= length ||
+        offset + count > length) {
       throw const ImportFileError('文件读取范围无效。');
     }
     RandomAccessFile? file;

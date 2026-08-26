@@ -12,6 +12,7 @@ import 'package:past_partner/features/imports/import_upload_controller.dart';
 
 class _Gateway implements ImportUploadGateway {
   ImportDraft? createdDraft;
+  int missingChunksCalls = 0;
   final List<int> uploadedIndexes = <int>[];
   final List<List<int>> uploadedBytes = <List<int>>[];
   final List<String> uploadedDigests = <String>[];
@@ -25,6 +26,7 @@ class _Gateway implements ImportUploadGateway {
     required String importId,
     required int expectedChunks,
   }) async {
+    missingChunksCalls++;
     return <String, dynamic>{
       'import_id': importId,
       'expected_chunk_count': expectedChunks,
@@ -96,8 +98,7 @@ class _DeleteFailingResumeStore extends InMemoryImportResumeStore {
 }
 
 void main() {
-  final ApiEndpoint endpoint =
-      ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+  final ApiEndpoint endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
   final Session session = Session(
     accessToken: 'token',
     ownerId: 'owner',
@@ -133,8 +134,8 @@ void main() {
     expect(gateway.createdDraft!.files, hasLength(2));
     expect(gateway.uploadedIndexes, <int>[1]);
     expect(gateway.uploadedBytes.single, <int>[4, 5]);
-    expect(gateway.uploadedDigests.single,
-        sha256.convert(<int>[4, 5]).toString());
+    expect(
+        gateway.uploadedDigests.single, sha256.convert(<int>[4, 5]).toString());
     expect(gateway.completeCalls, 1);
     expect(controller.state, ImportUploadState.ready);
     expect(controller.job!.state, ImportState.uploaded);
@@ -166,7 +167,8 @@ void main() {
     expect(gateway.completeCalls, 0);
   });
 
-  test('keeps a physical-file manifest when upload fails and removes it on success',
+  test(
+      'keeps a physical-file manifest when upload fails and removes it on success',
       () async {
     final Directory directory = await Directory.systemTemp.createTemp('p3-05-');
     addTearDown(() => directory.delete(recursive: true));
@@ -205,15 +207,16 @@ void main() {
       resumeStore: store,
       chunkSize: 4,
     );
-    final bool resumed = await resumedController.resume(
-        successfulGateway._job(state: ImportState.uploading));
+    final bool resumed = await resumedController
+        .resume(successfulGateway._job(state: ImportState.uploading));
 
     expect(resumed, isTrue);
     expect(resumedController.state, ImportUploadState.ready);
     expect(await store.read('import-1'), isNull);
   });
 
-  test('returns a stable error when no process-resume manifest exists', () async {
+  test('returns a stable error when no process-resume manifest exists',
+      () async {
     final _Gateway gateway = _Gateway();
     final ImportUploadController controller = ImportUploadController(
       endpoint: endpoint,
@@ -233,7 +236,91 @@ void main() {
     expect(controller.errorMessage, '本地恢复记录不存在，请重新选择原文件。');
   });
 
-  test('does not turn completed upload into failure when cleanup is unavailable',
+  test(
+      'rejects a resume manifest when the local file is missing before API calls',
+      () async {
+    final _Gateway gateway = _Gateway();
+    final InMemoryImportResumeStore store = InMemoryImportResumeStore();
+    await store.write(const ImportUploadResume(
+      importId: 'import-1',
+      personaId: 'persona-1',
+      files: <ImportResumeFile>[
+        ImportResumeFile(
+          path: 'missing-chat.txt',
+          sourceName: 'chat.txt',
+          mediaType: 'text/plain',
+          length: 6,
+        ),
+      ],
+    ));
+    final ImportUploadController controller = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: gateway,
+      createImport: gateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+
+    final bool resumed = await controller.resume(
+      gateway._job(state: ImportState.uploading),
+    );
+
+    expect(resumed, isFalse);
+    expect(controller.resumeUnavailable, isTrue);
+    expect(controller.errorMessage, '本地恢复文件不可用，请重新选择原文件。');
+    expect(gateway.missingChunksCalls, 0);
+  });
+
+  test('a completed recovery is idempotent after a second controller starts',
+      () async {
+    final Directory directory = await Directory.systemTemp.createTemp('r2-01-');
+    addTearDown(() => directory.delete(recursive: true));
+    final String path = '${directory.path}${Platform.pathSeparator}chat.txt';
+    await File(path).writeAsBytes(<int>[0, 1, 2, 3, 4, 5]);
+    final InMemoryImportResumeStore store = InMemoryImportResumeStore();
+    await store.write(ImportUploadResume(
+      importId: 'import-1',
+      personaId: 'persona-1',
+      files: <ImportResumeFile>[
+        ImportResumeFile(
+          path: path,
+          sourceName: 'chat.txt',
+          mediaType: 'text/plain',
+          length: 6,
+        ),
+      ],
+    ));
+    final _Gateway gateway = _Gateway();
+    final ImportJob existing = gateway._job(state: ImportState.uploading);
+    final ImportUploadController first = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: gateway,
+      createImport: gateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+    final ImportUploadController second = ImportUploadController(
+      endpoint: endpoint,
+      session: session,
+      personaId: 'persona-1',
+      gateway: gateway,
+      createImport: gateway.create,
+      resumeStore: store,
+      chunkSize: 4,
+    );
+
+    expect(await first.resume(existing), isTrue);
+    expect(await second.resume(existing), isFalse);
+    expect(second.resumeUnavailable, isTrue);
+    expect(gateway.completeCalls, 1);
+  });
+
+  test(
+      'does not turn completed upload into failure when cleanup is unavailable',
       () async {
     final _Gateway gateway = _Gateway();
     final _DeleteFailingResumeStore store = _DeleteFailingResumeStore();
@@ -261,7 +348,6 @@ void main() {
     ]);
 
     expect(controller.state, ImportUploadState.ready);
-    expect(controller.cleanupError,
-        '上传已完成，但本地恢复记录清理失败，请稍后重试。');
+    expect(controller.cleanupError, '上传已完成，但本地恢复记录清理失败，请稍后重试。');
   });
 }

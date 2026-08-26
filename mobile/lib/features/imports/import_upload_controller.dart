@@ -41,9 +41,8 @@ class ImportUploadController extends ChangeNotifier {
   int currentChunk = -1;
   List<LocalImportFile> _files = const <LocalImportFile>[];
 
-  double get progress => totalBytes == 0
-      ? 0
-      : (receivedBytes / totalBytes).clamp(0.0, 1.0);
+  double get progress =>
+      totalBytes == 0 ? 0 : (receivedBytes / totalBytes).clamp(0.0, 1.0);
 
   Future<void> upload(
     List<LocalImportFile> files, {
@@ -143,10 +142,19 @@ class ImportUploadController extends ChangeNotifier {
       _fail('本地恢复记录不存在，请重新选择原文件。');
       return false;
     }
+    final List<LocalImportFile> files = resumeManifest.files
+        .map((ImportResumeFile file) => file.toLocalFile())
+        .toList(growable: false);
+    final List<bool> available = await Future.wait(
+      files.map((LocalImportFile file) => file.isAvailable()),
+    );
+    if (available.any((bool value) => !value)) {
+      resumeUnavailable = true;
+      _fail('本地恢复文件不可用，请重新选择原文件。');
+      return false;
+    }
     await upload(
-      resumeManifest.files
-          .map((ImportResumeFile file) => file.toLocalFile())
-          .toList(growable: false),
+      files,
       existingJob: existingJob,
     );
     return state == ImportUploadState.ready;
@@ -184,7 +192,8 @@ class ImportUploadController extends ChangeNotifier {
         sourceName: _files.first.sourceName,
         totalBytes: totalBytes,
         mediaType: _files.first.mediaType,
-        files: _files.asMap().entries.map((MapEntry<int, LocalImportFile> item) {
+        files:
+            _files.asMap().entries.map((MapEntry<int, LocalImportFile> item) {
           return ImportFileEntry(
             fileId: 'mobile-${item.key}',
             sourceName: item.value.sourceName,
