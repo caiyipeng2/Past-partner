@@ -21,6 +21,7 @@ import 'package:past_partner/features/privacy/privacy_controller.dart';
 import 'package:past_partner/features/privacy/privacy_export.dart';
 import 'package:past_partner/features/privacy/privacy_gateway.dart';
 import 'package:past_partner/features/privacy/privacy_screen.dart';
+import 'package:past_partner/features/models/model_option.dart';
 
 class _FakeStore implements SessionStore {
   @override
@@ -187,6 +188,42 @@ void main() {
 
     expect(find.byType(PrivacyScreen), findsOneWidget);
     expect(find.text('隐私管理'), findsOneWidget);
+  });
+
+  testWidgets('restores the persisted model when the workspace starts',
+      (WidgetTester tester) async {
+    final SessionController sessionController =
+        SessionController(_FakeStore(), ApiClient())
+          ..session = Session(
+              accessToken: 'token',
+              ownerId: 'owner',
+              expiresAt: DateTime.utc(2099))
+          ..endpoint = ApiEndpoint.parseDebug('http://127.0.0.1:8080');
+    final PersonaController personaController = PersonaController(
+      sessionController,
+      gateway: _FakeGateway()
+        ..records.add(const Persona(
+            id: 'persona-1',
+            displayName: '小雅',
+            relationshipType: PersonaRelationship.friend)),
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: PersonaWorkspaceScreen(
+        controller: personaController,
+        modelSelectionRestore: () async => const ModelOption(
+          providerId: 'deepseek',
+          providerName: 'DeepSeek',
+          id: 'deepseek-v4-flash',
+          displayName: 'DeepSeek V4 Flash',
+          capabilities: <String>['chat'],
+          pricing: ModelPricing(),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('DeepSeek V4 Flash'), findsOneWidget);
   });
 }
 
