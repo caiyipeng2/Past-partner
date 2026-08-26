@@ -66,6 +66,40 @@ class ProviderSmokeScriptTests(unittest.TestCase):
         self.assertNotIn("secret response text", rendered)
         self.assertEqual("ok", json.loads(rendered)["status"])
 
+    def test_provider_failures_report_stable_codes_without_details(self) -> None:
+        unavailable_output = io.StringIO()
+        with patch.dict(os.environ, {"PAST_PARTNER_PROVIDER_SMOKE": "1"}, clear=False):
+            with patch.object(provider_smoke, "build_provider_adapters", return_value={}):
+                with contextlib.redirect_stdout(unavailable_output):
+                    result = provider_smoke.main(["--provider", "deepseek"])
+
+        self.assertEqual(2, result)
+        self.assertEqual("provider_not_configured", json.loads(unavailable_output.getvalue())["status"])
+
+        for code in ("provider_timeout", "provider_rate_limited", "invalid_provider_response"):
+            with self.subTest(code=code):
+                output = io.StringIO()
+                with patch.dict(os.environ, {"PAST_PARTNER_PROVIDER_SMOKE": "1"}, clear=False):
+                    with patch.object(
+                        provider_smoke,
+                        "build_provider_adapters",
+                        return_value={"deepseek": _FakeAdapter()},
+                    ):
+                        with patch.object(
+                            provider_smoke.ProviderGateway,
+                            "chat",
+                            side_effect=provider_smoke.ProviderError(code, "provider secret detail"),
+                        ):
+                            with contextlib.redirect_stdout(output):
+                                result = provider_smoke.main(
+                                    ["--provider", "deepseek", "--model", "deepseek-v4-flash"]
+                                )
+
+                self.assertEqual(2, result)
+                rendered = output.getvalue()
+                self.assertEqual(code, json.loads(rendered)["status"])
+                self.assertNotIn("provider secret detail", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
