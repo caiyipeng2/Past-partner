@@ -6,7 +6,15 @@ import '../network/api_failure.dart';
 import 'session.dart';
 import 'session_store.dart';
 
-enum SessionState { starting, restoringSession, disconnected, connected, pairingRequired, pairingInProgress, pairingError }
+enum SessionState {
+  starting,
+  restoringSession,
+  disconnected,
+  connected,
+  pairingRequired,
+  pairingInProgress,
+  pairingError
+}
 
 class SessionController extends ChangeNotifier {
   SessionController(this.store, this.client);
@@ -20,12 +28,28 @@ class SessionController extends ChangeNotifier {
 
   Future<void> restore(ApiEndpoint configuredEndpoint) async {
     endpoint = configuredEndpoint;
+    session = null;
     state = SessionState.restoringSession;
     errorMessage = null;
     notifyListeners();
-    final Session? saved = await store.read();
+    final Session? saved;
+    try {
+      saved = await store.read();
+    } on Object {
+      state = SessionState.pairingError;
+      errorMessage = '本地会话读取失败，请重试。';
+      notifyListeners();
+      return;
+    }
     if (saved == null || saved.isExpired) {
-      await store.clear();
+      try {
+        await store.clear();
+      } on Object {
+        state = SessionState.pairingError;
+        errorMessage = '本地会话清理失败，请重试。';
+        notifyListeners();
+        return;
+      }
       state = SessionState.pairingRequired;
       notifyListeners();
       return;
@@ -35,14 +59,42 @@ class SessionController extends ChangeNotifier {
       session = saved;
       state = SessionState.connected;
     } on ApiFailure catch (failure) {
-      if (failure.isUnauthorized) await store.clear();
-      state = failure.isUnauthorized ? SessionState.pairingRequired : SessionState.pairingError;
-      errorMessage = failure.isUnauthorized ? null : 'Connection could not be established.';
+      if (failure.isUnauthorized) {
+        try {
+          await store.clear();
+        } on Object {
+          state = SessionState.pairingError;
+          errorMessage = '本地会话清理失败，请重试。';
+          notifyListeners();
+          return;
+        }
+      }
+      state = failure.isUnauthorized
+          ? SessionState.pairingRequired
+          : SessionState.pairingError;
+      errorMessage = failure.isUnauthorized
+          ? null
+          : 'Connection could not be established.';
     } catch (_) {
       state = SessionState.pairingError;
       errorMessage = 'Connection could not be established.';
     }
     notifyListeners();
+  }
+
+  /// Re-establishes a session through the already validated endpoint.
+  ///
+  /// Pairing tokens are intentionally accepted only for this call. They are
+  /// never copied into [Session] or any persistent store.
+  Future<bool> refresh({required String pairingToken}) async {
+    final ApiEndpoint? configured = endpoint;
+    if (configured == null) {
+      state = SessionState.pairingRequired;
+      errorMessage = '请先连接本地服务。';
+      notifyListeners();
+      return false;
+    }
+    return pair(configured.uri.toString(), pairingToken);
   }
 
   Future<bool> pair(String rawEndpoint, String pairingToken) async {
@@ -64,8 +116,12 @@ class SessionController extends ChangeNotifier {
       state = SessionState.pairingError;
       errorMessage = error.message;
     } on ApiFailure catch (failure) {
-      state = failure.isUnauthorized ? SessionState.pairingRequired : SessionState.pairingError;
-      errorMessage = failure.isUnauthorized ? null : 'Connection could not be established.';
+      state = failure.isUnauthorized
+          ? SessionState.pairingRequired
+          : SessionState.pairingError;
+      errorMessage = failure.isUnauthorized
+          ? null
+          : 'Connection could not be established.';
     } catch (_) {
       state = SessionState.pairingError;
       errorMessage = 'Connection could not be established.';
