@@ -1,5 +1,9 @@
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import unittest
 
@@ -7,6 +11,9 @@ from src.providers.base import ChatMessage, ChatRequest
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_openai_compatible_adapters
 from src.providers.gateway import ProviderGateway
+
+
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "provider_smoke.py"
 
 
 class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
@@ -77,6 +84,48 @@ class ProviderSmokeTests(unittest.TestCase):
 
         self.assertEqual("来自本地兼容端点的回复", response.content)
         self.assertEqual("chatcmpl-local-smoke", response.provider_request_id)
+        self.assertEqual("smoke-model", _OpenAICompatibleHandler.request_body["model"])
+        self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_provider_smoke_command_runs_custom_endpoint_end_to_end(self) -> None:
+        port = self.server.server_address[1]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PAST_PARTNER_PROVIDER_SMOKE": "1",
+                "PAST_PARTNER_PROVIDER_SMOKE_PROVIDER": "custom_openai",
+                "PAST_PARTNER_PROVIDER_SMOKE_MODEL": "smoke-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "smoke-model",
+            }
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--provider",
+                "custom_openai",
+                "--model",
+                "smoke-model",
+                "--prompt",
+                "secret prompt",
+            ],
+            cwd=Path.cwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("ok", payload["status"])
+        self.assertEqual("custom_openai", payload["provider"])
+        self.assertNotIn("secret prompt", result.stdout)
+        self.assertNotIn("secret response", result.stdout)
+        self.assertNotIn("smoke-secret", result.stdout)
         self.assertEqual("smoke-model", _OpenAICompatibleHandler.request_body["model"])
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
