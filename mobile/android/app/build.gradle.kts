@@ -74,6 +74,13 @@ android {
     }
 }
 
+dependencies {
+    // WorkManager provides OS-aware network constraints and bounded retry
+    // scheduling; Dart remains responsible for authenticated upload work.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.core:core-ktx:1.13.1")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17

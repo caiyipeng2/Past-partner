@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/config/api_endpoint.dart';
 import '../../core/session/session.dart';
+import 'background_upload.dart';
 import 'import_file.dart';
 import 'import_gateway.dart';
 import 'import_job.dart';
@@ -20,8 +21,11 @@ class ImportUploadController extends ChangeNotifier {
     required this.gateway,
     required this.createImport,
     this.resumeStore,
+    BackgroundUploadScheduler? backgroundScheduler,
     this.chunkSize = 8 * 1024 * 1024,
-  }) : assert(chunkSize > 0);
+  })  : backgroundScheduler =
+            backgroundScheduler ?? const NoopBackgroundUploadScheduler(),
+        assert(chunkSize > 0);
 
   final ApiEndpoint endpoint;
   final Session session;
@@ -29,6 +33,7 @@ class ImportUploadController extends ChangeNotifier {
   final ImportUploadGateway gateway;
   final Future<ImportJob> Function(ImportDraft draft) createImport;
   final ImportResumeStore? resumeStore;
+  final BackgroundUploadScheduler backgroundScheduler;
   final int chunkSize;
 
   ImportUploadState state = ImportUploadState.idle;
@@ -74,6 +79,7 @@ class ImportUploadController extends ChangeNotifier {
     try {
       job = existingJob ?? await createImport(_draft());
       await _saveResumeManifest(job!);
+      await _safeEnqueue(job!);
       final int expectedChunks = (totalBytes + chunkSize - 1) ~/ chunkSize;
       final Map<String, dynamic> missing = await gateway.missingChunks(
         endpoint: endpoint,
@@ -84,6 +90,7 @@ class ImportUploadController extends ChangeNotifier {
       final Set<int> missingIndexes = _intSet(missing['missing_chunks']);
       receivedBytes = _nonNegativeInt(missing['received_bytes']) ?? 0;
       state = ImportUploadState.uploading;
+      await _safeReport(_update(BackgroundUploadState.running));
       notifyListeners();
       for (final int index in missingIndexes.toList()..sort()) {
         currentChunk = index;
@@ -100,6 +107,7 @@ class ImportUploadController extends ChangeNotifier {
         );
         receivedBytes = _nonNegativeInt(receipt['received_bytes']) ??
             math.min(totalBytes, receivedBytes + bytes.length);
+        await _safeReport(_update(BackgroundUploadState.running));
         notifyListeners();
       }
       state = ImportUploadState.completing;
@@ -113,8 +121,13 @@ class ImportUploadController extends ChangeNotifier {
       state = ImportUploadState.ready;
       currentChunk = -1;
       await _clearResumeManifest(job!);
+      await _safeReport(_update(BackgroundUploadState.completed));
     } catch (_) {
       _fail('文件上传失败，请重试。', notify: false);
+      if (job != null) {
+        await _safeReport(_update(BackgroundUploadState.retrying,
+            errorMessage: '文件上传失败，请重试。'));
+      }
     }
     notifyListeners();
   }
@@ -158,6 +171,64 @@ class ImportUploadController extends ChangeNotifier {
       existingJob: existingJob,
     );
     return state == ImportUploadState.ready;
+  }
+
+  Future<void> cancelBackgroundUpload({String? importId}) async {
+    final String? target = importId ?? job?.id;
+    if (target == null || target.isEmpty) return;
+    await _safeCancel(target);
+  }
+
+  BackgroundUploadRequest _request(ImportJob target) => BackgroundUploadRequest(
+        importId: target.id,
+        personaId: target.personaId,
+        totalBytes: totalBytes > 0 ? totalBytes : target.totalBytes,
+        chunkCount: target.chunkCount > 0
+            ? target.chunkCount
+            : ((totalBytes + chunkSize - 1) ~/ chunkSize),
+      );
+
+  BackgroundUploadUpdate _update(
+    BackgroundUploadState uploadState, {
+    String? errorMessage,
+  }) =>
+      BackgroundUploadUpdate(
+        importId: job!.id,
+        state: uploadState,
+        receivedBytes: receivedBytes,
+        totalBytes: totalBytes > 0 ? totalBytes : job!.totalBytes,
+        errorMessage: errorMessage,
+      );
+
+  Future<void> _safeEnqueue(ImportJob target) async {
+    try {
+      await backgroundScheduler.enqueue(_request(target));
+      await backgroundScheduler.report(BackgroundUploadUpdate(
+        importId: target.id,
+        state: BackgroundUploadState.queued,
+        receivedBytes: target.receivedBytes,
+        totalBytes: target.totalBytes,
+      ));
+    } on Object {
+      // Background scheduling is best effort. Foreground upload still owns
+      // the authoritative result and can surface its own stable errors.
+    }
+  }
+
+  Future<void> _safeReport(BackgroundUploadUpdate update) async {
+    try {
+      await backgroundScheduler.report(update);
+    } on Object {
+      // A notification failure must never turn a successful upload into one.
+    }
+  }
+
+  Future<void> _safeCancel(String importId) async {
+    try {
+      await backgroundScheduler.cancel(importId);
+    } on Object {
+      // Cancellation remains visible through the server job on the next load.
+    }
   }
 
   Future<void> _saveResumeManifest(ImportJob target) async {

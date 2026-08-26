@@ -14,6 +14,7 @@ import '../features/consents/consent_gateway.dart';
 import '../features/chat/chat_controller.dart';
 import '../features/chat/chat_gateway.dart';
 import '../features/imports/import_controller.dart';
+import '../features/imports/background_upload.dart';
 import '../features/imports/import_file.dart';
 import '../features/imports/import_gateway.dart';
 import '../features/imports/import_upload_controller.dart';
@@ -28,6 +29,7 @@ class PastPartnerApp extends StatefulWidget {
     required this.appearanceController,
     required this.personaController,
     this.modelSelectionStore,
+    this.backgroundUploadScheduler,
     super.key,
   });
 
@@ -35,6 +37,7 @@ class PastPartnerApp extends StatefulWidget {
   final AppearanceController appearanceController;
   final PersonaController personaController;
   final ModelSelectionStore? modelSelectionStore;
+  final BackgroundUploadScheduler? backgroundUploadScheduler;
 
   @override
   State<PastPartnerApp> createState() => _PastPartnerAppState();
@@ -80,6 +83,8 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       session: snapshot.session!,
                       personaId: persona.id,
                       gateway: ApiClientImportGateway(snapshot.client),
+                      backgroundScheduler: widget.backgroundUploadScheduler ??
+                          backgroundUploadSchedulerForPlatform(),
                       resumeStore: SecureImportResumeStore(),
                       createImport: (draft) =>
                           ApiClientImportGateway(snapshot.client).create(
