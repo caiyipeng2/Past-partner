@@ -107,6 +107,29 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(1, connection.rollback_count)
         self.assertEqual(1, connection.close_count)
 
+    def test_migration_history_accepts_byte_strings_from_sql_ascii_postgresql(self) -> None:
+        first = DEFAULT_MIGRATIONS[0]
+        connection = _MigrationConnection(((first.version, first.name, first.checksum),))
+        migrator = PostgreSQLMigrator(lambda: connection)
+        original_execute = connection.execute
+
+        def execute_with_byte_history(sql: str, parameters: object = ()) -> _Result:
+            result = original_execute(sql, parameters)
+            if sql.strip().upper().startswith("SELECT VERSION"):
+                rows = result.fetchall()
+                return _Result(
+                    [
+                        (version, name.encode("ascii"), checksum.encode("ascii"))
+                        for version, name, checksum in rows
+                    ]
+                )
+            return result
+
+        connection.execute = execute_with_byte_history  # type: ignore[method-assign]
+
+        self.assertEqual(len(DEFAULT_MIGRATIONS), migrator.migrate())
+        self.assertEqual(tuple(range(1, len(DEFAULT_MIGRATIONS) + 1)), tuple(sorted(connection.applied)))
+
     def test_failed_statement_rolls_back_without_commit(self) -> None:
         connection = _MigrationConnection()
         connection.fail_on = "CREATE TABLE TRAINING_JOBS"

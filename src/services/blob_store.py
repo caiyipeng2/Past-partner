@@ -348,6 +348,30 @@ class _HashingReader:
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
 
+    def tell(self) -> int:
+        """Expose the logical stream offset expected by botocore checksums."""
+
+        return self.actual_length
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        """Allow botocore to rewind its preflight checksum read to the start.
+
+        The upload contract is forward-only, so arbitrary repositioning would
+        require reconstructing the digest from an unknown prefix.  Supporting
+        only the SDK's ``seek(0)`` call keeps the wrapper honest and resets both
+        the source position and the tracked digest for the actual upload pass.
+        """
+
+        if offset != 0 or whence != 0 or not hasattr(self._source, "seek"):
+            raise OSError("upload stream only supports rewinding to the start")
+        try:
+            self._source.seek(0)
+        except (OSError, ValueError) as exc:
+            raise OSError("upload stream cannot be rewound") from exc
+        self.actual_length = 0
+        self._digest = hashlib.sha256()
+        return 0
+
     def read(self, size: int = -1) -> bytes:
         if self.actual_length >= self._expected_length:
             return b""

@@ -12,6 +12,29 @@ from src.services.metadata_store import MetadataConnection
 _BLOB_TYPE = re.compile(r"\bBLOB\b", re.IGNORECASE)
 
 
+def _history_text(value: object, field: str) -> str:
+    """Normalize driver text results without stringifying byte literals.
+
+    PostgreSQL clusters initialized with ``SQL_ASCII`` can make psycopg return
+    textual columns as bytes.  ``str(bytes_value)`` would turn a valid name into
+    ``"b'... '"`` and make a clean migration ledger look corrupt.  Migration
+    names and checksums are ASCII by contract, while UTF-8 decoding keeps the
+    helper compatible with normal text clusters and rejects malformed history
+    without exposing driver details.
+    """
+
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bytes(value).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SchemaHistoryError(f"migration history {field} is invalid") from exc
+    if isinstance(value, str):
+        return value
+    raise SchemaHistoryError(f"migration history {field} is invalid")
+
+
 class PostgreSQLMigrator:
     """Apply the logical metadata migrations to PostgreSQL atomically.
 
@@ -38,7 +61,10 @@ class PostgreSQLMigrator:
                 "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
             ).fetchall()
             applied = {
-                int(version): (str(name), str(checksum))
+                int(version): (
+                    _history_text(name, "name"),
+                    _history_text(checksum, "checksum"),
+                )
                 for version, name, checksum in rows
             }
             self._validate_history(applied)

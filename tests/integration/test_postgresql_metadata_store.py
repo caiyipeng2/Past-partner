@@ -48,7 +48,12 @@ class PostgreSQLMetadataIntegrationTests(unittest.TestCase):
                 metadata_pool_max_size=3,
             ).validated()
             cls.application = Application.from_config(config)
-            session = cls.application.issue_session("127.0.0.1", None)
+            account = cls.application.auth.create_local_account(
+                "r0-01-postgresql-integration",
+                tenant_id="r0-01-disposable",
+                role="admin",
+            )
+            session = cls.application.auth.issue_account_session(account["user_id"])
             cls.owner_id = session["owner_id"]
             cls.access_token = session["access_token"]
         except BaseException:

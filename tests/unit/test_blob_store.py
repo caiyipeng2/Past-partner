@@ -16,6 +16,7 @@ from src.services.blob_store import (
     S3BlobStoreSettings,
     StorageBackendUnavailableError,
     StorageError,
+    _HashingReader,
     build_blob_store,
 )
 from src.services.storage import StorageLayout
@@ -281,6 +282,15 @@ class S3BlobStoreTests(unittest.TestCase):
     @staticmethod
     def _digest(payload: bytes) -> str:
         return hashlib.sha256(payload).hexdigest()
+
+    def test_hashing_reader_reports_position_for_sdk_checksuming(self) -> None:
+        reader = _HashingReader(io.BytesIO(b"payload"), expected_length=7)
+
+        self.assertEqual(0, reader.tell())
+        self.assertEqual(b"pay", reader.read(3))
+        self.assertEqual(3, reader.tell())
+        self.assertEqual(0, reader.seek(0))
+        self.assertEqual(0, reader.tell())
 
     def test_put_iter_exists_and_delete_use_bounded_client_calls(self) -> None:
         payload = b"s3 compatible object"
