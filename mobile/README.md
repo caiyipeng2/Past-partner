@@ -34,6 +34,22 @@ regular keystore file, selects the dedicated Gradle release signing config,
 and removes stale `Past-partner_*.apk` files before writing the new artifact.
 Secrets are never written to the repository, APK metadata, or build logs.
 
+## Android background upload boundary
+
+When an upload has a secure local resume manifest, Android schedules a
+network-constrained WorkManager wake-up and shows a low-priority notification
+for queued, running, retrying, completed, or cancelled states. The native
+worker receives only the import ID; bearer and pairing tokens stay in Flutter
+secure storage, and the authenticated chunk protocol remains in Dart.
+
+Android 13 and newer require the user to grant `POST_NOTIFICATIONS`; a denied
+permission does not stop uploads, but progress is then visible only in the app
+and through the server status. Android background execution is best effort:
+Doze, battery policy, network constraints, and force-stop can defer or cancel a
+wake-up. Opening the notification returns to the app's resumable upload flow.
+The iOS scheduler is intentionally a no-op until its native background path is
+designed and tested.
+
 ## iOS scope
 
 Windows CI runs code-level iOS checks for version alignment and ATS transport
