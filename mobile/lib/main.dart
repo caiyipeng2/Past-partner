@@ -9,5 +9,6 @@ void main() {
     sessionController: dependencies.sessionController,
     appearanceController: dependencies.appearanceController,
     personaController: dependencies.personaController,
+    modelSelectionStore: dependencies.modelSelectionStore,
   ));
 }

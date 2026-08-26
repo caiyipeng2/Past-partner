@@ -4,6 +4,7 @@ import 'package:past_partner/core/session/session.dart';
 import 'package:past_partner/features/models/model_controller.dart';
 import 'package:past_partner/features/models/model_gateway.dart';
 import 'package:past_partner/features/models/model_option.dart';
+import 'package:past_partner/features/models/model_selection_store.dart';
 
 class _FakeGateway implements ModelGateway {
   _FakeGateway(this.models);
@@ -83,7 +84,7 @@ void main() {
     await controller.load();
     expect(controller.state, ModelSelectionState.ready);
     expect(controller.visibleModels, models);
-    controller.select(models.first);
+    await controller.select(models.first);
     controller.setProviderFilter('qwen');
     expect(controller.selected?.id, 'deepseek-v4-flash');
     expect(controller.visibleModels.single.providerId, 'qwen');
@@ -113,7 +114,7 @@ void main() {
     );
 
     await controller.load();
-    controller.select(models.first);
+    await controller.select(models.first);
     await controller.estimate(inputTokens: 1000, outputTokens: 500);
 
     expect(controller.state, ModelSelectionState.ready);
@@ -137,6 +138,58 @@ void main() {
     expect(controller.state, ModelSelectionState.error);
     expect(controller.models, models);
     expect(controller.errorMessage, '模型目录加载失败，请重试。');
+  });
+
+  test(
+      'restores a persisted model only when the refreshed catalog still contains it',
+      () async {
+    final InMemoryModelSelectionStore store = InMemoryModelSelectionStore();
+    await store.write(
+      'owner',
+      const ModelSelection(
+          providerId: 'deepseek', modelId: 'deepseek-v4-flash'),
+    );
+    final ModelSelectionController controller = ModelSelectionController(
+      endpoint: endpoint,
+      session: session,
+      gateway: _FakeGateway(models),
+      selectionStore: store,
+      selectionScope: session.ownerId,
+    );
+
+    await controller.load();
+
+    expect(controller.selected?.providerId, 'deepseek');
+    expect(controller.selected?.id, 'deepseek-v4-flash');
+
+    final ModelSelectionController unavailable = ModelSelectionController(
+      endpoint: endpoint,
+      session: session,
+      gateway: _FakeGateway(<ModelOption>[models.last]),
+      selectionStore: store,
+      selectionScope: session.ownerId,
+    );
+    await unavailable.load();
+
+    expect(unavailable.selected, isNull);
+  });
+
+  test('persists a newly selected model without storing session credentials',
+      () async {
+    final InMemoryModelSelectionStore store = InMemoryModelSelectionStore();
+    final ModelSelectionController controller = ModelSelectionController(
+      endpoint: endpoint,
+      session: session,
+      gateway: _FakeGateway(models),
+      selectionStore: store,
+      selectionScope: session.ownerId,
+    );
+    await controller.load();
+    await controller.select(models.first);
+
+    final ModelSelection? saved = await store.read(session.ownerId);
+    expect(saved?.modelId, models.first.id);
+    expect(saved?.toJson().toString(), isNot(contains('token')));
   });
 }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'persona.dart';
@@ -27,6 +29,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
     this.importUploadControllerFactory,
     this.importReviewControllerFactory,
     this.modelSelectionControllerFactory,
+    this.modelSelectionRestore,
     this.consentControllerFactory,
     this.chatControllerFactory,
     this.appearanceController,
@@ -43,6 +46,7 @@ class PersonaWorkspaceScreen extends StatefulWidget {
       importReviewControllerFactory;
   final ModelSelectionController Function(ModelOption? selected)?
       modelSelectionControllerFactory;
+  final Future<ModelOption?> Function()? modelSelectionRestore;
   final ConsentController Function(Persona persona)? consentControllerFactory;
   final ChatController? Function(Persona persona, ModelOption? selected)?
       chatControllerFactory;
@@ -59,6 +63,21 @@ class _PersonaWorkspaceScreenState extends State<PersonaWorkspaceScreen> {
   void initState() {
     super.initState();
     widget.controller.load();
+    unawaited(_restoreModelSelection());
+  }
+
+  Future<void> _restoreModelSelection() async {
+    final Future<ModelOption?> Function()? loader =
+        widget.modelSelectionRestore;
+    if (loader == null) return;
+    try {
+      final ModelOption? selected = await loader();
+      if (!mounted || selected == null) return;
+      setState(() => _selectedModel = selected);
+    } on Object {
+      // Restoring a local preference is best effort; the model picker remains
+      // available when the catalog or local store is temporarily unavailable.
+    }
   }
 
   Future<void> _openCreateForm() async {

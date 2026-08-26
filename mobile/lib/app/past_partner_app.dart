@@ -8,6 +8,7 @@ import '../features/persona/persona_controller.dart';
 import '../features/persona/persona_workspace_screen.dart';
 import '../features/models/model_controller.dart';
 import '../features/models/model_gateway.dart';
+import '../features/models/model_selection_store.dart';
 import '../features/consents/consent_controller.dart';
 import '../features/consents/consent_gateway.dart';
 import '../features/chat/chat_controller.dart';
@@ -26,12 +27,14 @@ class PastPartnerApp extends StatefulWidget {
     required this.sessionController,
     required this.appearanceController,
     required this.personaController,
+    this.modelSelectionStore,
     super.key,
   });
 
   final SessionController sessionController;
   final AppearanceController appearanceController;
   final PersonaController personaController;
+  final ModelSelectionStore? modelSelectionStore;
 
   @override
   State<PastPartnerApp> createState() => _PastPartnerAppState();
@@ -102,8 +105,26 @@ class _PastPartnerAppState extends State<PastPartnerApp> {
                       session: snapshot.session!,
                       gateway: ApiClientModelGateway(snapshot.client),
                       initialSelection: selected,
+                      selectionStore: widget.modelSelectionStore,
+                      selectionScope: snapshot.session!.ownerId,
                     );
                   },
+                  modelSelectionRestore: widget.modelSelectionStore == null
+                      ? null
+                      : () async {
+                          final SessionController snapshot =
+                              widget.sessionController;
+                          final ModelSelectionController controller =
+                              ModelSelectionController(
+                            endpoint: snapshot.endpoint!,
+                            session: snapshot.session!,
+                            gateway: ApiClientModelGateway(snapshot.client),
+                            selectionStore: widget.modelSelectionStore,
+                            selectionScope: snapshot.session!.ownerId,
+                          );
+                          await controller.load();
+                          return controller.selected;
+                        },
                   consentControllerFactory: (persona) {
                     final SessionController snapshot = widget.sessionController;
                     return ConsentController(
