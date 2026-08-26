@@ -1831,9 +1831,15 @@ def _platform_marker(
     if requested in source_types:
         return "explicit"
     source_name = source.metadata.get("source_name")
-    source_labels = [source.path.name]
-    if isinstance(source_name, str):
-        source_labels.append(source_name)
+    # Upload previews materialize encrypted blobs under generated names.  Once
+    # a logical source name is available, it is the only stable filename signal;
+    # consulting the random temp name can accidentally select a platform parser
+    # when it happens to contain a marker such as ``qq``.
+    source_labels = (
+        [source_name]
+        if isinstance(source_name, str) and source_name.strip()
+        else [source.path.name]
+    )
     label = " ".join(source_labels).lower()
     if any(marker in label for marker in labels):
         return "explicit"

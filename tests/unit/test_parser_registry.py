@@ -508,6 +508,21 @@ class ParserRegistryTests(unittest.TestCase):
         )
         self.assertEqual(first_ids[0], first.records[0].to_dict()["record_id"])
 
+    def test_source_name_prevents_a_generated_temp_name_from_selecting_qq(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "past-partner-preview-qq.bin"
+            path.write_text(
+                "[2026-08-05 21:00] Xiaoyu: hello\n",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(
+                path,
+                {"source_name": "chat.txt", "media_type": "text/plain"},
+            )
+
+        self.assertEqual("generic_text", result.source_type)
+
     def test_supports_jsonl_as_a_streaming_format(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.jsonl"
