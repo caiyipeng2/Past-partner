@@ -202,6 +202,100 @@ class ParserRegistryTests(unittest.TestCase):
         self.assertEqual("qq_html", result.source_type)
         self.assertEqual("UTF-16 QQ 消息", result.records[0].content)
 
+    def test_parses_generic_html_export_with_semantic_fields_and_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conversation.html"
+            path.write_text(
+                "<!doctype html><html><body>"
+                '<article class="chat-entry" data-author-id="user-1" '
+                'data-author-name="Alice" data-timestamp="2026-08-10T09:00:00Z">'
+                '<span class="author">Alice</span>'
+                '<p class="message-text">Hello &amp; <strong>goodbye</strong></p>'
+                "</article>"
+                '<article class="record" data-sender="user-2" data-time="2026-08-10 09:01">'
+                '<time datetime="2026-08-10 09:01">09:01</time>'
+                '<div data-field="content">Reply<br>with a second line</div>'
+                "</article></body></html>",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_html", result.source_type)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("user-1", result.records[0].sender_id)
+        self.assertEqual("Alice", result.records[0].sender_name)
+        self.assertEqual("Hello & goodbye", result.records[0].content)
+        self.assertEqual("2026-08-10T09:00:00Z", result.records[0].timestamp)
+        self.assertEqual("user-2", result.records[1].sender_id)
+        self.assertEqual("Reply\nwith a second line", result.records[1].content)
+
+    def test_decodes_utf16_generic_html_without_html_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conversation.data"
+            path.write_text(
+                '<section class="message-item" data-sender-id="u1" '
+                'data-sender-name="UTF 用户" data-time="2026-08-10 10:00">'
+                '<div class="content">UTF-16 通用消息</div></section>',
+                encoding="utf-16",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_html", result.source_type)
+        self.assertEqual("UTF-16 通用消息", result.records[0].content)
+
+    def test_ignores_script_and_style_content_in_generic_html(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conversation.htm"
+            path.write_text(
+                "<html><head><style>.message{display:none}</style>"
+                "<script>var fake = 'secret script message';</script></head><body>"
+                '<div class="message" data-sender="u1" data-time="2026-08-10 11:00">'
+                '<span class="text">Visible message</span></div></body></html>',
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path)
+
+        self.assertEqual("generic_html", result.source_type)
+        self.assertEqual(1, len(result.records))
+        self.assertEqual("Visible message", result.records[0].content)
+        self.assertNotIn("secret", result.records[0].content)
+
+    def test_rejects_generic_html_without_message_containers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "landing.html"
+            path.write_text(
+                "<html><body><h1>Not a conversation</h1>"
+                "<p>This page has no chat records.</p></body></html>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserError) as raised:
+                self.registry.parse(path)
+
+        self.assertEqual("unsupported_format", raised.exception.code)
+
+    def test_limits_generic_html_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conversation.html"
+            path.write_text(
+                "<html><body>"
+                '<div class="chat-item" data-sender="u1" data-time="2026-08-10 12:00">'
+                '<span class="content">one</span></div>'
+                '<div class="chat-item" data-sender="u2" data-time="2026-08-10 12:01">'
+                '<span class="content">two</span></div>'
+                "</body></html>",
+                encoding="utf-8",
+            )
+
+            result = self.registry.parse(path, max_records=1)
+
+        self.assertEqual("generic_html", result.source_type)
+        self.assertEqual(1, len(result.records))
+        self.assertTrue(result.summary["truncated"])
+
     def test_decodes_utf16_txt_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chat.txt"

@@ -329,6 +329,51 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual("小雨", preview["records"][0]["sender_id"])
         self.assertEqual("来自微信的消息", preview["records"][0]["content"])
 
+    def test_import_preview_detects_generic_html_export(self) -> None:
+        _, _, persona = self.request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "HTML 用户", "relationship_type": "friend"},
+        )
+        content = (
+            "<html><body>"
+            '<article class="chat-entry" data-author-id="u1" '
+            'data-author-name="HTML 用户" data-time="2026-08-10 09:00">'
+            '<p class="message-text">来自通用 HTML 的消息</p>'
+            "</article></body></html>"
+        ).encode("utf-8")
+        _, _, job = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "conversation.html",
+                "total_bytes": len(content),
+                "media_type": "text/html",
+            },
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/v1/imports/{job['id']}/chunks/0",
+            content,
+            {"Content-Length": str(len(content)), "X-Chunk-Sha256": digest},
+        )
+        self.assertEqual(200, status)
+        status, _, _ = self.request(
+            "POST",
+            f"/api/v1/imports/{job['id']}/complete",
+            {"sha256": digest},
+        )
+        self.assertEqual(200, status)
+
+        status, _, preview = self.request("GET", f"/api/v1/imports/{job['id']}/preview")
+
+        self.assertEqual(200, status)
+        self.assertEqual("generic_html", preview["source_type"])
+        self.assertEqual("HTML 用户", preview["records"][0]["sender_name"])
+        self.assertEqual("来自通用 HTML 的消息", preview["records"][0]["content"])
+
     def test_import_preview_detects_qq_text_export(self) -> None:
         _, _, persona = self.request(
             "POST",
