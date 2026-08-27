@@ -65,6 +65,36 @@ class QwenFineTuningSmokeScriptTests(unittest.TestCase):
         self.assertNotIn("secret-key", rendered)
         self.assertEqual("cancelled", json.loads(rendered)["state"])
 
+    def test_completed_without_artifact_or_evaluation_is_rejected(self) -> None:
+        def json_request(method, url, headers, body, timeout_seconds):
+            if method == "POST" and url.endswith("/fine-tunes"):
+                return {"output": {"job_id": "remote-job"}}
+            if method == "GET" and url.endswith("/fine-tunes/remote-job"):
+                return {"output": {"status": "SUCCEEDED"}}
+            raise AssertionError(f"unexpected request {method} {url}")
+
+        adapter = QwenFineTuningAdapter(
+            QwenFineTuningConfig(
+                provider_id="qwen",
+                base_url="https://dashscope.example/api/v1",
+                api_key="secret-key",
+                allowed_models=frozenset({"qwen3.7-plus"}),
+                fine_tuning_models=frozenset({"qwen3.7-plus"}),
+            ),
+            json_request=json_request,
+            multipart_request=lambda *args: {"data": {"uploaded_files": [{"file_id": "file-1"}]}},
+        )
+        output = io.StringIO()
+        with patch.dict(os.environ, {"PAST_PARTNER_QWEN_FINE_TUNING_SMOKE": "1"}, clear=False):
+            with patch.object(smoke, "build_provider_adapters", return_value={"qwen": adapter}):
+                with contextlib.redirect_stdout(output):
+                    result = smoke.main(["--model", "qwen3.7-plus"])
+
+        self.assertEqual(1, result)
+        payload = json.loads(output.getvalue())
+        self.assertEqual("failed", payload["status"])
+        self.assertEqual("training_result_unverified", payload["error_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

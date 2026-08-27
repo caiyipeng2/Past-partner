@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -33,7 +36,8 @@ class _QwenFakeHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/v1/fine-tunes":
             payload = json.loads(body.decode("utf-8"))
-            self.assert_field(payload, "job_name", "local-job")
+            if payload.get("job_name") not in {"local-job", "past-partner-smoke"}:
+                raise AssertionError(f"unexpected job_name: {payload.get('job_name')!r}")
             self.assert_field(payload, "training_datasets", [{"data_source_type": "file_id", "file_id": "file-local-1"}])
             self._json({"output": _QwenFakeHandler.job})
             return
@@ -121,6 +125,45 @@ class QwenFineTuningHttpIntegrationTests(unittest.TestCase):
         self.assertIn(b"fine-tune", upload_body)
         self.assertIn(b'"messages"', upload_body)
         self.assertEqual("Bearer integration-secret", upload_headers["Authorization"])
+
+    def test_smoke_script_runs_native_qwen_lifecycle_over_real_http_transport(self) -> None:
+        script = Path(__file__).resolve().parents[2] / "scripts" / "qwen_fine_tuning_smoke.py"
+        port = self.server.server_address[1]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PYTHONUTF8": "1",
+                "PAST_PARTNER_QWEN_API_KEY": "integration-secret",
+                "PAST_PARTNER_QWEN_BASE_URL": f"http://127.0.0.1:{port}/compatible-mode/v1",
+                "PAST_PARTNER_QWEN_MODELS": "qwen3.7-plus",
+                "PAST_PARTNER_QWEN_FINE_TUNING_ENABLED": "true",
+                "PAST_PARTNER_QWEN_FINE_TUNING_MODELS": "qwen3.7-plus",
+                "PAST_PARTNER_QWEN_FINE_TUNING_BASE_URL": f"http://127.0.0.1:{port}/api/v1",
+                "PAST_PARTNER_QWEN_FINE_TUNING_SMOKE": "1",
+            }
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(script), "--model", "qwen3.7-plus"],
+            cwd=Path.cwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("ok", payload["status"])
+        self.assertEqual("completed", payload["state"])
+        self.assertTrue(payload["artifact_present"])
+        self.assertTrue(payload["evaluation_present"])
+        self.assertNotIn("integration-secret", result.stdout)
+        self.assertEqual(
+            [path for path, _, _ in _QwenFakeHandler.requests[:3]],
+            ["/api/v1/files", "/api/v1/fine-tunes", "/api/v1/fine-tunes/ft-local-1"],
+        )
 
 
 if __name__ == "__main__":
