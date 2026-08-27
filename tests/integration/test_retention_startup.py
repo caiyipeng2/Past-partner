@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from src.server.application import Application
 from src.server.config import ServerConfig
+from src.services.import_service import ImportState
 
 
 class RetentionStartupTests(unittest.TestCase):
@@ -63,6 +64,37 @@ class RetentionStartupTests(unittest.TestCase):
             Application.from_config(self.config)
 
         retention_service.assert_not_called()
+
+    def test_normalized_startup_removes_only_successfully_normalized_imports(self) -> None:
+        first = Application.from_config(self.config)
+        owner_id = first.auth.owner_id
+        persona = first.create_persona(
+            owner_id,
+            {"display_name": "标准化人物", "relationship_type": "friend"},
+        )
+        old = first.imports.create(owner_id, persona["id"], "normalized.txt", 1, "text/plain")
+        old_timestamp = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        first.imports.save(
+            owner_id,
+            replace(
+                first.imports.get(owner_id, old.id),
+                state=ImportState.UPLOADED,
+                normalized_at=old_timestamp,
+                updated_at=old_timestamp,
+            ),
+        )
+        uploaded_only = first.imports.create(owner_id, persona["id"], "uploaded.txt", 1, "text/plain")
+        first.imports.save(
+            owner_id,
+            replace(first.imports.get(owner_id, uploaded_only.id), state=ImportState.UPLOADED),
+        )
+
+        restarted = Application.from_config(
+            replace(self.config, normalized_retention_seconds=24 * 60 * 60)
+        )
+
+        self.assertIsNone(restarted.imports.repository.get(owner_id, old.id))
+        self.assertIsNotNone(restarted.imports.repository.get(owner_id, uploaded_only.id))
 
 
 if __name__ == "__main__":
