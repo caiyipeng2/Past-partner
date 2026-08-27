@@ -114,6 +114,7 @@ class ParserRegistry:
                 WeChatTextParser(),
                 QqHtmlParser(),
                 QqTextParser(),
+                GenericHtmlParser(),
                 GenericXmlParser(),
                 GenericCsvParser(),
                 GenericTextParser(),
@@ -512,20 +513,12 @@ class _WeChatHTMLDocumentParser(HTMLParser):
             return
         if self._is_message_container(normalized):
             context = _HtmlMessageContext(tag.lower(), self.depth)
-            context.sender_id = _first_attr(normalized, "data-sender-id", "data-sender", "data-from")
-            context.sender_name = _first_attr(
-                normalized,
-                "data-sender-name",
-                "data-nickname",
-                "data-name",
-            )
-            context.timestamp = _first_attr(
-                normalized,
-                "data-timestamp",
-                "data-time",
-                "datetime",
-            )
-            context.message_type = _first_attr(normalized, "data-message-type", "data-type") or "text"
+            (
+                context.sender_id,
+                context.sender_name,
+                context.timestamp,
+                context.message_type,
+            ) = self._container_fields(normalized)
             self.contexts.append(context)
             return
         if self.contexts:
@@ -589,6 +582,17 @@ class _WeChatHTMLDocumentParser(HTMLParser):
             or attrs.get("data-message-id")
             or attrs.get("data-sender-id")
             or attrs.get("data-sender")
+        )
+
+    def _container_fields(
+        self,
+        attrs: Mapping[str, str],
+    ) -> tuple[str | None, str | None, str | None, str]:
+        return (
+            _first_attr(attrs, "data-sender-id", "data-sender", "data-from"),
+            _first_attr(attrs, "data-sender-name", "data-nickname", "data-name"),
+            _first_attr(attrs, "data-timestamp", "data-time", "datetime"),
+            _first_attr(attrs, "data-message-type", "data-type") or "text",
         )
 
     def _field_for_element(self, tag: str, attrs: Mapping[str, str]) -> str | None:
@@ -700,6 +704,206 @@ class QqHtmlParser(WeChatHtmlParser):
     _marker_source_types = frozenset({"qq_text", "qq_html"})
     _marker_labels = ("qq", "qq群", "qq聊天", "qq chat", "qq export")
     _sample_markers = ("qq", "qq群", "qq聊天", "qq chat", "qq export", "qq_")
+
+
+class _GenericHTMLDocumentParser(_WeChatHTMLDocumentParser):
+    _MESSAGE_CLASSES = frozenset(
+        {
+            "message",
+            "msg",
+            "chat-message",
+            "message-item",
+            "chat-item",
+            "chat-entry",
+            "conversation-message",
+            "record",
+            "entry",
+            "utterance",
+            "bubble",
+        }
+    )
+    _FIELD_NAMES = {
+        "sender": "sender",
+        "sender-id": "sender",
+        "sender_id": "sender",
+        "sender-name": "sender",
+        "sender_name": "sender",
+        "author": "sender",
+        "author-id": "sender",
+        "author_id": "sender",
+        "author-name": "sender",
+        "author_name": "sender",
+        "from": "sender",
+        "speaker": "sender",
+        "user": "sender",
+        "username": "sender",
+        "nickname": "sender",
+        "name": "sender",
+        "time": "timestamp",
+        "timestamp": "timestamp",
+        "datetime": "timestamp",
+        "date": "timestamp",
+        "created-at": "timestamp",
+        "created_at": "timestamp",
+        "content": "content",
+        "message": "content",
+        "message-content": "content",
+        "message_content": "content",
+        "message-text": "content",
+        "message_text": "content",
+        "text": "content",
+        "body": "content",
+    }
+
+    def _is_message_container(self, attrs: Mapping[str, str]) -> bool:
+        classes = {
+            token.casefold()
+            for token in re.split(r"\s+", attrs.get("class", ""))
+            if token
+        }
+        return bool(
+            classes.intersection(self._MESSAGE_CLASSES)
+            or any(
+                attrs.get(name)
+                for name in (
+                    "data-message-id",
+                    "data-sender-id",
+                    "data-sender",
+                    "data-author-id",
+                    "data-author",
+                    "data-speaker",
+                    "data-user-id",
+                    "data-timestamp",
+                    "data-time",
+                )
+            )
+        )
+
+    def _container_fields(
+        self,
+        attrs: Mapping[str, str],
+    ) -> tuple[str | None, str | None, str | None, str]:
+        return (
+            _first_attr(
+                attrs,
+                "data-sender-id",
+                "data-author-id",
+                "data-user-id",
+                "data-speaker-id",
+                "data-sender",
+                "data-author",
+                "data-speaker",
+                "data-user",
+                "data-from",
+            ),
+            _first_attr(
+                attrs,
+                "data-sender-name",
+                "data-author-name",
+                "data-nickname",
+                "data-display-name",
+                "data-name",
+            ),
+            _first_attr(
+                attrs,
+                "data-timestamp",
+                "data-time",
+                "data-date",
+                "datetime",
+            ),
+            _first_attr(attrs, "data-message-type", "data-type", "data-kind") or "text",
+        )
+
+    def _field_for_element(self, tag: str, attrs: Mapping[str, str]) -> str | None:
+        if tag.casefold() == "time":
+            return "timestamp"
+        values = [
+            attrs.get("id", ""),
+            attrs.get("class", ""),
+            attrs.get("data-field", ""),
+            attrs.get("data-role", ""),
+            attrs.get("aria-label", ""),
+        ]
+        for value in values:
+            for token in re.split(r"\s+", value.casefold().replace(".", " ")):
+                if token in self._FIELD_NAMES:
+                    return self._FIELD_NAMES[token]
+        return None
+
+
+class GenericHtmlParser(_BaseParser):
+    """Parse common HTML conversation exports into canonical messages."""
+
+    source_type = "generic_html"
+
+    def probe(self, source: ParserSource) -> ParserProbe:
+        sample = _read_text_sample(source.path)
+        if sample is None or "\x00" in sample:
+            return ParserProbe(self.source_type, 0.0, False, "source is not valid HTML text")
+        if not _looks_like_html_sample(sample):
+            return ParserProbe(self.source_type, 0.0, False, "HTML document structure not recognized")
+        explicit = source.metadata.get("source_type") == self.source_type
+        message_hint = _generic_html_message_hint(sample)
+        if not message_hint and not explicit:
+            if source.path.suffix.casefold() in {".html", ".htm"}:
+                return ParserProbe(
+                    self.source_type,
+                    0.8,
+                    True,
+                    "HTML document recognized but no message container signature found",
+                )
+            return ParserProbe(self.source_type, 0.0, False, "HTML message container not recognized")
+        platform_marker = _platform_marker(
+            source,
+            sample,
+            source_types=frozenset({"wechat_html", "qq_html"}),
+            labels=("微信", "wechat", "weixin", "qq", "qq群", "qq聊天", "qq chat"),
+            sample_markers=("微信", "wechat", "weixin", "wxid_", "qq", "qq群", "qq_"),
+        )
+        if platform_marker and not explicit:
+            return ParserProbe(
+                self.source_type,
+                0.9,
+                True,
+                "generic HTML structure recognized as a platform export fallback",
+            )
+        return ParserProbe(
+            self.source_type,
+            0.98 if message_hint else 0.8,
+            True,
+            "generic HTML conversation structure recognized",
+        )
+
+    def validate(self, source: ParserSource) -> ParserValidation:
+        probe = self.probe(source)
+        if not probe.supported:
+            return ParserValidation(False, "unsupported_format", probe.reason)
+        try:
+            record_count = sum(1 for _ in self._stream_records(source))
+        except ParserError as exc:
+            return ParserValidation(False, exc.code, str(exc))
+        if record_count == 0:
+            return ParserValidation(False, "unsupported_format", "HTML document contains no message records")
+        return ParserValidation(True)
+
+    def stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        yield from self._stream_records(source)
+
+    def _stream_records(self, source: ParserSource) -> Iterator[NormalizedMessage]:
+        encoding = _detect_text_encoding(source.path)
+        if encoding is None:
+            raise ParserError("unsupported_format", "source is not a supported text encoding")
+        parser = _GenericHTMLDocumentParser()
+        try:
+            with source.path.open("r", encoding=encoding) as handle:
+                for chunk in iter(lambda: handle.read(_PROBE_BYTES), ""):
+                    parser.feed(chunk)
+                    yield from parser.drain()
+            parser.close()
+            parser.finish()
+            yield from parser.drain()
+        except (OSError, UnicodeError) as exc:
+            raise ParserError("unsupported_format", f"HTML source could not be read: {exc}") from exc
 
 
 class GenericJsonParser(_BaseParser):
@@ -1073,6 +1277,35 @@ def _xml_is_message_element(element: ET.Element) -> bool:
 
 def _looks_like_xml_sample(sample: str) -> bool:
     return sample.lstrip().startswith("<")
+
+
+def _looks_like_html_sample(sample: str) -> bool:
+    return bool(
+        re.search(
+            r"<!doctype\s+html\b|<\s*(?:html|head|body|main|section|article|div|ul|ol|li)\b",
+            sample,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _generic_html_message_hint(sample: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:class|id)\s*=\s*[\"'][^\"']*"
+            r"\b(?:message|msg|chat-message|message-item|chat-item|chat-entry|"
+            r"conversation-message|record|entry|utterance|bubble)\b"
+            r"[^\"']*[\"']",
+            sample,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\bdata-(?:message-id|sender-id|sender|author-id|author|speaker|"
+            r"user-id|timestamp|time)\s*=",
+            sample,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _xml_message_hint(sample: str) -> bool:
