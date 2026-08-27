@@ -44,7 +44,7 @@ from src.services.training_repository import TrainingJobRepository
 from src.services.training_service import FineTuningService
 from src.services.usage_repository import UsageRepository, UsageRepositoryError
 from src.services.usage_service import UsageService, UsageServiceError
-from src.services.upload_service import UploadService
+from src.services.upload_service import UploadError, UploadService
 
 
 class RequestValidationError(ValueError):
@@ -478,6 +478,18 @@ class Application:
         if self.export_service is None:
             raise ExportServiceError("export_unavailable", "owner archive export is unavailable")
         metadata = self.export_data(owner_id)
+        # The archive manifest must state the amount of raw material covered by
+        # the export.  These values come from the owner-scoped, persisted import
+        # records rather than from a second payload read, so the export remains
+        # bounded and the declaration cannot trigger another large-file scan.
+        raw_imports = metadata.get("imports", [])
+        raw_bytes = sum(
+            int(item.get("job", {}).get("total_bytes", 0))
+            for item in raw_imports
+            if isinstance(item, Mapping)
+            and isinstance(item.get("job"), Mapping)
+            and isinstance(item.get("job", {}).get("total_bytes", 0), int)
+        )
         metadata["export_version"] = 2
         metadata["scope"] = {
             "raw_payloads_included": True,
@@ -487,6 +499,8 @@ class Application:
             "format": "zip",
             "payload_encoding": "original_plain_bytes",
             "streamed": True,
+            "raw_object_count": len(raw_imports) if isinstance(raw_imports, list) else 0,
+            "raw_bytes": raw_bytes,
         }
         return self.export_service.create_archive(owner_id, metadata)
 

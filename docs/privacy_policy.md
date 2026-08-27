@@ -73,7 +73,7 @@ P1-03 通用 HTML 解析仅提取识别到的消息容器中的发送者、时�
 
 默认情况下没有自动清理期限。设置 `PAST_PARTNER_RAW_RETENTION_SECONDS` 为 1 到五年内的秒数后，每次服务启动会清理当前 owner 名下更新时间早于阈值且状态为 `failed` 或 `cancelled` 的导入，同时删除对应的加密分片、合并对象、清单和元数据；设置 `PAST_PARTNER_NORMALIZED_RETENTION_SECONDS` 后，服务只清理已经完成一次完整预览/归一化、且 `normalized_at` 早于阈值的导入。两个设置均为 `0` 时关闭，重复预览不会刷新成功归一化时间锚点。
 
-当前版本提供 owner 级元数据 JSON 导出和 `GET /api/v1/data-export/archive` ZIP 归档导出。归档在服务端磁盘上按固定块生成，包含版本化 manifest、人物/导入/清单/画像/记忆/会话/训练元数据和可恢复的原始 payload；不会把 3 GiB 文件一次性放入内存。两种导出均明确列出未包含的 provider-side 数据和审计记录。`POST /api/v1/data-deletion` 只接受当前已认证 owner，删除前会拒绝处理中导入和训练任务；删除失败不生成成功回执。人物级删除仍可单独使用，授权撤回仅影响未来处理，不代替第三方删除流程。
+当前版本提供 owner 级元数据 JSON 导出和 `GET /api/v1/data-export/archive` ZIP 归档导出。归档在服务端磁盘上按固定块生成，包含版本化 manifest、人物/导入/清单/画像/记忆/会话/训练元数据和可恢复的原始 payload；manifest 同时声明归档版本、范围、原始对象数量和原始字节数，不会把 3 GiB 文件一次性放入内存。两种导出均明确列出未包含的 provider-side 数据和审计记录。`POST /api/v1/data-deletion` 只接受当前已认证 owner，删除前会拒绝处理中导入和训练任务；删除失败不生成成功回执。人物级删除仍可单独使用，授权撤回仅影响未来处理，不代替第三方删除流程。
 
 ## 7. 第三方模型与凭据
 

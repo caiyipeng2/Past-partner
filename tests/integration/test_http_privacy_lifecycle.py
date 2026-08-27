@@ -6,12 +6,16 @@ import shutil
 import threading
 import unittest
 import zipfile
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from src.server.application import Application
 from src.server.config import ServerConfig
 from src.server.http import create_server
+from src.services.import_service import ImportState
+from src.services.upload_service import UploadError
 
 
 class HttpPrivacyLifecycleTests(unittest.TestCase):
@@ -110,6 +114,23 @@ class HttpPrivacyLifecycleTests(unittest.TestCase):
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual([persona["id"]], [item["id"] for item in manifest["personas"]])
             self.assertTrue(manifest["scope"]["raw_payloads_included"])
+            self.assertEqual(1, manifest["archive"]["raw_object_count"])
+            self.assertEqual(len(raw), manifest["archive"]["raw_bytes"])
+            self.assertIn("provider_side_data", manifest["scope"]["omitted"])
+
+    def test_empty_archive_declares_zero_raw_payloads(self) -> None:
+        status, headers, payload = self.request("GET", "/api/v1/data-export/archive")
+
+        self.assertEqual(200, status)
+        self.assertEqual("application/zip", headers["Content-Type"])
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+
+        self.assertEqual([], manifest["personas"])
+        self.assertEqual([], manifest["imports"])
+        self.assertEqual(0, manifest["archive"]["raw_object_count"])
+        self.assertEqual(0, manifest["archive"]["raw_bytes"])
+        self.assertEqual(["provider_side_data", "audit_records"], manifest["scope"]["omitted"])
 
     def test_repeated_preview_does_not_refresh_normalized_retention_anchor(self) -> None:
         self._create_completed_import()
@@ -140,6 +161,10 @@ class HttpPrivacyLifecycleTests(unittest.TestCase):
         self.assertEqual(deleted["deleted_imports"], receipt["counts"]["imports"])
         self.assertNotIn("owner_id", receipt["counts"])
         self.assertNotIn("path", receipt["counts"])
+        self.assertEqual({"receipt_id", "deleted_at", "counts"}, set(receipt))
+        encoded_receipt = json.dumps(receipt, ensure_ascii=False)
+        for forbidden in ("token", "provider_key", "provider_api_key", "content", "body"):
+            self.assertNotIn(forbidden, encoded_receipt)
 
         self.auth_token = self._session()["access_token"]
         status, _, personas = self.request("GET", "/api/v1/personas")
@@ -148,6 +173,57 @@ class HttpPrivacyLifecycleTests(unittest.TestCase):
         status, _, imports = self.request("GET", "/api/v1/imports")
         self.assertEqual(200, status)
         self.assertEqual([], imports["imports"])
+
+    def test_owner_deletion_rejects_processing_import_without_side_effects(self) -> None:
+        status, _, persona = self.request(
+            "POST", "/api/v1/personas", {"display_name": "处理中人物", "relationship_type": "friend"}
+        )
+        self.assertEqual(201, status)
+        status, _, created = self.request(
+            "POST",
+            "/api/v1/imports",
+            {
+                "persona_id": persona["id"],
+                "source_name": "processing.txt",
+                "total_bytes": 1,
+                "media_type": "text/plain",
+            },
+        )
+        self.assertEqual(201, status)
+        owner_id = self.application.auth.owner_id
+        processing = replace(
+            self.application.imports.get(owner_id, created["id"]),
+            state=ImportState.PROCESSING,
+        )
+        self.application.imports.save(owner_id, processing)
+
+        status, _, payload = self.request("POST", "/api/v1/data-deletion", {"confirm": "DELETE"})
+
+        self.assertEqual(409, status)
+        self.assertEqual("deletion_unavailable", payload["error"]["code"])
+        status, _, personas = self.request("GET", "/api/v1/personas")
+        self.assertEqual(200, status)
+        self.assertEqual([persona["id"]], [item["id"] for item in personas["personas"]])
+        status, _, imports = self.request("GET", "/api/v1/imports")
+        self.assertEqual(200, status)
+        self.assertEqual([created["id"]], [item["id"] for item in imports["imports"]])
+
+    def test_owner_deletion_object_failure_is_stable_and_has_no_success_receipt(self) -> None:
+        self._create_completed_import()
+
+        with patch.object(
+            self.application.uploads,
+            "delete_import",
+            side_effect=UploadError("deletion_failed", "object cleanup failed"),
+        ):
+            status, _, payload = self.request("POST", "/api/v1/data-deletion", {"confirm": "DELETE"})
+
+        self.assertEqual(500, status)
+        self.assertEqual("deletion_failed", payload["error"]["code"])
+        self.assertNotIn("receipt_id", payload)
+        status, _, imports = self.request("GET", "/api/v1/imports")
+        self.assertEqual(200, status)
+        self.assertEqual(1, len(imports["imports"]))
 
 
 if __name__ == "__main__":
