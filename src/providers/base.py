@@ -42,6 +42,34 @@ class ChatResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class MediaAnalysisRequest:
+    """Provider-neutral handoff for one already-authorized media payload.
+
+    The request deliberately carries only a controlled temporary path and
+    bounded metadata.  Consent, ownership, and payload-size checks belong to
+    the service layer before this boundary is reached.
+    """
+
+    provider_id: str
+    model_id: str
+    media_type: str
+    media_path: Path
+    prompt: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediaAnalysisResult:
+    """Normalized media result that never exposes provider response details."""
+
+    provider_id: str
+    model_id: str
+    media_type: str
+    description: str
+    usage: dict[str, int] | None = None
+    provider_request_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FineTuningRequest:
     """Provider-neutral dataset handoff for a previously validated training job."""
 
@@ -107,6 +135,19 @@ class FineTuningProviderAdapter(Protocol):
         ...
 
     def cancel_fine_tuning_job(self, provider_job_id: str) -> FineTuningStatus:
+        ...
+
+
+@runtime_checkable
+class MediaAnalysisProviderAdapter(Protocol):
+    """Optional extension for providers that can analyze uploaded media."""
+
+    provider_id: str
+
+    def supports_media(self, model_id: str, media_category: str) -> bool:
+        ...
+
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         ...
 
 

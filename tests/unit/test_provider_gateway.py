@@ -6,6 +6,8 @@ from src.providers.base import (
     AdapterError,
     ChatMessage,
     ChatRequest,
+    MediaAnalysisRequest,
+    MediaAnalysisResult,
     FineTuningRequest,
     FineTuningStatus,
     FineTuningSubmission,
@@ -97,6 +99,32 @@ class _TruthyCapabilityFineTuningAdapter(_FailingFineTuningAdapter):
         return "yes"
 
 
+class _MediaAnalysisAdapter:
+    provider_id = "test"
+
+    def supports_media(self, model_id: str, media_category: str) -> bool:
+        return model_id == "deterministic-vision" and media_category == "image"
+
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        return MediaAnalysisResult(
+            provider_id=self.provider_id,
+            model_id=request.model_id,
+            media_type=request.media_type,
+            description="测试媒体描述",
+            usage={"media_units": 1},
+            provider_request_id="media-test-1",
+        )
+
+
+class _FailingMediaAnalysisAdapter(_MediaAnalysisAdapter):
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        raise AdapterError("provider_unavailable", "provider could not be reached")
+
+
+class _WrongIdentityMediaAnalysisAdapter(_MediaAnalysisAdapter):
+    provider_id = "deepseek"
+
+
 class ProviderGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = ProviderCatalog.default()
@@ -128,6 +156,25 @@ class ProviderGatewayTests(unittest.TestCase):
             models=(enabled_model,),
         )
         return ProviderCatalog((enabled_provider,))
+
+    def _catalog_with_media_analysis(self) -> ProviderCatalog:
+        base_provider = self.catalog.provider("deepseek")
+        base_model = self.catalog.find_model("deepseek", "deepseek-v4-flash")
+        assert base_model is not None
+        provider = replace(
+            base_provider,
+            id="test",
+            display_name="Deterministic media test",
+            capabilities=("chat", "vision"),
+            models=(
+                replace(
+                    base_model,
+                    id="deterministic-vision",
+                    capabilities=("chat", "vision"),
+                ),
+            ),
+        )
+        return ProviderCatalog((provider,))
 
     def test_unconfigured_real_provider_fails_truthfully(self) -> None:
         gateway = ProviderGateway(self.catalog, mode="development")
@@ -205,6 +252,96 @@ class ProviderGatewayTests(unittest.TestCase):
         self.assertEqual("https://example.invalid/v1/chat/completions", calls[0][0])
         self.assertEqual("Bearer test-key", calls[0][1]["Authorization"])
         self.assertEqual("deepseek-v4-flash", calls[0][2]["model"])
+
+    def test_media_analysis_is_capability_gated_and_returns_normalized_result(self) -> None:
+        gateway = ProviderGateway(
+            self._catalog_with_media_analysis(),
+            mode="test",
+            adapters={"test": _MediaAnalysisAdapter()},
+        )
+        request = MediaAnalysisRequest(
+            provider_id="test",
+            model_id="deterministic-vision",
+            media_type="image/png",
+            media_path=Path("image.png"),
+            prompt="描述图片",
+        )
+
+        result = gateway.analyze_media(request)
+
+        self.assertEqual("测试媒体描述", result.description)
+        self.assertEqual("media-test-1", result.provider_request_id)
+
+    def test_media_analysis_rejects_missing_capability_adapter_and_translates_errors(self) -> None:
+        request = MediaAnalysisRequest(
+            provider_id="deepseek",
+            model_id="deepseek-v4-flash",
+            media_type="image/png",
+            media_path=Path("image.png"),
+            prompt="描述图片",
+        )
+
+        with self.assertRaises(ProviderError) as missing_capability:
+            ProviderGateway(self.catalog, mode="development").analyze_media(request)
+        self.assertEqual("capability_not_supported", missing_capability.exception.code)
+
+        media_catalog = self._catalog_with_media_analysis()
+        with self.assertRaises(ProviderError) as missing_adapter:
+            ProviderGateway(media_catalog, mode="test").analyze_media(
+                replace(request, provider_id="test", model_id="deterministic-vision")
+            )
+        self.assertEqual("provider_not_configured", missing_adapter.exception.code)
+
+        with self.assertRaises(ProviderError) as translated:
+            ProviderGateway(
+                media_catalog,
+                mode="test",
+                adapters={"test": _FailingMediaAnalysisAdapter()},
+            ).analyze_media(
+                replace(request, provider_id="test", model_id="deterministic-vision")
+            )
+        self.assertEqual("provider_unavailable", translated.exception.code)
+
+    def test_media_analysis_rejects_unknown_model_and_mismatched_adapter(self) -> None:
+        request = MediaAnalysisRequest(
+            provider_id="test",
+            model_id="not-real",
+            media_type="image/png",
+            media_path=Path("image.png"),
+            prompt="描述图片",
+        )
+        gateway = ProviderGateway(
+            self._catalog_with_media_analysis(),
+            mode="test",
+            adapters={"test": _MediaAnalysisAdapter()},
+        )
+        with self.assertRaises(ProviderError) as unknown_model:
+            gateway.analyze_media(request)
+        self.assertEqual("unknown_model", unknown_model.exception.code)
+
+        with self.assertRaises(ProviderError) as wrong_identity:
+            ProviderGateway(
+                self._catalog_with_media_analysis(),
+                mode="test",
+                adapters={"test": _WrongIdentityMediaAnalysisAdapter()},
+            ).analyze_media(replace(request, model_id="deterministic-vision"))
+        self.assertEqual("invalid_provider_adapter", wrong_identity.exception.code)
+
+    def test_media_analysis_rejects_unsupported_media_category_before_adapter(self) -> None:
+        request = MediaAnalysisRequest(
+            provider_id="test",
+            model_id="deterministic-vision",
+            media_type="application/pdf",
+            media_path=Path("document.pdf"),
+            prompt="描述文件",
+        )
+        with self.assertRaises(ProviderError) as captured:
+            ProviderGateway(
+                self._catalog_with_media_analysis(),
+                mode="test",
+                adapters={"test": _MediaAnalysisAdapter()},
+            ).analyze_media(request)
+        self.assertEqual("unsupported_media_category", captured.exception.code)
 
     def test_fine_tuning_rejects_a_model_without_declared_capability(self) -> None:
         gateway = ProviderGateway(self.catalog, mode="development")
