@@ -24,6 +24,7 @@ class LearningApiTests(unittest.TestCase):
             web_dir=Path.cwd() / "web",
             mode="test",
         )
+        self.config = config
         key = base64.b64encode(b"l" * 32).decode("ascii")
         with patch.dict(os.environ, {"PAST_PARTNER_MASTER_KEY": key}):
             application = Application.from_config(config)
@@ -35,10 +36,23 @@ class LearningApiTests(unittest.TestCase):
         self.assertEqual(201, status)
         self.auth_token = session["access_token"]
 
-    def tearDown(self) -> None:
+    def _stop_server(self) -> None:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+
+    def _restart_server(self) -> None:
+        self._stop_server()
+        key = base64.b64encode(b"l" * 32).decode("ascii")
+        with patch.dict(os.environ, {"PAST_PARTNER_MASTER_KEY": key}):
+            application = Application.from_config(self.config)
+        self.server = create_server(self.config, application)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self) -> None:
+        self._stop_server()
         shutil.rmtree(self.data_root, ignore_errors=True)
 
     def request(self, method: str, path: str, body=None, headers=None):
@@ -175,6 +189,37 @@ class LearningApiTests(unittest.TestCase):
         status, _, payload = self.request("GET", f"/api/v1/personas/{persona['id']}/learning/memory")
         self.assertEqual(404, status)
         self.assertEqual("not_found", payload["error"]["code"])
+
+    def test_learning_survives_application_restart_over_http(self) -> None:
+        persona = self.create_persona()
+        base = f"/api/v1/personas/{persona['id']}/learning"
+        profile = self.profile_payload()
+        memory = self.memory_payload(review_state="accepted")
+
+        self.assertEqual(200, self.request("PUT", f"{base}/style-profile", {"profile": profile})[0])
+        self.assertEqual(200, self.request("PUT", f"{base}/memory", {"memory": memory})[0])
+        self._restart_server()
+
+        status, _, loaded_profile = self.request("GET", f"{base}/style-profile")
+        self.assertEqual(200, status)
+        self.assertEqual(profile, loaded_profile)
+        status, _, result = self.request("POST", f"{base}/retrieve", {"query": "周末电影"})
+        self.assertEqual(200, status)
+        self.assertEqual(["a" * 64], [item["memory_id"] for item in result["memories"]])
+
+    def test_learning_http_scope_does_not_cross_personas(self) -> None:
+        source = self.create_persona()
+        target = self.create_persona()
+        source_base = f"/api/v1/personas/{source['id']}/learning"
+        target_base = f"/api/v1/personas/{target['id']}/learning"
+        self.assertEqual(
+            200,
+            self.request("PUT", f"{source_base}/memory", {"memory": self.memory_payload("accepted")})[0],
+        )
+
+        status, _, payload = self.request("GET", f"{target_base}/memory")
+        self.assertEqual(404, status)
+        self.assertEqual("learning_not_found", payload["error"]["code"])
 
         status, _, payload = self.request("GET", "/api/v1/personas/does-not-exist/learning/memory")
         self.assertEqual(404, status)

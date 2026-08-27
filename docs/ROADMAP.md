@@ -91,7 +91,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 - R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，真实供应商调用仍需用户提供可撤销或可控额度的测试凭据。
 - 默认真实 Provider 仍只声明文本 chat；R0-04 仅为显式开启的千问模型增加原生微调能力，流式、Embedding 和媒体分析仍未完成。
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。合并前仍需按 `.env.example` 提供真实百炼凭据运行一次外部 smoke，未配置时保持 `capability_not_supported`。
-- 画像、长期记忆和本地检索当前是内存能力，尚未持久化向量索引。
+- R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
 - R1-03 当前已完成第一切片：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离，并以加密记录与身份映射校验防篡改；OIDC/OAuth2、刷新令牌、账户恢复和正式租户管理仍待后续切片。
 - R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
