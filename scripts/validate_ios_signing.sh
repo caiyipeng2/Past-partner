@@ -59,8 +59,7 @@ cleanup() {
   if [[ -s "$original_keychains_file" ]]; then
     original_keychains=()
     while IFS= read -r keychain_entry; do
-      keychain_entry="${keychain_entry#\"}"
-      keychain_entry="${keychain_entry%\"}"
+      keychain_entry="$(printf '%s' "$keychain_entry" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')"
       [[ -n "$keychain_entry" ]] && original_keychains+=("$keychain_entry")
     done <"$original_keychains_file"
     if (( ${#original_keychains[@]} > 0 )); then
@@ -101,6 +100,10 @@ security list-keychains -d user -s "$keychain" >/dev/null 2>&1 || fail "ios_keyc
 security cms -D -i "$profile" >"$profile_plist" 2>/dev/null || fail "ios_profile_invalid"
 profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist" 2>/dev/null || true)"
 [[ "$profile_uuid" =~ ^[A-Fa-f0-9-]{36}$ ]] || fail "ios_profile_invalid"
+profile_team_id="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist" 2>/dev/null || true)"
+[[ "$profile_team_id" == "$PAST_PARTNER_IOS_TEAM_ID" ]] || fail "ios_profile_identity_mismatch"
+profile_application_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist" 2>/dev/null || true)"
+[[ "$profile_application_id" == "$PAST_PARTNER_IOS_TEAM_ID.$PAST_PARTNER_IOS_BUNDLE_ID" ]] || fail "ios_profile_identity_mismatch"
 mkdir -p "$profile_target" || fail "ios_profile_install_failed"
 installed_profile="$profile_target/$profile_uuid.mobileprovision"
 if [[ -f "$installed_profile" ]]; then
@@ -110,5 +113,13 @@ fi
 cp "$profile" "$installed_profile" || fail "ios_profile_install_failed"
 
 plutil -lint "$export_options" >/dev/null 2>&1 || fail "ios_export_options_invalid"
+project_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' ios/Runner/Info.plist 2>/dev/null || true)"
+[[ "$project_bundle_id" == "$PAST_PARTNER_IOS_BUNDLE_ID" ]] || fail "ios_project_identity_mismatch"
+export_team_id="$(/usr/libexec/PlistBuddy -c 'Print :teamID' "$export_options" 2>/dev/null || true)"
+if [[ -n "$export_team_id" && "$export_team_id" != "$PAST_PARTNER_IOS_TEAM_ID" ]]; then
+  fail "ios_export_identity_mismatch"
+fi
+export_profile_name="$(/usr/libexec/PlistBuddy -c "Print :provisioningProfiles:$PAST_PARTNER_IOS_BUNDLE_ID" "$export_options" 2>/dev/null || true)"
+[[ -n "$export_profile_name" ]] || fail "ios_export_identity_mismatch"
 flutter build ipa --release --export-options-plist "$export_options" >/dev/null || fail "ios_signed_build_failed"
 printf 'ios_signing: signed_build_complete\n'

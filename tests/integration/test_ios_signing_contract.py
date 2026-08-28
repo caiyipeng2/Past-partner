@@ -30,6 +30,11 @@ class IosSigningContractTests(unittest.TestCase):
         self.assertIn("security delete-keychain", script)
         self.assertIn("original_keychains", script)
         self.assertIn("existing_profile_backup", script)
+        self.assertIn("TeamIdentifier", script)
+        self.assertIn("application-identifier", script)
+        self.assertIn("CFBundleIdentifier", script)
+        self.assertIn("ios_profile_identity_mismatch", script)
+        self.assertIn("ios_export_identity_mismatch", script)
         self.assertIn("flutter build ipa --release --export-options-plist", script)
         self.assertIn("trap cleanup EXIT", script)
         self.assertNotIn("BEGIN PRIVATE KEY", script)
@@ -43,6 +48,7 @@ class IosSigningContractTests(unittest.TestCase):
         self.assertIn("ios-store-release:", workflow)
         self.assertIn("if: ${{ inputs.store_release == true }}", workflow)
         self.assertIn("bash scripts/validate_ios_signing.sh", workflow)
+        self.assertIn("working-directory: mobile", workflow)
         for name in (
             "PAST_PARTNER_IOS_CERTIFICATE_BASE64",
             "PAST_PARTNER_IOS_CERTIFICATE_PASSWORD",
