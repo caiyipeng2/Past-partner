@@ -2,6 +2,12 @@ name: iOS Release Readiness
 
 on:
   workflow_dispatch:
+    inputs:
+      store_release:
+        description: "Run the secret-backed signed IPA build"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,13 +31,51 @@ jobs:
 
       - name: Resolve Flutter dependencies
         run: flutter pub get
+        working-directory: mobile
 
       - name: Analyze Dart sources
         run: flutter analyze
+        working-directory: mobile
 
       - name: Run Flutter tests
         run: flutter test
+        working-directory: mobile
 
       - name: Build unsigned iOS archive package
         if: ${{ runner.os == 'macOS' }}
         run: flutter build ipa --release --no-codesign
+        working-directory: mobile
+
+  ios-store-release:
+    if: ${{ inputs.store_release == true }}
+    runs-on: macos-latest
+    environment: ios-release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.9
+          channel: stable
+          cache: true
+
+      - name: Validate iOS release policy
+        run: python scripts/check_ios_release.py --project-root .
+
+      - name: Resolve Flutter dependencies
+        run: flutter pub get
+        working-directory: mobile
+
+      - name: Build signed iOS package
+        env:
+          PAST_PARTNER_IOS_CERTIFICATE_BASE64: ${{ secrets.PAST_PARTNER_IOS_CERTIFICATE_BASE64 }}
+          PAST_PARTNER_IOS_CERTIFICATE_PASSWORD: ${{ secrets.PAST_PARTNER_IOS_CERTIFICATE_PASSWORD }}
+          PAST_PARTNER_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.PAST_PARTNER_IOS_PROVISIONING_PROFILE_BASE64 }}
+          PAST_PARTNER_IOS_KEYCHAIN_PASSWORD: ${{ secrets.PAST_PARTNER_IOS_KEYCHAIN_PASSWORD }}
+          PAST_PARTNER_IOS_TEAM_ID: ${{ secrets.PAST_PARTNER_IOS_TEAM_ID }}
+          PAST_PARTNER_IOS_BUNDLE_ID: ${{ secrets.PAST_PARTNER_IOS_BUNDLE_ID }}
+          PAST_PARTNER_IOS_EXPORT_OPTIONS_BASE64: ${{ secrets.PAST_PARTNER_IOS_EXPORT_OPTIONS_BASE64 }}
+        run: bash scripts/validate_ios_signing.sh
+        working-directory: mobile
