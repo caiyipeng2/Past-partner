@@ -33,6 +33,7 @@ from src.services.learning_repository import LearningRepository
 from src.services.learning_service import LearningService, LearningServiceError
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
+from src.services.media_analysis_service import MediaAnalysisService
 from src.services.metadata_store import MetadataStore, build_metadata_store
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
@@ -82,6 +83,7 @@ class Application:
         usage_repository: UsageRepository | None = None,
         export_service: ExportService | None = None,
         deletion_receipts: DeletionReceiptRepository | None = None,
+        media_analysis: MediaAnalysisService | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -102,6 +104,12 @@ class Application:
         self.export_service = export_service
         self.deletion_receipts = deletion_receipts
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
+        self.media_analysis = media_analysis or MediaAnalysisService(
+            uploads.storage,
+            uploads,
+            self.multimodal_consents,
+            gateway,
+        )
         # Keep create/delete operations that change a persona's child graph atomic in
         # the current single-process runtime. Upload I/O itself remains outside this
         # gate, so active chunks and media inspection can continue independently.
@@ -697,6 +705,27 @@ class Application:
 
     def inspect_import_media(self, owner_id: str, import_id: str) -> dict[str, Any]:
         return self.uploads.inspect_media(owner_id, import_id)
+
+    def analyze_import_media(
+        self,
+        owner_id: str,
+        import_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self.media_analysis.analyze(
+                owner_id,
+                import_id,
+                consent_id=payload["consent_id"],
+                provider_id=payload["provider_id"],
+                model_id=payload["model_id"],
+                data_category=payload["data_category"],
+                authorization_scope=payload["authorization_scope"],
+                prompt=payload["prompt"],
+                file_id=payload.get("file_id"),
+            )
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
 
     def set_participant_mapping(
         self,

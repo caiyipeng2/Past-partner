@@ -32,6 +32,7 @@ from src.services.consent_service import ConsentNotFoundError
 from src.services.export_service import ExportServiceError
 from src.services.local_auth import LocalAuthError
 from src.services.learning_service import LearningServiceError
+from src.services.media_analysis_service import MediaAnalysisError
 from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.training_service import TrainingServiceError
@@ -45,6 +46,9 @@ _PROGRESS_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/progress$")
 _PREVIEW_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/preview$")
 _MEDIA_INSPECTION_PATH = re.compile(
     r"^/api/v1/imports/([A-Za-z0-9._-]+)/media-inspection$"
+)
+_MEDIA_ANALYSIS_PATH = re.compile(
+    r"^/api/v1/imports/([A-Za-z0-9._-]+)/media-analysis$"
 )
 _PARTICIPANT_MAPPING_PATH = re.compile(
     r"^/api/v1/imports/([A-Za-z0-9._-]+)/participant-mapping$"
@@ -259,6 +263,26 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "deletion_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
+        except MediaAnalysisError as exc:
+            status = {
+                "consent_not_found": HTTPStatus.PRECONDITION_REQUIRED,
+                "consent_revoked": HTTPStatus.PRECONDITION_REQUIRED,
+                "consent_scope_mismatch": HTTPStatus.PRECONDITION_REQUIRED,
+                "consent_not_authorized": HTTPStatus.PRECONDITION_REQUIRED,
+                "import_not_found": HTTPStatus.NOT_FOUND,
+                "file_not_found": HTTPStatus.NOT_FOUND,
+                "media_analysis_unavailable": HTTPStatus.CONFLICT,
+                "media_too_large": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "media_type_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "import_persona_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "unsupported_media_category": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_prompt": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "invalid_provider_result": HTTPStatus.BAD_GATEWAY,
+                "media_analysis_storage_unavailable": HTTPStatus.INSUFFICIENT_STORAGE,
+                "media_analysis_cleanup_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
+                "import_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
         except ProviderError as exc:
             status = {
                 "unknown_provider": HTTPStatus.NOT_FOUND,
@@ -269,6 +293,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "provider_rate_limited": HTTPStatus.TOO_MANY_REQUESTS,
                 "provider_http_error": HTTPStatus.BAD_GATEWAY,
                 "invalid_provider_response": HTTPStatus.BAD_GATEWAY,
+                "invalid_provider_adapter": HTTPStatus.BAD_GATEWAY,
+                "capability_not_supported": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "media_too_large": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "media_unavailable": HTTPStatus.UNPROCESSABLE_ENTITY,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
         except AuditServiceError as exc:
@@ -573,6 +601,15 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     self._json_body(),
                 ),
             )
+        elif match := _MEDIA_ANALYSIS_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.analyze_import_media(
+                    self.owner_id,
+                    match.group(1),
+                    self._json_body(),
+                ),
+            )
         elif match := _PARTICIPANT_MAPPING_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -857,6 +894,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/imports/{import_id}/progress"
         if _PREVIEW_PATH.fullmatch(path):
             return "/api/v1/imports/{import_id}/preview"
+        if _MEDIA_ANALYSIS_PATH.fullmatch(path):
+            return "/api/v1/imports/{import_id}/media-analysis"
         if _MEDIA_INSPECTION_PATH.fullmatch(path):
             return "/api/v1/imports/{import_id}/media-inspection"
         if _PARTICIPANT_MAPPING_PATH.fullmatch(path):
