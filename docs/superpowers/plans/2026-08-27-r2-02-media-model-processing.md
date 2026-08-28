@@ -138,27 +138,27 @@ git commit -m "feat: add openai-compatible image analysis"
 - Modify: `docs/privacy_policy.md`
 - Modify: `docs/ROADMAP.md`
 
-- [ ] **Step 1: Write failing HTTP and Dart tests**
+- [x] **Step 1: Write failing HTTP and Dart tests**
 
 Assert the route requires owner authentication, rejects missing/revoked consent before payload transfer, returns a stable provider error, and exposes only normalized result fields. Dart tests must model loading, success, provider-unavailable, and capability-not-supported states without storing media bytes or bearer tokens.
 
-- [ ] **Step 2: Run focused HTTP/Dart tests to verify failure**
+- [x] **Step 2: Run focused HTTP/Dart tests to verify failure**
 
 Run: `python -m unittest tests.integration.test_http_media_analysis -v` and `flutter test test/features/media/media_analysis_controller_test.dart` from `mobile`.
 
 Expected: FAIL because the route and controller do not exist.
 
-- [ ] **Step 3: Implement the smallest route and client state machine**
+- [x] **Step 3: Implement the smallest route and client state machine**
 
 Add `POST /api/v1/imports/{import_id}/media-analysis` with provider/model/consent/scope fields, route-template logging, stable status mapping, and no raw response echo. Add an Android controller that calls the route and exposes explicit retry/error states; the UI must require consent and show provider/model, media category, description, and usage without claiming OCR/ASR/video support when the provider does not advertise it.
 
-- [ ] **Step 4: Run focused and mobile tests**
+- [x] **Step 4: Run focused and mobile tests**
 
 Run: `python -m unittest tests.integration.test_http_media_analysis tests.integration.test_http_api -v` and `flutter test` from `mobile`.
 
 Expected: PASS; existing chat/import/consent routes remain unchanged.
 
-- [ ] **Step 5: Update docs and commit the HTTP/client slice**
+- [x] **Step 5: Update docs and commit the HTTP/client slice**
 
 Document that local metadata inspection is provider-free, media analysis is consent-gated and capability-gated, unsupported categories fail closed, and provider retention/deletion boundaries remain explicit.
 
