@@ -65,27 +65,27 @@ git commit -m "feat: add capability-gated media provider contract"
 - Modify: `src/server/application.py`
 - Modify: `tests/unit/test_media_analysis_service.py`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Cover exact consent authorization before any payload read, owner/import scope, completed-upload requirement, configured maximum media bytes, temporary-file cleanup on provider failure, redacted normalized result, and stable mappings for missing consent, revoked consent, storage failure, and provider failure.
 
-- [ ] **Step 2: Run the focused service tests and verify failure**
+- [x] **Step 2: Run the focused service tests and verify failure**
 
 Run: `python -m unittest tests.unit.test_media_analysis_service -v`
 
 Expected: FAIL because the service and application entry point do not exist.
 
-- [ ] **Step 3: Implement the service**
+- [x] **Step 3: Implement the service**
 
 Reuse `UploadService.iter_payload(owner_id, import_id)` so encrypted chunks are decrypted in bounded blocks. Reject payloads larger than the configured per-analysis limit before provider handoff, materialize only inside the existing controlled temporary directory, call `MultimodalConsentGate.authorize`, and always delete the temporary file. Return provider/model/category, a bounded description, normalized usage, and an explicit `provider_transfer=true`; never return raw bytes, API keys, or local paths.
 
-- [ ] **Step 4: Run service and existing media tests**
+- [x] **Step 4: Run service and existing media tests**
 
 Run: `python -m unittest tests.unit.test_media_analysis_service tests.unit.test_media_inspector tests.unit.test_upload_service -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the service slice**
+- [x] **Step 5: Commit the service slice**
 
 ```powershell
 git add src/services/media_analysis_service.py src/server/application.py tests/unit/test_media_analysis_service.py
