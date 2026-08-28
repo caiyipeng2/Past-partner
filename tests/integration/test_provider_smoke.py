@@ -1,13 +1,15 @@
+import base64
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
-from src.providers.base import ChatMessage, ChatRequest
+from src.providers.base import ChatMessage, ChatRequest, MediaAnalysisRequest
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_openai_compatible_adapters
 from src.providers.gateway import ProviderGateway
@@ -127,6 +129,47 @@ class ProviderSmokeTests(unittest.TestCase):
         self.assertNotIn("secret response", result.stdout)
         self.assertNotIn("smoke-secret", result.stdout)
         self.assertEqual("smoke-model", _OpenAICompatibleHandler.request_body["model"])
+        self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_custom_openai_image_analysis_crosses_real_http_transport(self) -> None:
+        port = self.server.server_address[1]
+        environ = {
+            "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+            "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+            "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "smoke-model",
+        }
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(base_catalog, environ)
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"smoke-model"})},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
+        media = b"fake-image"
+        source_fd, source_name = tempfile.mkstemp(suffix=".png")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(media)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        response = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="smoke-model",
+                media_type="image/png",
+                media_path=source_path,
+                prompt="请描述 smoke 图片",
+            )
+        )
+
+        self.assertEqual("来自本地兼容端点的回复", response.description)
+        self.assertEqual("chatcmpl-local-smoke", response.provider_request_id)
+        body = _OpenAICompatibleHandler.request_body
+        self.assertEqual("smoke-model", body["model"])
+        image = next(item for item in body["messages"][0]["content"] if item["type"] == "image_url")
+        self.assertEqual(
+            "data:image/png;base64," + base64.b64encode(media).decode("ascii"),
+            image["image_url"]["url"],
+        )
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
 

@@ -1,5 +1,8 @@
 from dataclasses import replace
+import base64
+import os
 from pathlib import Path
+import tempfile
 import unittest
 
 from src.providers.base import (
@@ -342,6 +345,138 @@ class ProviderGatewayTests(unittest.TestCase):
                 adapters={"test": _MediaAnalysisAdapter()},
             ).analyze_media(request)
         self.assertEqual("unsupported_media_category", captured.exception.code)
+
+    def test_openai_compatible_media_analysis_uses_bounded_image_data_url(self) -> None:
+        calls = []
+        payload = b"fake-image-bytes"
+
+        def fake_transport(url, headers, body, timeout_seconds):
+            calls.append((url, headers, body, timeout_seconds))
+            return {
+                "id": "media-response-1",
+                "choices": [{"message": {"content": "图片描述"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+            }
+
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                provider_id="openai",
+                base_url="https://example.invalid/v1",
+                api_key="test-key",
+                allowed_models=frozenset({"gpt-4.1-mini"}),
+            ),
+            transport=fake_transport,
+        )
+        gateway = ProviderGateway(self.catalog, mode="development", adapters={"openai": adapter})
+        source_fd, source_name = tempfile.mkstemp(suffix=".png")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(payload)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        result = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="openai",
+                model_id="gpt-4.1-mini",
+                media_type="image/png",
+                media_path=source_path,
+                prompt="描述图片",
+            )
+        )
+
+        self.assertEqual("图片描述", result.description)
+        self.assertEqual("media-response-1", result.provider_request_id)
+        self.assertEqual("https://example.invalid/v1/chat/completions", calls[0][0])
+        body = calls[0][2]
+        self.assertEqual({"model", "messages", "stream"}, set(body))
+        content = body["messages"][0]["content"]
+        self.assertEqual(
+            "描述图片",
+            next(item["text"] for item in content if item["type"] == "text"),
+        )
+        image = next(item for item in content if item["type"] == "image_url")
+        self.assertEqual(
+            "data:image/png;base64," + base64.b64encode(payload).decode("ascii"),
+            image["image_url"]["url"],
+        )
+        self.assertEqual("Bearer test-key", calls[0][1]["Authorization"])
+
+    def test_openai_compatible_media_analysis_maps_response_and_transport_errors(self) -> None:
+        request_fd, request_name = tempfile.mkstemp(suffix=".png")
+        os.close(request_fd)
+        request_path = Path(request_name)
+        request_path.write_bytes(b"image")
+        self.addCleanup(lambda: request_path.unlink(missing_ok=True))
+        request = MediaAnalysisRequest(
+            provider_id="openai",
+            model_id="gpt-4.1-mini",
+            media_type="image/png",
+            media_path=request_path,
+            prompt="描述图片",
+        )
+
+        malformed = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig("openai", "https://example.invalid/v1", "key", frozenset({"gpt-4.1-mini"})),
+            transport=lambda *_args: {"choices": []},
+        )
+        with self.assertRaises(AdapterError) as malformed_error:
+            malformed.analyze_media(request)
+        self.assertEqual("invalid_provider_response", malformed_error.exception.code)
+
+        for code in ("provider_timeout", "provider_rate_limited"):
+            adapter = OpenAICompatibleAdapter(
+                OpenAICompatibleConfig("openai", "https://example.invalid/v1", "key", frozenset({"gpt-4.1-mini"})),
+                transport=lambda *_args, error_code=code: (_ for _ in ()).throw(
+                    AdapterError(error_code, "provider failure")
+                ),
+            )
+            with self.assertRaises(AdapterError) as translated:
+                adapter.analyze_media(request)
+            self.assertEqual(code, translated.exception.code)
+
+    def test_openai_compatible_media_analysis_rejects_audio_and_oversized_files(self) -> None:
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"gpt-4.1-mini"}),
+                max_media_bytes=4,
+            ),
+            transport=lambda *_args: (_ for _ in ()).throw(AssertionError("must not transport")),
+        )
+        audio_fd, audio_name = tempfile.mkstemp(suffix=".wav")
+        os.close(audio_fd)
+        audio_path = Path(audio_name)
+        audio_path.write_bytes(b"audio")
+        self.addCleanup(lambda: audio_path.unlink(missing_ok=True))
+        with self.assertRaises(AdapterError) as unsupported:
+            adapter.analyze_media(
+                MediaAnalysisRequest(
+                    "openai",
+                    "gpt-4.1-mini",
+                    "audio/wav",
+                    audio_path,
+                    "描述音频",
+                )
+            )
+        self.assertEqual("capability_not_supported", unsupported.exception.code)
+
+        oversized_fd, oversized_name = tempfile.mkstemp(suffix=".png")
+        os.close(oversized_fd)
+        oversized_path = Path(oversized_name)
+        oversized_path.write_bytes(b"12345")
+        self.addCleanup(lambda: oversized_path.unlink(missing_ok=True))
+        with self.assertRaises(AdapterError) as size_error:
+            adapter.analyze_media(
+                MediaAnalysisRequest(
+                    "openai",
+                    "gpt-4.1-mini",
+                    "image/png",
+                    oversized_path,
+                    "描述图片",
+                )
+            )
+        self.assertEqual("media_too_large", size_error.exception.code)
 
     def test_fine_tuning_rejects_a_model_without_declared_capability(self) -> None:
         gateway = ProviderGateway(self.catalog, mode="development")

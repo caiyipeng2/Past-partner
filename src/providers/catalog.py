@@ -208,7 +208,15 @@ class ProviderCatalog:
                 _provider("xiaomi_mimo", "Xiaomi MiMo", "openai", multimodal, "byok", ("mimo-v2.5-pro",)),
                 _provider("qwen", "Alibaba Qwen", "openai", multimodal, "byok", ("qwen3.7-plus", "qwen3.7-max")),
                 _provider("ollama", "Ollama", "openai", chat, "local", (), discovery="runtime"),
-                _provider("custom_openai", "Custom OpenAI-compatible", "openai", chat, "custom", (), discovery="configured"),
+                _provider(
+                    "custom_openai",
+                    "Custom OpenAI-compatible",
+                    "openai",
+                    ("chat", "vision"),
+                    "custom",
+                    (),
+                    discovery="configured",
+                ),
                 _provider("custom_http", "Custom HTTP", "custom", ("chat",), "custom", (), discovery="configured"),
             )
         )

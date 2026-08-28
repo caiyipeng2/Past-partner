@@ -100,27 +100,27 @@ git commit -m "feat: add consent-aware bounded media analysis"
 - Modify: `tests/unit/test_provider_gateway.py`
 - Modify: `tests/integration/test_provider_smoke.py`
 
-- [ ] **Step 1: Write failing transport tests**
+- [x] **Step 1: Write failing transport tests**
 
 Use an injected transport to assert an image request uses the selected model, a data URL derived from the controlled file, a bounded prompt, and no unrelated fields. Add malformed-response, timeout, rate-limit, and non-JSON cases with stable `AdapterError` codes. Include one local HTTP subprocess endpoint test to prove the request crosses the real transport boundary.
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `python -m unittest tests.unit.test_provider_gateway tests.integration.test_provider_smoke -v`
 
 Expected: FAIL because OpenAI-compatible adapters expose chat only.
 
-- [ ] **Step 3: Implement image analysis only where capability is advertised**
+- [x] **Step 3: Implement image analysis only where capability is advertised**
 
 Encode the bounded file through a streaming-safe temporary-file reader, enforce the configured byte limit, send the provider's multimodal message shape, normalize the first text result and usage, and reject audio/video requests unless the adapter explicitly supports them. Do not silently reuse chat or infer capabilities from the file extension.
 
-- [ ] **Step 4: Run focused provider and smoke tests**
+- [x] **Step 4: Run focused provider and smoke tests**
 
 Run: `python -m unittest tests.unit.test_provider_gateway tests.integration.test_provider_smoke -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the image transport slice**
+- [x] **Step 5: Commit the image transport slice**
 
 ```powershell
 git add src/providers/openai_compatible.py src/providers/transport.py tests/unit/test_provider_gateway.py tests/integration/test_provider_smoke.py
