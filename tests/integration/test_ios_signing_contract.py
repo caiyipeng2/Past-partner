@@ -47,7 +47,7 @@ class IosSigningContractTests(unittest.TestCase):
         self.assertIn("type: boolean", workflow)
         self.assertIn("ios-store-release:", workflow)
         self.assertIn("if: ${{ inputs.store_release == true }}", workflow)
-        self.assertIn("bash scripts/validate_ios_signing.sh", workflow)
+        self.assertIn("bash ../scripts/validate_ios_signing.sh", workflow)
         self.assertIn("working-directory: mobile", workflow)
         for name in (
             "PAST_PARTNER_IOS_CERTIFICATE_BASE64",
