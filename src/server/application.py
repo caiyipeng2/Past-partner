@@ -41,6 +41,8 @@ from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
 from src.services.storage import StorageLayout
+from src.services.subscription_repository import SubscriptionRepository
+from src.services.subscription_service import SubscriptionService, SubscriptionServiceError
 from src.services.task_queue import TaskQueue
 from src.services.training_dataset import TrainingDatasetBuilder
 from src.services.training_repository import TrainingJobRepository
@@ -87,6 +89,7 @@ class Application:
         deletion_receipts: DeletionReceiptRepository | None = None,
         media_analysis: MediaAnalysisService | None = None,
         billing: BillingService | None = None,
+        subscriptions: SubscriptionService | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -107,6 +110,7 @@ class Application:
         self.export_service = export_service
         self.deletion_receipts = deletion_receipts
         self.billing = billing
+        self.subscriptions = subscriptions
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         self.media_analysis = media_analysis or MediaAnalysisService(
             uploads.storage,
@@ -158,6 +162,8 @@ class Application:
         usage_repository = UsageRepository(metadata_store, encryption)
         billing_repository = BillingRepository(metadata_store, encryption)
         billing = BillingService(billing_repository)
+        subscription_repository = SubscriptionRepository(metadata_store, encryption)
+        subscriptions = SubscriptionService(subscription_repository)
         deletion_receipts = DeletionReceiptRepository(metadata_store)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
@@ -248,6 +254,7 @@ class Application:
             export_service,
             deletion_receipts,
             billing=billing,
+            subscriptions=subscriptions,
         )
         return application
 
@@ -475,6 +482,11 @@ class Application:
                     raise
             learning.append(entry)
         billing = self.billing.export(owner_id) if self.billing is not None else {"balances": [], "entries": []}
+        subscription = (
+            self.subscriptions.export(owner_id)
+            if self.subscriptions is not None
+            else {"subscription": None, "entitled": False}
+        )
         return {
             "export_version": 1,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -489,6 +501,7 @@ class Application:
             "conversations": [conversation.to_dict() for conversation in self.conversations.list(owner_id)],
             "learning": learning,
             "billing": billing,
+            "subscription": subscription,
         }
 
     def export_archive(self, owner_id: str) -> ExportArtifact:
@@ -562,6 +575,9 @@ class Application:
                     ("usage_records", "usage_records"),
                     ("billing_accounts", "billing_accounts"),
                     ("billing_entries", "billing_entries"),
+                    ("subscriptions", "subscriptions"),
+                    ("subscription_events", "subscription_events"),
+                    ("subscription_bindings", "subscription_bindings"),
                     ("audit_events", "audit_events"),
                     ("task_queue", "task_queue"),
                     ("personas", "personas"),
@@ -907,6 +923,11 @@ class Application:
         if self.billing is None:
             raise BillingServiceError("billing_unavailable", "billing entries are unavailable")
         return self.billing.list_entries(owner_id, limit=limit, before=before)
+
+    def subscription_status(self, owner_id: str) -> dict[str, object]:
+        if self.subscriptions is None:
+            raise SubscriptionServiceError("subscription_unavailable", "subscription is unavailable")
+        return self.subscriptions.current(owner_id)
 
     def _record_audit(
         self,

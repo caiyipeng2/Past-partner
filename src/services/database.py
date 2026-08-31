@@ -67,6 +67,9 @@ class Migration:
 # Version 19 adds encrypted owner-scoped billing entries. Monetary values are stored
 # as positive integer minor units with a direction column; operation keys make future
 # payment/usage adapters idempotent without exposing payment payloads to the client.
+# Version 20 adds encrypted owner subscription snapshots and provider event records.
+# Only the provider event hash and routing metadata remain queryable; event payloads
+# and provider identifiers that need confidentiality stay inside encrypted envelopes.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -453,6 +456,45 @@ DEFAULT_MIGRATIONS = (
             """,
             "CREATE INDEX billing_entries_owner_cursor_idx ON billing_entries(owner_id, occurred_at, id)",
             "CREATE UNIQUE INDEX billing_entries_owner_operation_idx ON billing_entries(owner_id, operation_key_hash)",
+        ),
+    ),
+    Migration(
+        version=20,
+        name="subscription_entitlements",
+        statements=(
+            """
+            CREATE TABLE subscriptions (
+                owner_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE subscription_events (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 128),
+                provider_event_key_hash TEXT NOT NULL CHECK (length(provider_event_key_hash) = 64),
+                provider_subscription_hash TEXT NOT NULL CHECK (length(provider_subscription_hash) = 64),
+                occurred_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            "CREATE TABLE subscription_bindings ("
+            "provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 128), "
+            "provider_subscription_hash TEXT NOT NULL CHECK (length(provider_subscription_hash) = 64), "
+            "owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE, "
+            "record_version INTEGER NOT NULL CHECK (record_version = 1), "
+            "PRIMARY KEY(provider_id, provider_subscription_hash)"
+            ")",
+            "CREATE UNIQUE INDEX subscription_events_provider_key_idx "
+            "ON subscription_events(provider_id, provider_event_key_hash)",
+            "CREATE INDEX subscription_bindings_owner_idx "
+            "ON subscription_bindings(owner_id)",
+            "CREATE INDEX subscription_events_owner_cursor_idx "
+            "ON subscription_events(owner_id, occurred_at, id)",
         ),
     ),
 )
