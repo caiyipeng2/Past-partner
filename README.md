@@ -128,6 +128,8 @@ P4-09 增加 owner 范围的加密实际用量账本：成功聊天响应中的�
 
 R2-04 Task 1 增加 owner 范围的余额账本基础：账务载荷使用 AES-GCM 加密，方向、币种、金额和时间等有限索引列用于事务校验，幂等键只以 SHA-256 摘要建立唯一索引；入账和扣账使用整数最小货币单位，余额不足时原子拒绝，客户端只能通过 `GET /api/v1/billing/balance` 和 `GET /api/v1/billing/entries` 读取余额与流水。该切片不接收支付回调、不提供客户端入账接口，不代表已经接入支付渠道、订阅、充值、退款、发票、税务或最终账单对账；后续已验证的支付/用量适配器才可调用服务级入账方法。
 
+R2-04 Task 2 增加加密订阅权益快照：订阅状态限定为 `trial`、`active`、`past_due` 或 `cancelled`，保存计划标识、Provider 订阅标识和当前周期边界；Provider 事件键和订阅标识的查询索引只保存 SHA-256 摘要，原始订阅标识仅存在 AES-GCM 加密载荷中并由 owner 读取，事件键按 Provider 全局幂等且每个 Provider 订阅只能绑定一个 owner。相同时间戳的不同状态会拒绝，取消或周期过期后才允许接收更新的订阅标识。客户端通过 `GET /api/v1/subscription` 读取当前权益，不能直接创建或修改订阅。支付 Provider webhook、签名校验、扣款、续费和退款仍未接入，只有已完成外部签名验证的内部事件才允许更新快照。
+
 P4-10 增加进程内监控基础：`GET /api/v1/health` 继续作为不需要认证的存活检查，`GET /api/v1/ready` 不需要认证并以 `200`/`503` 报告元数据后端是否可用，`GET /api/v1/metrics` 需要 `owner:read` 并返回有界的 Prometheus 文本请求计数和当前进程 in-flight 数。指标只按方法、规范化路由模板和状态码聚合，不含 owner、请求参数、请求正文、文件路径、token、API Key 或供应商响应；服务重启后指标归零。该切片不提供外部 Prometheus 推送或抓取配置、告警、追踪、日志外发、供应商/对象存储健康探测、跨进程聚合或持久化保留。
 
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。

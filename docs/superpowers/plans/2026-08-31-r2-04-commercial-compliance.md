@@ -42,10 +42,34 @@ write.
 
 ### Task 2: Subscription entitlement state
 
-Add encrypted owner subscription records with explicit trial/active/past_due/cancelled
-states, period boundaries, plan identifiers, and idempotent provider event keys. A
-read-only owner route reports current entitlement; payment-provider webhooks remain a
-separate adapter and are never trusted without signature verification.
+**Files:**
+- Create: `src/domain/subscriptions.py`
+- Create: `src/services/subscription_repository.py`
+- Create: `src/services/subscription_service.py`
+- Modify: `src/services/database.py`
+- Modify: `src/server/application.py`
+- Modify: `src/server/http.py`
+- Create: `tests/unit/test_subscriptions.py`
+- Create: `tests/integration/test_http_subscriptions.py`
+- Modify: `tests/unit/test_database_migrations.py`
+- Modify: `README.md`
+- Modify: `docs/privacy_policy.md`
+
+- [x] **Step 1: Write failing subscription and HTTP contract tests**
+- [x] **Step 2: Run the tests and confirm the subscription surface is missing**
+- [x] **Step 3: Implement encrypted snapshots, verified-event gating, and idempotency**
+- [x] **Step 4: Add read-only entitlement, export, deletion, and migration coverage**
+- [ ] **Step 5: Run full verification, review, commit, and wait for user acceptance**
+
+The implementation adds encrypted owner subscription records with explicit
+`trial`/`active`/`past_due`/`cancelled` states, period boundaries, plan identifiers,
+globally deduplicated provider event keys, and a globally unique hashed binding
+between each provider subscription and one owner. Equal-timestamp state conflicts
+are rejected; a cancelled or expired subscription may switch to a newer provider
+subscription identity. `GET /api/v1/subscription` reports the current entitlement
+and never accepts client mutations. Payment-provider webhooks remain a separate
+adapter and are rejected by the service unless signature verification has already
+succeeded.
 
 ### Task 3: Compliance-grade audit anchoring
 

@@ -38,6 +38,7 @@ from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.training_service import TrainingServiceError
 from src.services.upload_service import UploadError
+from src.services.subscription_service import SubscriptionServiceError
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _USAGE_PATH = "/api/v1/usage"
 _BILLING_BALANCE_PATH = "/api/v1/billing/balance"
 _BILLING_ENTRIES_PATH = "/api/v1/billing/entries"
+_SUBSCRIPTION_PATH = "/api/v1/subscription"
 _DATA_EXPORT_ARCHIVE_PATH = "/api/v1/data-export/archive"
 _DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
@@ -314,6 +316,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "billing_currency_invalid": HTTPStatus.BAD_REQUEST,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
+        except SubscriptionServiceError as exc:
+            status = {
+                "subscription_event_unverified": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "subscription_event_conflict": HTTPStatus.CONFLICT,
+                "subscription_identity_conflict": HTTPStatus.CONFLICT,
+                "subscription_timestamp_conflict": HTTPStatus.CONFLICT,
+                "subscription_record_corrupt": HTTPStatus.SERVICE_UNAVAILABLE,
+                "subscription_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
         except ExportServiceError as exc:
             status = {
                 "export_payload_unavailable": HTTPStatus.CONFLICT,
@@ -511,6 +523,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if entries and len(entries) == limit:
                 payload["next_cursor"] = _encode_billing_cursor(entries[-1])
             self._json(HTTPStatus.OK, payload)
+        elif path == _SUBSCRIPTION_PATH:
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.subscription_status(self.owner_id),
+            )
         elif match := _TRAINING_JOB_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -975,6 +992,8 @@ def _route_template(target: str) -> str:
             return _BILLING_BALANCE_PATH
         if path == _BILLING_ENTRIES_PATH:
             return _BILLING_ENTRIES_PATH
+        if path == _SUBSCRIPTION_PATH:
+            return _SUBSCRIPTION_PATH
         if path == _READY_PATH:
             return _READY_PATH
         if path == _METRICS_PATH:
