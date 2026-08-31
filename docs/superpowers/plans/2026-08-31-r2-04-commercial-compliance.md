@@ -25,11 +25,11 @@
 - Modify: `README.md`
 - Modify: `docs/privacy_policy.md`
 
-- [ ] **Step 1: Write failing domain, repository, migration, and HTTP tests**
-- [ ] **Step 2: Run the focused tests and confirm the billing surface is missing**
-- [ ] **Step 3: Implement integer-minor-unit validation and encrypted append-only storage**
-- [ ] **Step 4: Add owner-read balance/history routes and deletion cascade coverage**
-- [ ] **Step 5: Run focused tests, compile checks, and CodeGraph synchronization**
+- [x] **Step 1: Write failing domain, repository, migration, and HTTP tests**
+- [x] **Step 2: Run the focused tests and confirm the billing surface is missing**
+- [x] **Step 3: Implement integer-minor-unit validation and encrypted append-only storage**
+- [x] **Step 4: Add owner-read balance/history routes and deletion cascade coverage**
+- [x] **Step 5: Run focused tests, compile checks, and CodeGraph synchronization**
 - [ ] **Step 6: Commit the slice and wait for user acceptance**
 
 The first slice exposes only `GET /api/v1/billing/balance` and
