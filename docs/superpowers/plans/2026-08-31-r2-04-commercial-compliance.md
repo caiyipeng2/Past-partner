@@ -30,7 +30,7 @@
 - [x] **Step 3: Implement integer-minor-unit validation and encrypted append-only storage**
 - [x] **Step 4: Add owner-read balance/history routes and deletion cascade coverage**
 - [x] **Step 5: Run focused tests, compile checks, and CodeGraph synchronization**
-- [ ] **Step 6: Commit the slice and wait for user acceptance**
+- [x] **Step 6: Commit the slice and wait for user acceptance**
 
 The first slice exposes only `GET /api/v1/billing/balance` and
 `GET /api/v1/billing/entries`. Credits/debits are service-level operations for a
