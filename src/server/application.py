@@ -20,6 +20,8 @@ from src.providers.testing import DeterministicTestAdapter, deterministic_test_p
 from src.server.config import ServerConfig
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.audit_repository import AuditRepository, AuditRepositoryError
+from src.services.billing_repository import BillingRepository
+from src.services.billing_service import BillingService, BillingServiceError
 from src.services.blob_store import S3BlobStoreSettings, build_blob_store
 from src.services.consent_repository import ConsentRepository
 from src.services.consent_service import ConsentService
@@ -84,6 +86,7 @@ class Application:
         export_service: ExportService | None = None,
         deletion_receipts: DeletionReceiptRepository | None = None,
         media_analysis: MediaAnalysisService | None = None,
+        billing: BillingService | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -103,6 +106,7 @@ class Application:
         self.usage_repository = usage_repository
         self.export_service = export_service
         self.deletion_receipts = deletion_receipts
+        self.billing = billing
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         self.media_analysis = media_analysis or MediaAnalysisService(
             uploads.storage,
@@ -152,6 +156,8 @@ class Application:
         encryption = AuthenticatedEncryptionService(master_keys)
         audit_repository = AuditRepository(metadata_store, encryption)
         usage_repository = UsageRepository(metadata_store, encryption)
+        billing_repository = BillingRepository(metadata_store, encryption)
+        billing = BillingService(billing_repository)
         deletion_receipts = DeletionReceiptRepository(metadata_store)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
@@ -241,6 +247,7 @@ class Application:
             usage_repository,
             export_service,
             deletion_receipts,
+            billing=billing,
         )
         return application
 
@@ -467,6 +474,7 @@ class Application:
                 if exc.code != "learning_not_found":
                     raise
             learning.append(entry)
+        billing = self.billing.export(owner_id) if self.billing is not None else {"balances": [], "entries": []}
         return {
             "export_version": 1,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -480,6 +488,7 @@ class Application:
             "training_jobs": [job.to_dict() for job in self.training.list(owner_id)],
             "conversations": [conversation.to_dict() for conversation in self.conversations.list(owner_id)],
             "learning": learning,
+            "billing": billing,
         }
 
     def export_archive(self, owner_id: str) -> ExportArtifact:
@@ -551,6 +560,8 @@ class Application:
                     ("consents", "consents"),
                     ("training_jobs", "training_jobs"),
                     ("usage_records", "usage_records"),
+                    ("billing_accounts", "billing_accounts"),
+                    ("billing_entries", "billing_entries"),
                     ("audit_events", "audit_events"),
                     ("task_queue", "task_queue"),
                     ("personas", "personas"),
@@ -877,6 +888,25 @@ class Application:
             )]
         except UsageRepositoryError as exc:
             raise AuditServiceError("usage_unavailable", "usage records are unavailable") from exc
+
+    def billing_balance(self, owner_id: str, currency: str) -> dict[str, int | str]:
+        if self.billing is None:
+            raise BillingServiceError("billing_unavailable", "billing balance is unavailable")
+        try:
+            return self.billing.balance(owner_id, currency)
+        except BillingServiceError:
+            raise
+
+    def list_billing_entries(
+        self,
+        owner_id: str,
+        *,
+        limit: int = 100,
+        before: tuple[str, str] | None = None,
+    ) -> list[dict[str, object]]:
+        if self.billing is None:
+            raise BillingServiceError("billing_unavailable", "billing entries are unavailable")
+        return self.billing.list_entries(owner_id, limit=limit, before=before)
 
     def _record_audit(
         self,

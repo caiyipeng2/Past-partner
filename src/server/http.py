@@ -25,6 +25,7 @@ from src.domain.personas import PersonaValidationError
 from src.providers.catalog import CatalogValidationError
 from src.providers.gateway import ProviderError
 from src.server.application import Application, AuditServiceError, RequestValidationError
+from src.services.billing_service import BillingServiceError
 from src.server.config import ServerConfig
 from src.services.conversation_service import ConversationNotFoundError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
@@ -79,6 +80,8 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _USAGE_PATH = "/api/v1/usage"
+_BILLING_BALANCE_PATH = "/api/v1/billing/balance"
+_BILLING_ENTRIES_PATH = "/api/v1/billing/entries"
 _DATA_EXPORT_ARCHIVE_PATH = "/api/v1/data-export/archive"
 _DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
@@ -301,6 +304,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._error(status, exc.code, str(exc))
         except AuditServiceError as exc:
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
+        except BillingServiceError as exc:
+            status = {
+                "billing_currency_mismatch": HTTPStatus.CONFLICT,
+                "billing_record_corrupt": HTTPStatus.SERVICE_UNAVAILABLE,
+                "billing_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "invalid_billing_limit": HTTPStatus.BAD_REQUEST,
+                "invalid_billing_cursor": HTTPStatus.BAD_REQUEST,
+                "billing_currency_invalid": HTTPStatus.BAD_REQUEST,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
         except ExportServiceError as exc:
             status = {
                 "export_payload_unavailable": HTTPStatus.CONFLICT,
@@ -465,6 +478,38 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             payload = {"usage_records": records}
             if records and len(records) == limit:
                 payload["next_cursor"] = _encode_usage_cursor(records[-1])
+            self._json(HTTPStatus.OK, payload)
+        elif path == _BILLING_BALANCE_PATH:
+            currency = query.get("currency", [None])[0]
+            if currency is None:
+                raise RequestValidationError(
+                    "missing_billing_currency",
+                    "currency is required",
+                )
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.billing_balance(self.owner_id, currency),
+            )
+        elif path == _BILLING_ENTRIES_PATH:
+            raw_limit = query.get("limit", [None])[0]
+            limit = 100
+            if raw_limit is not None:
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError) as exc:
+                    raise RequestValidationError("invalid_billing_limit", "billing limit is invalid") from exc
+                if not 1 <= limit <= 100:
+                    raise RequestValidationError("invalid_billing_limit", "billing limit is invalid")
+            raw_cursor = query.get("before", [None])[0]
+            before = _decode_billing_cursor(raw_cursor) if raw_cursor is not None else None
+            entries = self.server.application.list_billing_entries(
+                self.owner_id,
+                limit=limit,
+                before=before,
+            )
+            payload = {"entries": entries}
+            if entries and len(entries) == limit:
+                payload["next_cursor"] = _encode_billing_cursor(entries[-1])
             self._json(HTTPStatus.OK, payload)
         elif match := _TRAINING_JOB_PATH.fullmatch(path):
             self._json(
@@ -926,6 +971,10 @@ def _route_template(target: str) -> str:
             return _AUDIT_EVENTS_PATH
         if path == _USAGE_PATH:
             return _USAGE_PATH
+        if path == _BILLING_BALANCE_PATH:
+            return _BILLING_BALANCE_PATH
+        if path == _BILLING_ENTRIES_PATH:
+            return _BILLING_ENTRIES_PATH
         if path == _READY_PATH:
             return _READY_PATH
         if path == _METRICS_PATH:
@@ -992,3 +1041,23 @@ def _decode_usage_cursor(value: str) -> tuple[str, str]:
     if parsed.tzinfo is None or parsed.utcoffset() is None or not _AUDIT_CURSOR_ID.fullmatch(record_id):
         raise RequestValidationError("invalid_usage_cursor", "usage cursor is invalid")
     return parsed.astimezone(UTC).isoformat(), record_id
+
+
+def _encode_billing_cursor(entry: dict[str, Any]) -> str:
+    raw = f"{entry['occurred_at']}\x00{entry['id']}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_billing_cursor(value: str) -> tuple[str, str]:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        raise RequestValidationError("invalid_billing_cursor", "billing cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        timestamp, entry_id = decoded.decode("utf-8").split("\x00", 1)
+        parsed = datetime.fromisoformat(timestamp)
+    except (ValueError, UnicodeError, IndexError) as exc:
+        raise RequestValidationError("invalid_billing_cursor", "billing cursor is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None or not _AUDIT_CURSOR_ID.fullmatch(entry_id):
+        raise RequestValidationError("invalid_billing_cursor", "billing cursor is invalid")
+    return parsed.astimezone(UTC).isoformat(), entry_id

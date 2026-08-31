@@ -64,6 +64,9 @@ class Migration:
 # Version 18 adds bounded, redacted worker lifecycle observations. These rows are
 # operational metadata only: they contain no owner, task payload, provider response,
 # exception text, token, or filesystem path.
+# Version 19 adds encrypted owner-scoped billing entries. Monetary values are stored
+# as positive integer minor units with a direction column; operation keys make future
+# payment/usage adapters idempotent without exposing payment payloads to the client.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -422,6 +425,34 @@ DEFAULT_MIGRATIONS = (
             "ON worker_observations(worker_id, observed_at DESC, id DESC)",
             "CREATE INDEX worker_observations_recent_idx "
             "ON worker_observations(observed_at, worker_id, task_type)",
+        ),
+    ),
+    Migration(
+        version=19,
+        name="billing_entries",
+        statements=(
+            """
+            CREATE TABLE billing_entries (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                direction TEXT NOT NULL CHECK (direction IN ('credit', 'debit')),
+                currency TEXT NOT NULL CHECK (length(currency) = 3),
+                amount_minor BIGINT NOT NULL CHECK (amount_minor BETWEEN 1 AND 1000000000000),
+                source TEXT NOT NULL CHECK (source IN ('payment', 'refund', 'usage', 'subscription')),
+                operation_key_hash TEXT NOT NULL CHECK (length(operation_key_hash) = 64),
+                occurred_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0)
+            )
+            """,
+            """
+            CREATE TABLE billing_accounts (
+                owner_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                currency TEXT NOT NULL CHECK (length(currency) = 3)
+            )
+            """,
+            "CREATE INDEX billing_entries_owner_cursor_idx ON billing_entries(owner_id, occurred_at, id)",
+            "CREATE UNIQUE INDEX billing_entries_owner_operation_idx ON billing_entries(owner_id, operation_key_hash)",
         ),
     ),
 )
