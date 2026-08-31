@@ -36,7 +36,7 @@ from src.services.learning_service import LearningService, LearningServiceError
 from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.media_analysis_service import MediaAnalysisService
-from src.services.metadata_store import MetadataStore, build_metadata_store
+from src.services.metadata_store import MetadataStore, MetadataStoreError, build_metadata_store
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
@@ -885,8 +885,13 @@ class Application:
         if self.audit_repository is None:
             raise AuditServiceError("audit_unavailable", "audit records are unavailable")
         try:
+            self.audit_repository.verify(owner_id)
             return [event.to_dict() for event in self.audit_repository.list(owner_id, limit=limit, before=before)]
         except AuditRepositoryError as exc:
+            if exc.code in {"audit_chain_gap", "audit_chain_mismatch"}:
+                raise AuditServiceError(exc.code, "audit chain verification failed") from exc
+            raise AuditServiceError("audit_unavailable", "audit records are unavailable") from exc
+        except MetadataStoreError as exc:
             raise AuditServiceError("audit_unavailable", "audit records are unavailable") from exc
 
     def list_usage(

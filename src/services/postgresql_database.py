@@ -75,6 +75,8 @@ class PostgreSQLMigrator:
                 statements = migration.postgres_statements or migration.statements
                 for statement in statements:
                     connection.execute(self._compile_statement(statement))
+                if migration.post_apply is not None:
+                    migration.post_apply(connection)
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, checksum) VALUES (%s, %s, %s)",
                     (migration.version, migration.name, migration.checksum),

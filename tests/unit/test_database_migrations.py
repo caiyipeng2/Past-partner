@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import base64
+from datetime import UTC, datetime
+import json
 import os
 import shutil
 import sqlite3
@@ -11,6 +13,9 @@ from unittest.mock import patch
 
 from src.server.application import Application
 from src.server.config import ServerConfig
+from src.domain.audit_events import AuditAction, AuditEvent, AuditOutcome
+from src.services.audit_repository import AuditRepository
+from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.services.database import (
     CURRENT_SCHEMA_VERSION,
     DEFAULT_MIGRATIONS,
@@ -18,7 +23,7 @@ from src.services.database import (
     SQLiteMigrator,
     SchemaHistoryError,
 )
-from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR
+from src.services.master_key import EnvironmentMasterKeyProvider, MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR
 
 
 class SQLiteMigrationTests(unittest.TestCase):
@@ -60,6 +65,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (18, "worker_observations"),
                 (19, "billing_entries"),
                 (20, "subscription_entitlements"),
+                (21, "audit_chain"),
             ],
             rows,
         )
@@ -85,6 +91,58 @@ class SQLiteMigrationTests(unittest.TestCase):
             ],
             tables,
         )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(audit_events)").fetchall()
+            }
+        self.assertTrue({"chain_sequence", "previous_hash", "event_hash"}.issubset(columns))
+
+    def test_audit_chain_migration_anchors_existing_events(self) -> None:
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-1]).migrate()
+        key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
+        encryption = AuthenticatedEncryptionService(
+            EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
+        )
+        event = AuditEvent(
+            id="legacy-audit",
+            owner_id="owner-legacy",
+            action=AuditAction.IMPORT_DELETED,
+            outcome=AuditOutcome.SUCCESS,
+            resource_type="import",
+            resource_id="import-legacy",
+            occurred_at=datetime(2026, 8, 20, tzinfo=UTC),
+            metadata={"reason_code": "legacy"},
+        )
+        envelope = encryption.encrypt(
+            json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+            AuditRepository._aad(event.owner_id, event.id),
+        )
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) VALUES (?, ?, ?, ?)",
+                (event.owner_id, "owner", 1, b"owner"),
+            )
+            connection.execute(
+                "INSERT INTO audit_events "
+                "(id, owner_id, action, outcome, resource_type, resource_id, occurred_at, record_version, encrypted_payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event.id,
+                    event.owner_id,
+                    event.action.value,
+                    event.outcome.value,
+                    event.resource_type,
+                    event.resource_id,
+                    event.occurred_at,
+                    1,
+                    envelope,
+                ),
+            )
+
+        SQLiteMigrator(self.database_path).migrate()
+
+        self.assertEqual(1, AuditRepository.verify_database(self.database_path, event.owner_id)["event_count"])
 
     def test_repeated_migration_is_idempotent(self) -> None:
         migrator = SQLiteMigrator(self.database_path)

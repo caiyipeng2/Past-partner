@@ -78,6 +78,26 @@ append-only verification command. Keep the current API read-only, expose chain g
 hash mismatches as stable operational errors, and document that an external WORM store
 is still required for regulatory retention.
 
+**Files:**
+- Create: `src/services/audit_chain.py`
+- Create: `scripts/verify_audit_chain.py`
+- Modify: `src/services/database.py`
+- Modify: `src/services/postgresql_database.py`
+- Modify: `src/services/audit_repository.py`
+- Modify: `src/server/application.py`
+- Modify: `README.md`
+- Modify: `DEVELOPMENT.md`
+- Modify: `docs/privacy_policy.md`
+- Modify: `tests/unit/test_audit_repository.py`
+- Modify: `tests/unit/test_database_migrations.py`
+- Modify: `tests/integration/test_http_audit.py`
+- Create: `tests/integration/test_audit_chain_cli.py`
+
+- [x] **Step 1: Write failing chain, migration, HTTP, and CLI tests**
+- [x] **Step 2: Implement deterministic owner-scoped hash chaining and migration backfill**
+- [x] **Step 3: Expose stable verification errors and redacted CLI output**
+- [ ] **Step 4: Run full verification, review, commit, and wait for user acceptance**
+
 ### Task 4: Data-subject notifications
 
 Add encrypted, owner-scoped notification records for export/deletion lifecycle events,
