@@ -6,15 +6,22 @@ from collections.abc import Iterable
 from contextlib import closing
 from datetime import UTC, datetime
 import json
+from pathlib import Path
 from typing import Any
 
 from src.domain.audit_events import AuditEvent, AuditEventValidationError
+from src.services.audit_chain import GENESIS_HASH, event_hash as calculate_audit_event_hash
 from src.services.authenticated_encryption import (
     AuthenticationError,
     AuthenticatedEncryptionService,
     InvalidEncryptedPayloadError,
 )
-from src.services.metadata_store import MetadataIntegrityError, MetadataStore, require_metadata_store
+from src.services.metadata_store import (
+    MetadataIntegrityError,
+    MetadataStore,
+    MetadataStoreError,
+    require_metadata_store,
+)
 
 
 class AuditRepositoryError(RuntimeError):
@@ -41,12 +48,34 @@ class AuditRepository:
         envelope = self._encode(event)
         try:
             with self.metadata_store.transaction(immediate=self.metadata_store.backend_name == "sqlite") as connection:
+                self._lock_owner(connection, event.owner_id)
+                self._verify_connection(connection, event.owner_id)
+                latest = connection.execute(
+                    "SELECT chain_sequence, event_hash FROM audit_events "
+                    "WHERE owner_id = ? ORDER BY chain_sequence DESC LIMIT 1",
+                    (event.owner_id,),
+                ).fetchone()
+                sequence = 1 if latest is None else latest[0] + 1
+                previous_hash = GENESIS_HASH if latest is None else latest[1]
+                current_hash = calculate_audit_event_hash(
+                    previous_hash=previous_hash,
+                    event_id=event.id,
+                    owner_id=event.owner_id,
+                    action=event.action.value,
+                    outcome=event.outcome.value,
+                    resource_type=event.resource_type,
+                    resource_id=event.resource_id,
+                    occurred_at=event.occurred_at,
+                    record_version=self._RECORD_VERSION,
+                    encrypted_payload=envelope,
+                )
                 connection.execute(
                     """
                     INSERT INTO audit_events
                         (id, owner_id, action, outcome, resource_type, resource_id,
-                         occurred_at, record_version, encrypted_payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         occurred_at, record_version, encrypted_payload, chain_sequence,
+                         previous_hash, event_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.id,
@@ -58,11 +87,44 @@ class AuditRepository:
                         event.occurred_at,
                         self._RECORD_VERSION,
                         envelope,
+                        sequence,
+                        previous_hash,
+                        current_hash,
                     ),
                 )
         except MetadataIntegrityError as exc:
             raise AuditRepositoryError("audit_event_exists", "audit event already exists") from exc
+        except MetadataStoreError as exc:
+            raise AuditRepositoryError("audit_unavailable", "audit records are unavailable") from exc
         return event
+
+    def verify(self, owner_id: str) -> dict[str, object]:
+        owner = self._owner(owner_id)
+        try:
+            with closing(self.metadata_store.connect()) as connection:
+                return self._verify_connection(connection, owner)
+        except MetadataStoreError as exc:
+            raise AuditRepositoryError("audit_unavailable", "audit records are unavailable") from exc
+
+    @classmethod
+    def verify_database(
+        cls,
+        metadata_store: MetadataStore | Path | str,
+        owner_id: str | None = None,
+    ) -> dict[str, object]:
+        store = require_metadata_store(metadata_store)
+        store.migrate()
+        with closing(store.connect()) as connection:
+            if owner_id is not None:
+                return cls._verify_connection(connection, cls._owner(owner_id))
+            owners = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT owner_id FROM audit_events ORDER BY owner_id"
+                ).fetchall()
+            ]
+            summaries = [cls._verify_connection(connection, owner) for owner in owners]
+        return {"owner_count": len(summaries), "owners": summaries}
 
     def list(
         self,
@@ -86,9 +148,79 @@ class AuditRepository:
             parameters.extend((before[0], before[0], before[1]))
         query += " ORDER BY occurred_at DESC, id DESC LIMIT ?"
         parameters.append(limit)
-        with closing(self.metadata_store.connect()) as connection:
-            rows = connection.execute(query, parameters).fetchall()
+        try:
+            with closing(self.metadata_store.connect()) as connection:
+                rows = connection.execute(query, parameters).fetchall()
+        except MetadataStoreError as exc:
+            raise AuditRepositoryError("audit_unavailable", "audit records are unavailable") from exc
         return [self._decode(row) for row in rows]
+
+    @staticmethod
+    def _lock_owner(connection: object, owner_id: str) -> None:
+        result = connection.execute("UPDATE local_users SET id = id WHERE id = ?", (owner_id,))
+        if getattr(result, "rowcount", 0) != 1:
+            raise AuditRepositoryError("invalid_audit_owner", "audit owner is invalid")
+
+    @staticmethod
+    def _verify_connection(connection: object, owner_id: str) -> dict[str, object]:
+        rows = connection.execute(
+            "SELECT id, owner_id, action, outcome, resource_type, resource_id, occurred_at, "
+            "record_version, encrypted_payload, chain_sequence, previous_hash, event_hash "
+            "FROM audit_events WHERE owner_id = ? ORDER BY chain_sequence ASC, id ASC",
+            (owner_id,),
+        ).fetchall()
+        expected_sequence = 1
+        previous_hash = GENESIS_HASH
+        for row in rows:
+            values = tuple(row)
+            if len(values) != 12:
+                raise AuditRepositoryError("audit_chain_gap", "audit chain has a gap")
+            (
+                event_id,
+                row_owner_id,
+                action,
+                outcome,
+                resource_type,
+                resource_id,
+                occurred_at,
+                record_version,
+                encrypted_payload,
+                sequence,
+                stored_previous_hash,
+                stored_event_hash,
+            ) = values
+            if (
+                row_owner_id != owner_id
+                or not isinstance(sequence, int)
+                or sequence != expected_sequence
+                or not isinstance(stored_previous_hash, str)
+                or len(stored_previous_hash) != 64
+                or not isinstance(stored_event_hash, str)
+                or len(stored_event_hash) != 64
+                or not isinstance(encrypted_payload, (bytes, bytearray, memoryview))
+            ):
+                raise AuditRepositoryError("audit_chain_gap", "audit chain has a gap")
+            expected_hash = calculate_audit_event_hash(
+                previous_hash=stored_previous_hash,
+                event_id=event_id,
+                owner_id=row_owner_id,
+                action=action,
+                outcome=outcome,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                occurred_at=occurred_at,
+                record_version=record_version,
+                encrypted_payload=encrypted_payload,
+            )
+            if stored_previous_hash != previous_hash or stored_event_hash != expected_hash:
+                raise AuditRepositoryError("audit_chain_mismatch", "audit chain hash mismatch")
+            previous_hash = stored_event_hash
+            expected_sequence += 1
+        return {
+            "owner_id": owner_id,
+            "event_count": len(rows),
+            "head_hash": previous_hash,
+        }
 
     def _encode(self, event: AuditEvent) -> bytes:
         payload = json.dumps(

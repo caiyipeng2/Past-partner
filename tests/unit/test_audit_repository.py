@@ -91,6 +91,53 @@ class AuditRepositoryTests(unittest.TestCase):
             self.repository.append(event)
         self.assertEqual("audit_event_exists", captured.exception.code)
 
+    def test_verify_reports_a_valid_owner_chain(self) -> None:
+        self.repository.append(self.event(event_id="evt-1", seconds=1))
+        self.repository.append(self.event(event_id="evt-2", seconds=2))
+
+        result = self.repository.verify(self.owner_id)
+
+        self.assertEqual(2, result["event_count"])
+        self.assertEqual(64, len(result["head_hash"]))
+        self.assertNotEqual("0" * 64, result["head_hash"])
+
+    def test_verify_rejects_chain_gap_and_hash_mismatch(self) -> None:
+        first = self.event(event_id="evt-1", seconds=1)
+        second = self.event(event_id="evt-2", seconds=2)
+        self.repository.append(first)
+        self.repository.append(second)
+
+        with sqlite3.connect(self.layout.database_path()) as connection:
+            connection.execute(
+                "UPDATE audit_events SET chain_sequence = ? WHERE id = ?",
+                (4, second.id),
+            )
+        with self.assertRaises(AuditRepositoryError) as captured:
+            self.repository.verify(self.owner_id)
+        self.assertEqual("audit_chain_gap", captured.exception.code)
+
+        with sqlite3.connect(self.layout.database_path()) as connection:
+            connection.execute(
+                "UPDATE audit_events SET chain_sequence = ?, event_hash = ? WHERE id = ?",
+                (2, "f" * 64, second.id),
+            )
+        with self.assertRaises(AuditRepositoryError) as captured:
+            self.repository.verify(self.owner_id)
+        self.assertEqual("audit_chain_mismatch", captured.exception.code)
+
+    def test_verify_detects_encrypted_payload_tampering_before_decode(self) -> None:
+        event = self.event(event_id="evt-corrupt-chain")
+        self.repository.append(event)
+        with sqlite3.connect(self.layout.database_path()) as connection:
+            connection.execute(
+                "UPDATE audit_events SET encrypted_payload = ? WHERE id = ?",
+                (b"corrupt", event.id),
+            )
+
+        with self.assertRaises(AuditRepositoryError) as captured:
+            self.repository.verify(self.owner_id)
+        self.assertEqual("audit_chain_mismatch", captured.exception.code)
+
 
 if __name__ == "__main__":
     unittest.main()

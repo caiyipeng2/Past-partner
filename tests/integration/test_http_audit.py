@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import shutil
+import sqlite3
 import threading
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from src.server.application import Application
 from src.server.config import ServerConfig
 from src.server.http import create_server
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR
+from src.services.metadata_store import MetadataOperationalError
 
 
 class HttpAuditTests(unittest.TestCase):
@@ -116,6 +118,30 @@ class HttpAuditTests(unittest.TestCase):
             status, payload = self.request(method, "/api/v1/audit-events", self.full_token)
             self.assertEqual(404, status)
             self.assertEqual("route_not_found", payload["error"]["code"])
+
+    def test_audit_read_surfaces_chain_mismatch_as_stable_operational_error(self) -> None:
+        self.create_and_delete_persona("链校验")
+        with sqlite3.connect(self.application.auth.database_path) as connection:
+            connection.execute(
+                "UPDATE audit_events SET event_hash = ?",
+                ("e" * 64,),
+            )
+
+        status, payload = self.request("GET", "/api/v1/audit-events", self.read_token)
+
+        self.assertEqual(503, status)
+        self.assertEqual("audit_chain_mismatch", payload["error"]["code"])
+
+    def test_audit_backend_failure_is_stable_and_redacted(self) -> None:
+        with patch.object(
+            self.application.audit_repository,
+            "verify",
+            side_effect=MetadataOperationalError(),
+        ):
+            status, payload = self.request("GET", "/api/v1/audit-events", self.read_token)
+
+        self.assertEqual(503, status)
+        self.assertEqual("audit_unavailable", payload["error"]["code"])
 
 
 if __name__ == "__main__":

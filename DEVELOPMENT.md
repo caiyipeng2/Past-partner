@@ -104,6 +104,9 @@ npm test
 python -m unittest discover -s tests -p "test*.py" -v
 python -m compileall -q src tests
 git diff --check
+
+# 校验本地审计链（只输出脱敏 JSON；外部 WORM 仍需单独配置）
+python scripts/verify_audit_chain.py --database .test-runtime\audit.sqlite3
 ```
 
 外部服务集成测试默认安全跳过，只有显式设置可丢弃环境才会运行。示例：

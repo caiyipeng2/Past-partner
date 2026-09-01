@@ -6,7 +6,9 @@ import sqlite3
 from hashlib import sha256
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
+
+from src.services.audit_chain import GENESIS_HASH, event_hash as calculate_audit_event_hash
 
 
 class SchemaHistoryError(RuntimeError):
@@ -20,6 +22,7 @@ class Migration:
     statements: tuple[str, ...]
     requires_foreign_keys_off: bool = False
     postgres_statements: tuple[str, ...] | None = None
+    post_apply: Callable[[object], None] | None = None
 
     def __post_init__(self) -> None:
         if self.version <= 0:
@@ -35,6 +38,52 @@ class Migration:
             digest.update(len(encoded).to_bytes(8, byteorder="big"))
             digest.update(encoded)
         return digest.hexdigest()
+
+
+def _backfill_audit_chain(connection: object) -> None:
+    """Anchor pre-existing v12 audit rows while the migration is atomic."""
+
+    rows = connection.execute(
+        "SELECT id, owner_id, action, outcome, resource_type, resource_id, occurred_at, "
+        "record_version, encrypted_payload FROM audit_events ORDER BY owner_id, occurred_at, id"
+    ).fetchall()
+    owner_id: str | None = None
+    sequence = 0
+    previous_hash = GENESIS_HASH
+    for row in rows:
+        (
+            event_id,
+            row_owner_id,
+            action,
+            outcome,
+            resource_type,
+            resource_id,
+            occurred_at,
+            record_version,
+            encrypted_payload,
+        ) = tuple(row)
+        if row_owner_id != owner_id:
+            owner_id = row_owner_id
+            sequence = 0
+            previous_hash = GENESIS_HASH
+        sequence += 1
+        current_hash = calculate_audit_event_hash(
+            previous_hash=previous_hash,
+            event_id=event_id,
+            owner_id=row_owner_id,
+            action=action,
+            outcome=outcome,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            occurred_at=occurred_at,
+            record_version=record_version,
+            encrypted_payload=encrypted_payload,
+        )
+        connection.execute(
+            "UPDATE audit_events SET chain_sequence = ?, previous_hash = ?, event_hash = ? WHERE id = ?",
+            (sequence, previous_hash, current_hash, event_id),
+        )
+        previous_hash = current_hash
 
 
 # Version 1 establishes the durable migration ledger. Version 2 owns the
@@ -70,6 +119,8 @@ class Migration:
 # Version 20 adds encrypted owner subscription snapshots and provider event records.
 # Only the provider event hash and routing metadata remain queryable; event payloads
 # and provider identifiers that need confidentiality stay inside encrypted envelopes.
+# Version 21 adds per-owner audit chain metadata and atomically anchors existing v12
+# rows so the verification command can distinguish gaps from hash mismatches.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -497,6 +548,21 @@ DEFAULT_MIGRATIONS = (
             "ON subscription_events(owner_id, occurred_at, id)",
         ),
     ),
+    Migration(
+        version=21,
+        name="audit_chain",
+        statements=(
+            "ALTER TABLE audit_events ADD COLUMN chain_sequence INTEGER "
+            "CHECK (chain_sequence IS NULL OR chain_sequence > 0)",
+            "ALTER TABLE audit_events ADD COLUMN previous_hash TEXT "
+            "CHECK (previous_hash IS NULL OR length(previous_hash) = 64)",
+            "ALTER TABLE audit_events ADD COLUMN event_hash TEXT "
+            "CHECK (event_hash IS NULL OR length(event_hash) = 64)",
+            "CREATE UNIQUE INDEX audit_events_owner_chain_idx "
+            "ON audit_events(owner_id, chain_sequence)",
+        ),
+        post_apply=_backfill_audit_chain,
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
@@ -543,6 +609,8 @@ class SQLiteMigrator:
                     connection.execute("BEGIN IMMEDIATE")
                 for statement in migration.statements:
                     connection.execute(statement)
+                if migration.post_apply is not None:
+                    migration.post_apply(connection)
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)",
                     (migration.version, migration.name, migration.checksum),
