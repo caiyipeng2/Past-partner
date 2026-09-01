@@ -32,7 +32,7 @@
 
 - `R0-01` 已合并到 `main`（`f598c28`）。统一 disposable runner 已在本机可删除的 PostgreSQL、Moto S3/KMS 和任务队列环境中完成回归，报告与资源清理证据随该提交保留。
 - `R0-02` 的四种启动入口实现已在当前验证分支：Python 模块、安装后的 `companion-server` CLI、npm wrapper 和 Docker Compose 均已完成 health/API smoke。本机已安装并启动 Docker Desktop，Compose 烟测使用临时主密钥和唯一项目名，测试结束后容器、网络和卷均已清理；未安装 Docker 的其他开发机仍只能完成静态合同检查。
-- `R0-03` 的 Provider 配置、OpenAI-compatible 运行时适配器和脱敏 smoke runner 已实现；本地自定义端点 subprocess 链路及未配置/超时/限流/非 JSON 稳定错误测试已通过。当前环境未配置可撤销的 DeepSeek、MiMo、千问或 OpenAI 凭据，真实外部 Provider smoke 尚未执行。
+- `R0-03` 的 Provider 配置、OpenAI-compatible 运行时适配器和脱敏 smoke runner 已实现；本地自定义端点 subprocess 链路及未配置/超时/限流/非 JSON 稳定错误测试已通过。2026-09-01 本机使用用户提供的可控 DeepSeek 凭据完成 `deepseek-v4-flash` 最小文本 smoke，凭据仅存在于进程环境，输出未包含提示词、回复正文或 API Key。
 
 以下测试当前会在未配置 disposable 环境时跳过，不能把“跳过”写成“真实集成已验证”：PostgreSQL 元数据、S3-compatible 对象存储、KMS 主密钥和真实外部任务队列。所有真实集成测试必须使用可删除资源，证据和资源清理记录应附在对应功能验收中。
 
@@ -88,7 +88,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 
 - R0-02 的 Docker Compose、可安装服务 CLI 和统一 smoke runner 已提供；当前验证分支已实测模块、CLI、npm 和 Compose 四个入口。Compose 要求显式提供 `PAST_PARTNER_MASTER_KEY`，smoke runner 会为每次运行生成可丢弃的密钥并使用唯一项目名，结束后清理自身资源；其他开发机仍需先安装 Docker Desktop 或兼容 Compose 的运行时。
 - R0-01 的本机 disposable PostgreSQL/S3/KMS/任务队列回归已完成；其他开发机若未配置可删除资源仍会安全跳过，不能把跳过结果写成真实集成证据。
-- R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，真实供应商调用仍需用户提供可撤销或可控额度的测试凭据。
+- R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，2026-09-01 已使用进程级可控凭据完成 DeepSeek `deepseek-v4-flash` 真实 smoke。其他供应商仍需各自的可撤销或可控额度测试凭据，不能以 DeepSeek 结果替代。
 - 默认真实 Provider 仍主要声明文本 chat；R2-02 已为 OpenAI-compatible 适配器增加受目录 vision 能力约束的图像分析，音视频/OCR 专项、流式和 Embedding 仍未完成；R0-04 仅为显式开启的千问模型增加原生微调能力。
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。合并前仍需按 `.env.example` 提供真实百炼凭据运行一次外部 smoke，未配置时保持 `capability_not_supported`。
 - R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
