@@ -214,7 +214,7 @@ R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 p
 
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 
-OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 只需配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL`、API Key 和逗号分隔的模型名即可接入；`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
+OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和逗号分隔的模型名；`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 可选，留空时适用于无认证的本地模型服务。`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
 
 ### Provider smoke
 
@@ -226,4 +226,4 @@ $env:PAST_PARTNER_PROVIDER_SMOKE_PROVIDER = "deepseek"
 python scripts/provider_smoke.py
 ```
 
-也可以将 provider 设为 `openai`、`xiaomi_mimo`、`qwen`、`ollama` 或 `custom_openai`，自定义端点需要同时配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL`、`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 和 `PAST_PARTNER_CUSTOM_OPENAI_MODELS`。未配置、超时、限流和非 JSON 响应会在 Provider 网关边界转换为稳定错误码；真实 smoke 必须使用可撤销或可控额度的测试凭据。
+也可以将 provider 设为 `openai`、`xiaomi_mimo`、`qwen`、`ollama` 或 `custom_openai`，自定义端点需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和 `PAST_PARTNER_CUSTOM_OPENAI_MODELS`，API Key 仅在端点要求认证时配置。未配置、超时、限流和非 JSON 响应会在 Provider 网关边界转换为稳定错误码；真实 smoke 必须使用可撤销或可控额度的测试凭据。

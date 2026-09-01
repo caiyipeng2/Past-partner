@@ -89,6 +89,31 @@ class ProviderSmokeTests(unittest.TestCase):
         self.assertEqual("smoke-model", _OpenAICompatibleHandler.request_body["model"])
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
+    def test_keyless_custom_openai_endpoint_omits_authorization_header(self) -> None:
+        port = self.server.server_address[1]
+        environ = {
+            "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+            "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "local-model",
+        }
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(base_catalog, environ)
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"local-model"})},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
+
+        response = gateway.chat(
+            ChatRequest(
+                provider_id="custom_openai",
+                model_id="local-model",
+                messages=(ChatMessage(role="user", content="请回复 local smoke"),),
+            )
+        )
+
+        self.assertEqual("来自本地兼容端点的回复", response.content)
+        self.assertIsNone(_OpenAICompatibleHandler.request_authorization)
+
     def test_provider_smoke_command_runs_custom_endpoint_end_to_end(self) -> None:
         port = self.server.server_address[1]
         environment = os.environ.copy()

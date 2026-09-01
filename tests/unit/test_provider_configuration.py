@@ -54,7 +54,7 @@ class ProviderConfigurationTests(unittest.TestCase):
         self.assertTrue(adapters["anthropic"].supports_model("claude-sonnet-4-5"))
         self.assertTrue(adapters["gemini"].supports_model("gemini-2.5-flash"))
 
-    def test_custom_openai_provider_requires_endpoint_key_and_models(self) -> None:
+    def test_custom_openai_provider_requires_endpoint_and_models(self) -> None:
         incomplete = build_openai_compatible_adapters(
             ProviderCatalog.default(),
             {"PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1"},
@@ -70,6 +70,18 @@ class ProviderConfigurationTests(unittest.TestCase):
             },
         )
         self.assertTrue(complete["custom_openai"].supports_model("model-b"))
+
+    def test_custom_openai_provider_allows_keyless_local_endpoint(self) -> None:
+        adapters = build_openai_compatible_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "http://127.0.0.1:11434/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "local-model",
+            },
+        )
+
+        self.assertIn("custom_openai", adapters)
+        self.assertIsNone(adapters["custom_openai"].config.api_key)
 
     def test_catalog_marks_only_runtime_adapters_as_configured(self) -> None:
         catalog = ProviderCatalog.default().with_configured({"deepseek", "qwen"})

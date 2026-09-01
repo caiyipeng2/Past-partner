@@ -30,7 +30,15 @@ _PROVIDERS = (
     _EnvironmentProvider("xiaomi_mimo", "PAST_PARTNER_XIAOMI_MIMO", "https://api.xiaomimimo.com/v1", ("MIMO_API_KEY",)),
     _EnvironmentProvider("qwen", "PAST_PARTNER_QWEN", "https://dashscope.aliyuncs.com/compatible-mode/v1", ("DASHSCOPE_API_KEY",)),
     _EnvironmentProvider("ollama", "PAST_PARTNER_OLLAMA", "http://127.0.0.1:11434/v1", key_required=False, models_required=True),
-    _EnvironmentProvider("custom_openai", "PAST_PARTNER_CUSTOM_OPENAI", None, models_required=True),
+    # Local OpenAI-compatible runtimes commonly expose no authentication;
+    # endpoint and an explicit model allowlist remain mandatory.
+    _EnvironmentProvider(
+        "custom_openai",
+        "PAST_PARTNER_CUSTOM_OPENAI",
+        None,
+        key_required=False,
+        models_required=True,
+    ),
 )
 
 _NATIVE_PROVIDERS = (
