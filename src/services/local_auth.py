@@ -30,6 +30,7 @@ from src.services.metadata_store import (
     MetadataStore,
     require_metadata_store,
 )
+from src.services.oidc_verifier import OidcClaims
 
 if TYPE_CHECKING:
     from src.server.config import DevicePairingSettings
@@ -151,6 +152,44 @@ class LocalAuthService:
         if role not in self._ACCOUNT_ROLES:
             raise LocalAuthError("account_role_invalid", "local account role is invalid")
 
+        return self._create_account_record(subject, tenant_id, role)
+
+    def issue_oidc_session(
+        self,
+        claims: OidcClaims,
+        *,
+        remote_address: str,
+    ) -> dict[str, str]:
+        """Provision or reuse a member account from already verified OIDC claims."""
+
+        if not isinstance(claims, OidcClaims):
+            raise LocalAuthError("oidc_claims_invalid", "OIDC claims are invalid")
+        # One verifier/issuer is configured per service, so the durable identity
+        # mapping can retain the provider's subject without exposing issuer syntax.
+        subject = self._identity_text(claims.subject, "subject")
+        tenant_id = self._identity_text(claims.tenant_id, "tenant_id")
+        user_id = self._find_user_by_subject(subject)
+        if user_id is None:
+            try:
+                user_id = self._create_account_record(subject, tenant_id, "member")["user_id"]
+            except LocalAuthError as exc:
+                if exc.code != "account_subject_exists":
+                    raise
+                user_id = self._find_user_by_subject(subject)
+                if user_id is None:
+                    raise
+        else:
+            identity = self._load_identity(user_id)
+            if identity["tenant_id"] != tenant_id:
+                raise LocalAuthError("oidc_identity_conflict", "OIDC subject is bound to another tenant")
+        return self._issue_session(user_id, AccessScopes.full(), session_origin="oidc")
+
+    def _create_account_record(
+        self,
+        subject: str,
+        tenant_id: str,
+        role: str,
+    ) -> dict[str, str]:
         user_id = secrets.token_hex(16)
         created_at = datetime.now(UTC).isoformat()
         payload = json.dumps(
@@ -329,7 +368,7 @@ class LocalAuthService:
             ).fetchone()
         if row is None or str(row[1]) <= now:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
-        if row[2] not in {"loopback", "device"}:
+        if row[2] not in {"loopback", "device", "oidc"}:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
         if row[2] == "device":
             current = self.device_pairing
@@ -472,6 +511,14 @@ class LocalAuthService:
         except (LocalAuthError, ValueError) as exc:
             raise LocalAuthError("account_record_invalid", "local account record is invalid") from exc
         return identity
+
+    def _find_user_by_subject(self, subject: str) -> str | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT user_id FROM local_identities WHERE subject = ?",
+                (subject,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
 
     def _decode_account(self, identity: dict[str, str], record_version: object, envelope: object) -> None:
         if record_version != self._USER_RECORD_VERSION or not isinstance(envelope, bytes):

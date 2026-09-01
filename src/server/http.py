@@ -36,6 +36,7 @@ from src.services.learning_service import LearningServiceError
 from src.services.media_analysis_service import MediaAnalysisError
 from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
+from src.services.oidc_verifier import OidcAuthError
 from src.services.training_service import TrainingServiceError
 from src.services.upload_service import UploadError
 from src.services.subscription_service import SubscriptionServiceError
@@ -88,6 +89,7 @@ _DATA_EXPORT_ARCHIVE_PATH = "/api/v1/data-export/archive"
 _DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
 _METRICS_PATH = "/api/v1/metrics"
+_OIDC_SESSION_PATH = "/api/v1/auth/oidc/session"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -206,8 +208,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.FORBIDDEN
             elif exc.code.startswith("auth_owner_record_"):
                 status = HTTPStatus.SERVICE_UNAVAILABLE
+            elif exc.code == "oidc_tls_required":
+                status = HTTPStatus.SERVICE_UNAVAILABLE
             else:
                 status = HTTPStatus.UNAUTHORIZED
+            self._error(status, exc.code, str(exc))
+        except OidcAuthError as exc:
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if exc.code in {"oidc_not_configured", "oidc_configuration_invalid"}
+                else HTTPStatus.UNAUTHORIZED
+            )
             self._error(status, exc.code, str(exc))
         except RequestValidationError as exc:
             self._error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
@@ -591,7 +602,21 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self) -> None:
         path, _ = self._request_target()
-        if path == "/api/v1/auth/session":
+        if path == _OIDC_SESSION_PATH:
+            body = self._json_body()
+            id_token = body.get("id_token")
+            if not isinstance(id_token, str) or not id_token.strip():
+                raise RequestValidationError("oidc_token_required", "id_token is required")
+            if self.server.config.mode == "production" and not self.server.is_tls:
+                raise LocalAuthError("oidc_tls_required", "OIDC login requires TLS")
+            self._json(
+                HTTPStatus.CREATED,
+                self.server.application.issue_oidc_session(
+                    id_token,
+                    self.client_address[0],
+                ),
+            )
+        elif path == "/api/v1/auth/session":
             self._json(
                 HTTPStatus.CREATED,
                 self.server.application.issue_session(
@@ -862,6 +887,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             "/api/v1/health",
             _READY_PATH,
             "/api/v1/auth/session",
+            _OIDC_SESSION_PATH,
         }
 
     def _json(self, status: HTTPStatus, value: Any) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import json
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
@@ -37,6 +38,7 @@ from src.services.local_auth import LocalAuthService, OwnerPrincipal
 from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.media_analysis_service import MediaAnalysisService
 from src.services.metadata_store import MetadataStore, MetadataStoreError, build_metadata_store
+from src.services.oidc_verifier import OidcAuthError, OidcClaims, OidcVerifier
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
@@ -90,6 +92,7 @@ class Application:
         media_analysis: MediaAnalysisService | None = None,
         billing: BillingService | None = None,
         subscriptions: SubscriptionService | None = None,
+        oidc_verifier: OidcVerifier | None = None,
     ):
         self.personas = personas
         self.imports = imports
@@ -111,6 +114,7 @@ class Application:
         self.deletion_receipts = deletion_receipts
         self.billing = billing
         self.subscriptions = subscriptions
+        self.oidc_verifier = oidc_verifier
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         self.media_analysis = media_analysis or MediaAnalysisService(
             uploads.storage,
@@ -173,6 +177,13 @@ class Application:
             bootstrap_token=config.owner_bootstrap_token,
             device_pairing=config.device_pairing_settings,
         )
+        oidc_verifier = None
+        if config.oidc_issuer is not None:
+            oidc_verifier = OidcVerifier(
+                issuer=config.oidc_issuer,
+                audience=config.oidc_audience or "",
+                jwks=json.loads(config.oidc_jwks_json or "{}"),
+            )
         persona_repository = PersonaRepository(metadata_store, encryption)
         persona_repository.assign_unowned(auth.owner_id)
         persona_repository.migrate_legacy_json(storage.root / "personas", auth.owner_id)
@@ -255,6 +266,7 @@ class Application:
             deletion_receipts,
             billing=billing,
             subscriptions=subscriptions,
+            oidc_verifier=oidc_verifier,
         )
         return application
 
@@ -311,6 +323,12 @@ class Application:
             presented_bootstrap_token,
             presented_device_bootstrap_token,
         )
+
+    def issue_oidc_session(self, id_token: str, remote_address: str) -> dict[str, Any]:
+        if self.oidc_verifier is None:
+            raise OidcAuthError("oidc_not_configured", "OIDC login is not configured")
+        claims: OidcClaims = self.oidc_verifier.verify(id_token)
+        return self.auth.issue_oidc_session(claims, remote_address=remote_address)
 
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
