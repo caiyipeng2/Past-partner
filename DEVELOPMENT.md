@@ -75,6 +75,14 @@ npm start
 docker compose up --build
 ```
 
+Compose 必须显式提供 32 字节 Base64 的 `PAST_PARTNER_MASTER_KEY`；仅用于本次开发时可在 PowerShell 生成临时值：
+
+```powershell
+$env:PAST_PARTNER_MASTER_KEY = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$env:PAST_PARTNER_MASTER_KEY_SOURCE = "environment"
+docker compose up --build
+```
+
 默认监听 `127.0.0.1:8080`，Compose 默认把容器映射到同一端口。服务启动后可访问
 `http://127.0.0.1:8080/api/v1/health`。安装 CLI 前先安装 `requirements-core.txt`，
 或直接执行 `python -m pip install -e .` 让构建后端安装核心依赖。Compose 使用命名数据卷，

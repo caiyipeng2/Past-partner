@@ -1,15 +1,18 @@
 """Run a bounded health/API smoke against each supported server surface.
 
 The smoke runner owns only the processes it starts and always terminates them.
-Compose is treated as an external disposable surface: ``down --volumes`` runs
-in the cleanup path, while a missing Docker executable is reported clearly.
+Compose is treated as an external disposable surface: each run gets a unique
+project name and a temporary master key, then ``down --volumes`` removes only
+that project's resources. A missing Docker executable is reported clearly.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -18,6 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.request import urlopen
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +108,10 @@ def _run_compose(port: int) -> dict:
         raise RuntimeError("Docker executable not found; install Docker Desktop to run compose smoke")
     env = os.environ.copy()
     env["PAST_PARTNER_COMPOSE_PORT"] = str(port)
-    base = [executable, "compose", "-f", str(ROOT / "compose.yaml")]
+    env["PAST_PARTNER_MASTER_KEY"] = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+    env["PAST_PARTNER_MASTER_KEY_SOURCE"] = "environment"
+    project_name = f"past-partner-smoke-{uuid4().hex[:12]}"
+    base = [executable, "compose", "-p", project_name, "-f", str(ROOT / "compose.yaml")]
     try:
         subprocess.run(
             base + ["up", "--build", "--detach"],
