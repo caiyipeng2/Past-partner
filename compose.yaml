@@ -9,6 +9,8 @@ services:
       PAST_PARTNER_HOST: 0.0.0.0
       PAST_PARTNER_PORT: 8080
       PAST_PARTNER_DATA_DIR: /var/lib/past-partner/data
+      PAST_PARTNER_MASTER_KEY: "${PAST_PARTNER_MASTER_KEY:?PAST_PARTNER_MASTER_KEY must be set}"
+      PAST_PARTNER_MASTER_KEY_SOURCE: "${PAST_PARTNER_MASTER_KEY_SOURCE:-environment}"
     ports:
       - "${PAST_PARTNER_COMPOSE_PORT:-8080}:8080"
     volumes:

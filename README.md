@@ -98,6 +98,14 @@ npm start
 docker compose up --build
 ```
 
+Compose 运行前必须在服务端环境提供 32 字节 Base64 的 `PAST_PARTNER_MASTER_KEY`；PowerShell 可用以下方式生成本次开发密钥（不要提交或复用到生产）：
+
+```powershell
+$env:PAST_PARTNER_MASTER_KEY = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$env:PAST_PARTNER_MASTER_KEY_SOURCE = "environment"
+docker compose up --build
+```
+
 统一执行 health/API smoke：
 
 ```powershell
