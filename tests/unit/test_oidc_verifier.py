@@ -8,7 +8,13 @@ import unittest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from src.services.oidc_verifier import OidcAuthError, OidcClaims, OidcVerifier, _fetch_remote_jwks
+from src.services.oidc_verifier import (
+    OidcAuthError,
+    OidcClaims,
+    OidcVerifier,
+    _NoRedirectHandler,
+    _fetch_remote_jwks,
+)
 
 
 def _b64url(value: bytes) -> str:
@@ -91,7 +97,7 @@ class OidcVerifierTests(unittest.TestCase):
         return f"{encoded_header}.{encoded_claims}.{_b64url(signature)}"
 
     def test_verifies_signed_claims_and_normalizes_tenant(self) -> None:
-        claims = self.verifier.verify(self._token(aud=["other", self.audience]))
+        claims = self.verifier.verify(self._token(aud=["other", self.audience], azp=self.audience))
 
         self.assertEqual(
             OidcClaims(
@@ -140,6 +146,16 @@ class OidcVerifierTests(unittest.TestCase):
             with self.subTest(header=header):
                 with self.assertRaises(OidcAuthError):
                     self.verifier.verify(token)
+
+    def test_multi_audience_token_requires_matching_authorized_party(self) -> None:
+        for azp in (None, "other-client"):
+            with self.subTest(azp=azp), self.assertRaises(OidcAuthError):
+                self.verifier.verify(self._token(aud=[self.audience, "other-client"], azp=azp))
+
+        claims = self.verifier.verify(
+            self._token(aud=[self.audience, "other-client"], azp=self.audience)
+        )
+        self.assertEqual("user-1", claims.subject)
 
     def test_refreshes_remote_jwks_for_a_rotated_signing_key(self) -> None:
         rotated_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -218,9 +234,14 @@ class OidcVerifierTests(unittest.TestCase):
 
         from unittest.mock import patch
 
-        with patch("src.services.oidc_verifier.urlopen", return_value=_Response()):
+        with patch("src.services.oidc_verifier._REMOTE_JWKS_OPENER.open", return_value=_Response()):
             with self.assertRaises(OidcAuthError) as captured:
                 _fetch_remote_jwks("https://issuer.example/jwks")
+        self.assertEqual("oidc_keys_unavailable", captured.exception.code)
+
+    def test_remote_jwks_redirect_is_rejected(self) -> None:
+        with self.assertRaises(OidcAuthError) as captured:
+            _NoRedirectHandler().redirect_request(None, "http://127.0.0.1/private", 302, "redirect", {})
         self.assertEqual("oidc_keys_unavailable", captured.exception.code)
 
 

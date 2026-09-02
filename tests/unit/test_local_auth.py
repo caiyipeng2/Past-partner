@@ -12,6 +12,7 @@ from uuid import uuid4
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
 from src.domain.access_scope import AccessScopes
 from src.services.local_auth import LocalAuthError, LocalAuthService
+from src.services.oidc_verifier import OidcClaims
 from src.server.config import DevicePairingSettings
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
 
@@ -239,6 +240,22 @@ class LocalAuthTests(unittest.TestCase):
             second_principal.subject,
             second_principal.role,
         ))
+
+    def test_oidc_identity_key_includes_issuer_for_reused_subjects(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        first = auth.issue_oidc_session(
+            OidcClaims("https://issuer-a.example", "same-subject", "past-partner", "tenant-a", expires_at),
+            remote_address="127.0.0.1",
+        )
+        second = auth.issue_oidc_session(
+            OidcClaims("https://issuer-b.example", "same-subject", "past-partner", "tenant-b", expires_at),
+            remote_address="127.0.0.1",
+        )
+
+        self.assertNotEqual(first["user_id"], second["user_id"])
+        self.assertEqual("tenant-a", auth.authenticate(f"Bearer {first['access_token']}").tenant_id)
+        self.assertEqual("tenant-b", auth.authenticate(f"Bearer {second['access_token']}").tenant_id)
 
     def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")

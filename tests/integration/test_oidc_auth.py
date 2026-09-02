@@ -154,6 +154,36 @@ class OidcAuthHttpTests(unittest.TestCase):
         self.assertEqual("oidc_identity_conflict", payload["error"]["code"])
         self.assertNotIn(session["access_token"], json.dumps(payload))
 
+    def test_member_scope_is_limited_by_owner_id_even_when_sessions_share_a_tenant(self) -> None:
+        status, first = self._request(
+            "POST",
+            "/api/v1/auth/oidc/session",
+            {"id_token": self._token(subject="account-a")},
+        )
+        self.assertEqual(201, status)
+        status, persona = self._request(
+            "POST",
+            "/api/v1/personas",
+            {"display_name": "Account A", "relationship_type": "friend"},
+            token=first["access_token"],
+        )
+        self.assertEqual(201, status)
+
+        status, second = self._request(
+            "POST",
+            "/api/v1/auth/oidc/session",
+            {"id_token": self._token(subject="account-b")},
+        )
+        self.assertEqual(201, status)
+        self.assertEqual("member", second["role"])
+        status, payload = self._request(
+            "GET",
+            f"/api/v1/personas/{persona['id']}",
+            token=second["access_token"],
+        )
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", payload["error"]["code"])
+
 
 if __name__ == "__main__":
     unittest.main()

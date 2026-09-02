@@ -14,7 +14,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -31,6 +31,16 @@ _MAX_JWKS_KEYS = 32
 _MAX_JWKS_BYTES = 256 * 1024
 _JWKS_FETCH_TIMEOUT_SECONDS = 5.0
 _JWKS_REFRESH_INTERVAL_SECONDS = 60.0
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so a validated HTTPS JWKS URI cannot become SSRF."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object):
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable")
+
+
+_REMOTE_JWKS_OPENER = build_opener(_NoRedirectHandler)
 
 
 class OidcAuthError(ValueError):
@@ -83,6 +93,7 @@ class OidcVerifier:
         self._keys = _load_rsa_keys(jwks, allow_empty=self._jwks_uri is not None)
         self._last_refresh_at = float("-inf")
         self._keys_lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def verify(self, token: str) -> OidcClaims:
@@ -119,8 +130,13 @@ class OidcVerifier:
 
         if claims.get("iss") != self.issuer:
             raise OidcAuthError("oidc_claims_invalid", "OIDC issuer claim is invalid")
-        if not _audience_matches(claims.get("aud"), self.audience):
+        audience = claims.get("aud")
+        if not _audience_matches(audience, self.audience):
             raise OidcAuthError("oidc_claims_invalid", "OIDC audience claim is invalid")
+        if isinstance(audience, list) and len(audience) > 1 and claims.get("azp") != self.audience:
+            raise OidcAuthError("oidc_claims_invalid", "OIDC authorized-party claim is invalid")
+        if claims.get("azp") is not None and claims.get("azp") != self.audience:
+            raise OidcAuthError("oidc_claims_invalid", "OIDC authorized-party claim is invalid")
         subject = _bounded_text(claims.get("sub"), "subject", _MAX_SUBJECT_LENGTH)
         expires_at = _timestamp(claims.get("exp"), "expiration")
         now = self._now()
@@ -154,13 +170,20 @@ class OidcVerifier:
             key = self._keys.get(kid)
             if key is not None or self._jwks_uri is None:
                 return key
-            now = self._monotonic_clock()
-            if now - self._last_refresh_at < self._refresh_interval_seconds:
-                return None
-            self._last_refresh_at = now
+        # Network I/O is deliberately outside the key cache lock. Known keys can
+        # continue authenticating while one unknown kid refreshes the cache.
+        with self._refresh_lock:
+            with self._keys_lock:
+                key = self._keys.get(kid)
+                if key is not None or self._jwks_uri is None:
+                    return key
+                now = self._monotonic_clock()
+                if now - self._last_refresh_at < self._refresh_interval_seconds:
+                    return None
+                self._last_refresh_at = now
             try:
                 refreshed = self._jwks_fetcher(self._jwks_uri)
-                self._keys = _load_rsa_keys(refreshed)
+                refreshed_keys = _load_rsa_keys(refreshed)
             except OidcAuthError as exc:
                 if exc.code == "oidc_keys_unavailable":
                     raise OidcAuthError(
@@ -170,7 +193,9 @@ class OidcVerifier:
                 raise
             except Exception as exc:
                 raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable") from exc
-            return self._keys.get(kid)
+            with self._keys_lock:
+                self._keys = refreshed_keys
+                return self._keys.get(kid)
 
 
 def _load_rsa_keys(
@@ -239,7 +264,7 @@ def _validate_jwks_uri(value: str | None) -> str | None:
 def _fetch_remote_jwks(uri: str) -> Mapping[str, Any]:
     request = Request(uri, headers={"Accept": "application/json"}, method="GET")
     try:
-        with urlopen(request, timeout=_JWKS_FETCH_TIMEOUT_SECONDS) as response:
+        with _REMOTE_JWKS_OPENER.open(request, timeout=_JWKS_FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read(_MAX_JWKS_BYTES + 1)
     except (HTTPError, URLError, socket.timeout, TimeoutError, OSError) as exc:
         raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable") from exc
@@ -274,7 +299,7 @@ def _json_object(raw: bytes) -> Mapping[str, Any]:
 def _audience_matches(value: object, expected: str) -> bool:
     if isinstance(value, str):
         return value == expected
-    return isinstance(value, list) and any(item == expected for item in value if isinstance(item, str))
+    return isinstance(value, list) and all(isinstance(item, str) for item in value) and expected in value
 
 
 def _bounded_text(value: object, label: str, limit: int) -> str:
