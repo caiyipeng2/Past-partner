@@ -233,6 +233,7 @@ class ServerConfigTests(unittest.TestCase):
             "PAST_PARTNER_OIDC_ISSUER": "https://issuer.example",
             "PAST_PARTNER_OIDC_AUDIENCE": "past-partner",
             "PAST_PARTNER_OIDC_JWKS_JSON": '{"keys": []}',
+            "PAST_PARTNER_OIDC_JWKS_URI": "https://issuer.example/jwks",
         }
         with patch.dict(os.environ, values, clear=False):
             config = ServerConfig.from_env()
@@ -240,6 +241,40 @@ class ServerConfigTests(unittest.TestCase):
         self.assertEqual(values["PAST_PARTNER_OIDC_ISSUER"], config.oidc_issuer)
         self.assertEqual(values["PAST_PARTNER_OIDC_AUDIENCE"], config.oidc_audience)
         self.assertEqual(values["PAST_PARTNER_OIDC_JWKS_JSON"], config.oidc_jwks_json)
+        self.assertEqual(values["PAST_PARTNER_OIDC_JWKS_URI"], config.oidc_jwks_uri)
+
+    def test_oidc_config_accepts_https_remote_jwks_uri_without_inline_keys(self) -> None:
+        config = ServerConfig(
+            oidc_issuer="https://issuer.example",
+            oidc_audience="past-partner",
+            oidc_jwks_uri="https://issuer.example/.well-known/jwks.json",
+        ).validated()
+
+        self.assertEqual("https://issuer.example/.well-known/jwks.json", config.oidc_jwks_uri)
+
+        with self.assertRaises(ValueError) as insecure:
+            ServerConfig(
+                oidc_issuer="https://issuer.example",
+                oidc_audience="past-partner",
+                oidc_jwks_uri="http://issuer.example/jwks",
+            ).validated()
+        self.assertEqual("oidc_jwks_uri_invalid", insecure.exception.code)
+
+        with self.assertRaises(ValueError) as query:
+            ServerConfig(
+                oidc_issuer="https://issuer.example",
+                oidc_audience="past-partner",
+                oidc_jwks_uri="https://issuer.example/jwks?token=secret",
+            ).validated()
+        self.assertEqual("oidc_jwks_uri_invalid", query.exception.code)
+
+        blank_inline = ServerConfig(
+            oidc_issuer="https://issuer.example",
+            oidc_audience="past-partner",
+            oidc_jwks_json="  ",
+            oidc_jwks_uri="https://issuer.example/jwks",
+        ).validated()
+        self.assertEqual("https://issuer.example/jwks", blank_inline.oidc_jwks_uri)
 
     def test_postgresql_backend_requires_dsn_and_normalizes_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "DSN") as captured:
