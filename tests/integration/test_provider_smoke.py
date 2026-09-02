@@ -25,6 +25,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
     request_authorization: str | None = None
     multipart_fields: dict[str, str] | None = None
     multipart_file: bytes | None = None
+    multipart_file_content_type: str | None = None
     request_path: str | None = None
     response_status = 200
     response_body = {
@@ -59,6 +60,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 name = part.get_param("name", header="content-disposition")
                 if name == "file":
                     file_bytes = part.get_payload(decode=True)
+                    self.__class__.multipart_file_content_type = part.get_content_type()
                 elif isinstance(name, str):
                     value = part.get_payload(decode=True) or b""
                     fields[name] = value.decode("utf-8")
@@ -85,6 +87,7 @@ class ProviderSmokeTests(unittest.TestCase):
         _OpenAICompatibleHandler.request_authorization = None
         _OpenAICompatibleHandler.multipart_fields = None
         _OpenAICompatibleHandler.multipart_file = None
+        _OpenAICompatibleHandler.multipart_file_content_type = None
         _OpenAICompatibleHandler.request_path = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -273,6 +276,7 @@ class ProviderSmokeTests(unittest.TestCase):
             _OpenAICompatibleHandler.multipart_fields,
         )
         self.assertEqual(media, _OpenAICompatibleHandler.multipart_file)
+        self.assertEqual("audio/wav", _OpenAICompatibleHandler.multipart_file_content_type)
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
 
