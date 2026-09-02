@@ -85,12 +85,19 @@ def build_openai_compatible_adapters(
         if not base_url or not allowed_models:
             continue
         _validate_base_url(base_url, definition.provider_id)
+        audio_models = _models(environment.get(f"{definition.prefix}_AUDIO_MODELS"))
+        if not audio_models.issubset(allowed_models):
+            raise ValueError(f"{definition.prefix}_AUDIO_MODELS must be included in {definition.prefix}_MODELS")
         adapters[definition.provider_id] = OpenAICompatibleAdapter(
             OpenAICompatibleConfig(
                 provider_id=definition.provider_id,
                 base_url=base_url,
                 api_key=api_key,
                 allowed_models=allowed_models,
+                media_capabilities={
+                    model_id: frozenset({"audio"})
+                    for model_id in audio_models
+                },
             )
         )
     return adapters

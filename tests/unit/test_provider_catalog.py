@@ -166,6 +166,23 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual("local", catalog.find_model("ollama", "llama3.2").pricing.source)
         self.assertEqual(0, estimate.total_cost)
 
+    def test_explicit_media_capabilities_are_added_only_to_selected_models(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"audio-model", "text-model"})},
+            media_capabilities={"custom_openai": {"audio-model": frozenset({"audio"})}},
+        )
+
+        provider = catalog.provider("custom_openai")
+        audio_model = catalog.find_model("custom_openai", "audio-model")
+        text_model = catalog.find_model("custom_openai", "text-model")
+        self.assertIn("audio", provider.capabilities)
+        self.assertIsNotNone(audio_model)
+        self.assertIsNotNone(text_model)
+        assert audio_model is not None and text_model is not None
+        self.assertIn("audio", audio_model.capabilities)
+        self.assertNotIn("audio", text_model.capabilities)
+
 
 if __name__ == "__main__":
     unittest.main()
