@@ -169,7 +169,7 @@ P1-03 已增加通用 HTML 聊天记录解析，支持常见消息容器、发�
 原始任务编号对齐：ZIP 安全边界已随 P0-32/P0-33 备份解析落地，对应原 P1-04；通用 SQLite schema 探测对应原 P1-05；微信/QQ 原生数据库目录解析对应原 P1-06/P1-07。当前 P1-07 已补充支持 `.db`、`.sqlite`、`.sqlite3` 及其 WAL/SHM sidecar，并保持只读快照、未知 schema 和密钥需求的明确错误。
 附件引用元数据标准化是额外补充能力（不占用原始 P1-05 编号）：JSON/JSONL、CSV、XML、HTML 和通用 SQLite 消息中的图片、音频、视频、文件、贴纸引用会统一为安全的相对路径或 URL、文件名、MIME、类型、大小和可选校验值；绝对路径、路径穿越、内嵌原始字节会被拒绝，解析器不会读取媒体内容。
 原 P1-08 DOCX 对话文档解析已独立收口：只读取受控 `word/document.xml`，保留段落内换行和制表符，并对损坏、超限、不安全归档和无对话内容返回明确错误。原 P1-09 PDF 对话文档解析现已独立收口：优先使用可选 `pypdf`，并保留有界纯文本回退，支持常见文本操作符和 UTF-16 十六进制文本；加密、页数超限、损坏和无对话内容会返回明确错误。文档扩展名优先于通用文本探测。
-P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商、模型、数据类别和作用域精确匹配，记录使用 AES-GCM 加密保存，支持 owner 级查询、撤回和人物删除级联清理。原始媒体只在存在有效授权时才允许后续第三方处理；本地上传、解析或保存媒体引用不等于同意向第三方发送。当前任务只提供授权生命周期，不触发 OCR、ASR、视觉分析或真实媒体模型调用。
+P1-10 已增加第三方媒体处理授权记录：授权按人物、供应商、模型、数据类别和作用域精确匹配，记录使用 AES-GCM 加密保存，支持 owner 级查询、撤回和人物删除级联清理。原始媒体只在存在有效授权时才允许后续第三方处理；本地上传、解析或保存媒体引用不等于同意向第三方发送。当前 P1-10 任务只提供授权生命周期；R2-02 的图像分析和显式音频转写会在各自链路再次校验授权与模型能力。
 P2-01 已扩展模型目录元数据，提供能力、上下文长度、区域、隐私标签、结构化价格和价格刷新时间；可通过 `PAST_PARTNER_MODEL_PRICING_JSON` 配置供应商/管理员价格。`POST /api/v1/models/cost-estimate` 按输入/输出 token 和媒体单位返回可复核估算，未配置价格时明确返回 `pricing_unavailable`，不生成伪造成本。价格是估算值，不替代供应商最终账单。
 P2-02 已补齐统一 Provider 构建入口：OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义 OpenAI-compatible 继续使用兼容协议；Anthropic Messages 与 Google Gemini `generateContent` 使用原生请求/响应适配器。所有网络调用都经过统一 JSON 传输边界，未配置凭据时仍返回 `provider_not_configured`；本任务不实现流式、Embedding、媒体分析或微调。
 
@@ -184,6 +184,8 @@ P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/autho
 P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 只在本地短暂构建并清除受限 JSONL，返回样本量、摘要和价格；创建任务要求独立的 `persona_text`、`fine_tuning`、`fine_tuning:{import_id}` 精确授权，且同一份成本授权只能提交一次。数据集只包含已接受的 `persona` 文本，用户、其他参与者、未审核或已拒绝记录不会作为目标样本。任务元数据（状态、进度、可重试性、诊断 ID、摘要、成本、Provider 工件和评测）以 AES-GCM 加密保存，不保存正文、临时路径、凭据或完整 Provider 响应；`GET /api/v1/training-jobs`、`GET /api/v1/training-jobs/{job_id}` 与 `POST /api/v1/training-jobs/{job_id}/cancel` 提供 owner 范围状态管理。外发前会加密保存 `submission_started` 意图；任何微调适配器都必须能按本地 job ID 对账，才能在 Provider 已接受而远端 ID 持久化失败后继续查询或取消。`local_cleanup_failure_code` 独立记录临时明文清理故障，不会把已验证的 Provider 完成结果改写为 `failed`。只有 Provider 返回非空工件 ID 和评测对象才会标记 `completed`。当前真实供应商适配器尚未声明 `fine_tuning` 能力，开发和生产环境会明确拒绝；确定性 Provider 仅在 `PAST_PARTNER_MODE=test` 下用于自动化合同测试，不能视为实际模型训练。
 
 媒体处理实测补充（不占用原路线图任务编号）：已完成上传的图片、音频或视频可调用 `GET /api/v1/imports/{import_id}/media-inspection` 获取本地验证的格式元数据。当前图片格式映射为 BMP、GIF、ICO、JPEG、PNG、TIFF、WebP；音频格式映射为 Ogg、WAV、MP3；视频格式映射为 WebM、MP4（其他格式会明确拒绝，不伪造成功）。图片返回格式和尺寸；音频/视频返回格式、时长、编码、采样率或画面尺寸。该接口仅在服务端受控临时路径中处理单个文件边界，响应不包含原始字节或本地路径，且明确返回 `provider_transfer: false`。它不执行 OCR、ASR、图片/视频语义理解，也不调用模型；图片检测需要 `requirements-parsers.txt` 中的 Pillow，音频和视频检测还需要本机 `ffprobe` 位于 `PATH`。
+
+R2-02 增加了受精确授权和目录能力门控的 OpenAI-compatible 音频转写：将 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS` 配置为对应模型白名单后，`POST /api/v1/imports/{import_id}/media-analysis` 使用 `data_category=audio` 才会调用标准 `/audio/transcriptions` multipart 接口。只发送用户选择的单个受限音频文件、模型、转写提示词和 `response_format=json`，响应中的 `description` 是归一化转写文本；未显式配置的模型返回 `capability_not_supported`。视频语义分析、OCR 专用结构化提取、供应商原生 ASR 差异、流式转写和第三方删除仍未实现。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
@@ -215,6 +217,8 @@ R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 p
 模型价格和附加元数据通过 `PAST_PARTNER_MODEL_PRICING_JSON` 由部署者维护，格式见 `.env.example`；服务会在 `/api/v1/models` 返回刷新时间，并通过 `/api/v1/models/cost-estimate` 提供估算。未配置价格的模型仍可展示能力，但不能生成成本估算。
 
 OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和逗号分隔的模型名；`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 可选，留空时适用于无认证的本地模型服务。`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
+
+OpenAI-compatible provider 的音频转写还需要配置对应的 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS`，其值必须是同一 provider `*_MODELS` 的子集；留空时音频能力保持关闭。标准转写请求使用 `/audio/transcriptions` multipart 接口，响应中的 `description` 是归一化文本；视频语义分析、OCR、流式转写和供应商原生 ASR 差异仍未实现。
 
 ### Provider smoke
 

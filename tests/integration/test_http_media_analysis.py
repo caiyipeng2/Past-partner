@@ -31,8 +31,8 @@ class _FakeMediaAnalysisService:
             "provider_id": payload["provider_id"],
             "model_id": payload["model_id"],
             "media_category": payload["data_category"],
-            "media_type": "image/png",
-            "description": "受控图片描述",
+            "media_type": "audio/wav" if payload["data_category"] == "audio" else "image/png",
+            "description": "受控音频转写" if payload["data_category"] == "audio" else "受控图片描述",
             "usage": {"prompt_tokens": 3},
             "provider_transfer": True,
             "provider_request_id": "request-1",
@@ -143,6 +143,28 @@ class HttpMediaAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(502, status)
         self.assertEqual("provider_unavailable", payload["error"]["code"])
+
+    def test_media_analysis_route_exposes_normalized_audio_transcription(self) -> None:
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/imports/import-1/media-analysis",
+            {
+                "consent_id": "consent-audio",
+                "provider_id": "custom_openai",
+                "model_id": "audio-model",
+                "data_category": "audio",
+                "authorization_scope": "persona-audio-transcription",
+                "prompt": "请转写音频",
+                "file_id": "file-1",
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("audio", payload["media_category"])
+        self.assertEqual("受控音频转写", payload["description"])
+        self.assertEqual("audio/wav", payload["media_type"])
+        self.assertNotIn("raw_bytes", payload)
+        self.assertNotIn("media_path", payload)
 
 
 if __name__ == "__main__":
