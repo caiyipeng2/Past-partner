@@ -104,6 +104,8 @@ def urllib_multipart_transport(
     content_type = file_content_type or "application/jsonl"
     if not isinstance(content_type, str) or "/" not in content_type or "\r" in content_type or "\n" in content_type:
         raise AdapterError("invalid_provider_request", "multipart file content type is invalid")
+    if file_content_type is not None and file_path.suffix.casefold() == ".bin":
+        filename = _media_filename(content_type)
     parts: list[bytes] = []
     for name, value in fields.items():
         parts.extend(
@@ -173,3 +175,21 @@ def urllib_multipart_transport(
     if not isinstance(payload, Mapping):
         raise AdapterError("invalid_provider_response", "provider response must be a JSON object")
     return payload
+
+
+def _media_filename(content_type: str) -> str:
+    extension = {
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/mp4": "m4a",
+        "audio/x-m4a": "m4a",
+        "audio/ogg": "ogg",
+        "audio/webm": "webm",
+        "audio/flac": "flac",
+    }.get(content_type.casefold())
+    if extension is None:
+        subtype = content_type.split("/", 1)[1].split(";", 1)[0].casefold()
+        extension = "".join(character for character in subtype if character.isalnum()) or "audio"
+    return f"audio.{extension}"

@@ -396,10 +396,6 @@ class ProviderCatalog:
             provider_capabilities = base_provider_capabilities
             for capability in sorted(media_provider_capabilities):
                 provider_capabilities = _append_capability(provider_capabilities, capability)
-            if supported_fine_tuning and any(
-                model.id in supported_fine_tuning for model in models
-            ):
-                provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
             if provider.id in runtime_models and provider.model_discovery != "catalog":
                 models = tuple(
                     ModelDefinition(
@@ -440,6 +436,10 @@ class ProviderCatalog:
                     )
                     for model in models
                 )
+            if supported_fine_tuning and any(
+                model.id in supported_fine_tuning for model in models
+            ):
+                provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
             providers.append(
                 replace(
                     provider,

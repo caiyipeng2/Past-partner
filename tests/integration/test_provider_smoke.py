@@ -26,6 +26,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
     multipart_fields: dict[str, str] | None = None
     multipart_file: bytes | None = None
     multipart_file_content_type: str | None = None
+    multipart_file_name: str | None = None
     request_path: str | None = None
     response_status = 200
     response_body = {
@@ -61,6 +62,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 if name == "file":
                     file_bytes = part.get_payload(decode=True)
                     self.__class__.multipart_file_content_type = part.get_content_type()
+                    self.__class__.multipart_file_name = part.get_filename()
                 elif isinstance(name, str):
                     value = part.get_payload(decode=True) or b""
                     fields[name] = value.decode("utf-8")
@@ -88,6 +90,7 @@ class ProviderSmokeTests(unittest.TestCase):
         _OpenAICompatibleHandler.multipart_fields = None
         _OpenAICompatibleHandler.multipart_file = None
         _OpenAICompatibleHandler.multipart_file_content_type = None
+        _OpenAICompatibleHandler.multipart_file_name = None
         _OpenAICompatibleHandler.request_path = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -252,7 +255,7 @@ class ProviderSmokeTests(unittest.TestCase):
         )
         gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
         media = b"fake-audio"
-        source_fd, source_name = tempfile.mkstemp(suffix=".wav")
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
         os.close(source_fd)
         source_path = Path(source_name)
         source_path.write_bytes(media)
@@ -277,6 +280,7 @@ class ProviderSmokeTests(unittest.TestCase):
         )
         self.assertEqual(media, _OpenAICompatibleHandler.multipart_file)
         self.assertEqual("audio/wav", _OpenAICompatibleHandler.multipart_file_content_type)
+        self.assertEqual("audio.wav", _OpenAICompatibleHandler.multipart_file_name)
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
 

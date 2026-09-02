@@ -197,6 +197,23 @@ class ProviderCatalogTests(unittest.TestCase):
         assert model is not None
         self.assertIn("audio", model.capabilities)
 
+    def test_runtime_qwen_model_can_receive_audio_and_fine_tuning_capabilities(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"qwen"},
+            {"qwen": frozenset({"qwen-audio"})},
+            {"qwen": frozenset({"qwen-audio"})},
+            media_capabilities={"qwen": {"qwen-audio": frozenset({"audio"})}},
+        )
+
+        provider = catalog.provider("qwen")
+        model = catalog.find_model("qwen", "qwen-audio")
+        self.assertIn("audio", provider.capabilities)
+        self.assertIn("fine_tuning", provider.capabilities)
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertIn("audio", model.capabilities)
+        self.assertIn("fine_tuning", model.capabilities)
+
 
 if __name__ == "__main__":
     unittest.main()
