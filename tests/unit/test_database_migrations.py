@@ -66,6 +66,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (19, "billing_entries"),
                 (20, "subscription_entitlements"),
                 (21, "audit_chain"),
+                (22, "oidc_sessions"),
             ],
             rows,
         )
@@ -99,7 +100,9 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertTrue({"chain_sequence", "previous_hash", "event_hash"}.issubset(columns))
 
     def test_audit_chain_migration_anchors_existing_events(self) -> None:
-        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-1]).migrate()
+        # Keep the audit-chain migration pending while the later OIDC session
+        # migration remains outside this focused setup.
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-2]).migrate()
         key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
         encryption = AuthenticatedEncryptionService(
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
@@ -340,6 +343,33 @@ class SQLiteMigrationTests(unittest.TestCase):
             {"user_id", "tenant_id", "subject", "role", "created_at"},
             columns,
         )
+
+    def test_oidc_session_origin_migration_preserves_existing_sessions(self) -> None:
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:8]).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) "
+                "VALUES ('owner-1', 'owner', 1, X'01')"
+            )
+            connection.execute(
+                "INSERT INTO local_sessions (token_hash, user_id, expires_at) "
+                "VALUES (X'0101010101010101010101010101010101010101010101010101010101010101', "
+                "'owner-1', '2099-01-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+        SQLiteMigrator(self.database_path).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO local_sessions "
+                "(token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes) "
+                "VALUES (X'0202020202020202020202020202020202020202020202020202020202020202', "
+                "'owner-1', '2099-01-01T00:00:00+00:00', 'oidc', NULL, 'owner:read,owner:write')"
+            )
+            rows = connection.execute(
+                "SELECT session_origin FROM local_sessions ORDER BY token_hash"
+            ).fetchall()
+        self.assertEqual([("loopback",), ("oidc",)], rows)
 
 
 if __name__ == "__main__":

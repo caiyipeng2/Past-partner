@@ -128,7 +128,7 @@ R1-04 broker 契约切片增加任务通知 outbox：每次任务入队会在同
 
 R1-04 worker 观测切片在共享元数据后端追加有界 `worker_observations`：每次 worker 轮询只保存 worker/task 类型、固定生命周期结果、UTC 时间、耗时和稳定失败码。记录不含 owner、任务 ID、载荷、异常文本、provider、凭据或文件路径，并按保留时间和每 worker 数量自动清理。`WorkerObservability.evaluate_alerts()` 可在内部演练高失败率和无心跳告警；当前仍不提供客户端路由、Prometheus 外部推送/抓取、追踪、日志外发或 SIEM。
 
-P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容；本任务不伪造 OIDC/OAuth 注册、账户管理、管理员角色、计费或公网部署能力，这些仍属于后续生产化任务。
+P4-07 增加多用户隔离的最小可验证基础：本地会话持久化 `owner:read`/`owner:write` scope，认证主体携带不可变 scope 集合，GET API 需要 `owner:read`，写入和删除 API 需要 `owner:write`，缺少 scope 返回 403。未提供 scope 的现有本地开发会话默认拥有两项 scope，保持单 owner 兼容。R1-03 第一阶段新增可选的静态 JWKS OIDC 登录入口 `POST /api/v1/auth/oidc/session`：服务端验证 RS256 ID Token 的 issuer、audience、subject、tenant 和有效期后，才创建或复用加密本地主体会话；token 不落盘，OIDC 会话使用独立来源标记。远程 discovery、密钥轮换、刷新令牌、账户恢复、管理员角色 API 和正式租户管理仍待后续切片。
 
 P4-08 增加 owner 范围的加密追加式业务审计基础：人物/导入删除、第三方授权确认与撤回、已确认的训练取消会写入有限事件元数据，事件载荷使用 AES-GCM 加密且只允许固定的 provider/model/scope/数量/原因键；原始聊天正文、媒体、文件路径、token、API Key 和完整 Provider 响应不会写入审计记录。`GET /api/v1/audit-events` 需要 `owner:read`，支持 1-100 条分页和不透明游标；事件记录不可通过 API 修改或删除。该切片不等同于合规 WORM/监管审计，不记录失败或未授权请求，不提供外部 SIEM、计费或监控能力，数据导出摘要仍明确排除审计记录。
 
@@ -202,7 +202,7 @@ P0-18 已加入基于内容探测的通用解析器注册表；P0-19 的标准�
 
 应用已装配统一主密钥提供器。默认 `PAST_PARTNER_MASTER_KEY_SOURCE=auto` 保持环境密钥优先：`PAST_PARTNER_MASTER_KEY` 必须是严格 Base64 编码的 32 字节随机密钥；没有环境密钥时，Windows 本地开发模式才会使用当前用户 DPAPI 保护的本地密钥。显式选择 `environment` 时只读取环境密钥，显式选择 `dpapi` 仅允许开发模式；生产或测试环境应显式选择 `kms`，配置 `PAST_PARTNER_MASTER_KEY_KMS_KEY_ID`，可选指定 `PAST_PARTNER_MASTER_KEY_KMS_CIPHERTEXT_FILE`（默认 `<data-dir>/secrets/master-key.kms`）。KMS provider 通过 AWS-compatible `boto3` 客户端加解密 32 字节数据密钥，本地只持久化 KMS 密文，绝不写入明文密钥；首次生成需要 `PAST_PARTNER_MASTER_KEY_KMS_AUTO_PROVISION=true`，缺少密文或 KMS 调用失败都会 fail closed，不会回退到环境/DPAPI。KMS endpoint 在生产必须使用 HTTPS，`boto3` 依赖可通过 `requirements-storage.txt` 安装；不要把云凭据、密文文件或密钥 ID 写入仓库和客户端。DPAPI 文件不能跨 Windows 用户直接解保护，不应作为备份密钥使用。
 
-P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片和合并对象接入该服务；P0-07 已将人物名称、关系等内容字段迁入加密 SQLite 仓储，P0-08 又将导入任务和上传清单迁入同一事务仓储，P0-09 增加本地 owner Bearer 会话并为人物、导入和上传接口执行 owner 归属校验，随机服务端 ID 仅作为非秘密索引。每个分片、人物记录、导入任务和清单记录使用独立随机数据密钥和 nonce，AAD 绑定对象身份；3 GiB 导入始终按有界分片处理。启动时会先加密迁移旧 `personas/*.json`、`imports/*.json` 和 `upload-manifests/*.json`，提交成功后才删除明文源文件。开发模式只允许回环地址初始化会话，生产模式需配置 `PAST_PARTNER_OWNER_BOOTSTRAP_TOKEN`；OIDC/OAuth2、多用户账户和审计属于后续任务，具体限制见 `docs/privacy_policy.md`。
+P0-05 提供版本化 AES-256-GCM 信封加密服务；P0-06 已将上传分片和合并对象接入该服务；P0-07 已将人物名称、关系等内容字段迁入加密 SQLite 仓储，P0-08 又将导入任务和上传清单迁入同一事务仓储，P0-09 增加本地 owner Bearer 会话并为人物、导入和上传接口执行 owner 归属校验，随机服务端 ID 仅作为非秘密索引。每个分片、人物记录、导入任务和清单记录使用独立随机数据密钥和 nonce，AAD 绑定对象身份；3 GiB 导入始终按有界分片处理。启动时会先加密迁移旧 `personas/*.json`、`imports/*.json` 和 `upload-manifests/*.json`，提交成功后才删除明文源文件。开发模式只允许回环地址初始化会话，生产模式可通过 `PAST_PARTNER_OIDC_ISSUER`、`PAST_PARTNER_OIDC_AUDIENCE` 和 `PAST_PARTNER_OIDC_JWKS_JSON` 配置静态 JWKS OIDC 登录；远程 discovery、刷新令牌、账户恢复和正式租户管理仍属于后续任务，具体限制见 `docs/privacy_policy.md`。
 
 模型供应商需要在服务端显式配置凭据和允许的模型。未配置时接口返回 `provider_not_configured`，不会生成模拟回复。微调能力同样遵循目录能力、适配器、精确训练授权和价格检查，不会返回伪造训练指标；在接入并验证真实供应商微调适配器前，默认目录不会把现有模型标记为可训练。
 

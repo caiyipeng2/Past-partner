@@ -207,6 +207,40 @@ class ServerConfigTests(unittest.TestCase):
         self.assertEqual(raw, config.model_pricing_json)
         self.assertIsNone(ServerConfig().model_pricing_json)
 
+    def test_oidc_config_requires_complete_https_issuer_audience_and_jwks(self) -> None:
+        with self.assertRaises(ValueError) as incomplete:
+            ServerConfig(oidc_issuer="https://issuer.example").validated()
+        self.assertEqual("oidc_configuration_incomplete", incomplete.exception.code)
+
+        with self.assertRaises(ValueError) as insecure:
+            ServerConfig(
+                oidc_issuer="http://issuer.example",
+                oidc_audience="past-partner",
+                oidc_jwks_json='{"keys": []}',
+            ).validated()
+        self.assertEqual("oidc_issuer_invalid", insecure.exception.code)
+
+        with self.assertRaises(ValueError) as malformed:
+            ServerConfig(
+                oidc_issuer="https://issuer.example",
+                oidc_audience="past-partner",
+                oidc_jwks_json="not-json",
+            ).validated()
+        self.assertEqual("oidc_jwks_invalid", malformed.exception.code)
+
+    def test_oidc_config_is_loaded_from_environment(self) -> None:
+        values = {
+            "PAST_PARTNER_OIDC_ISSUER": "https://issuer.example",
+            "PAST_PARTNER_OIDC_AUDIENCE": "past-partner",
+            "PAST_PARTNER_OIDC_JWKS_JSON": '{"keys": []}',
+        }
+        with patch.dict(os.environ, values, clear=False):
+            config = ServerConfig.from_env()
+
+        self.assertEqual(values["PAST_PARTNER_OIDC_ISSUER"], config.oidc_issuer)
+        self.assertEqual(values["PAST_PARTNER_OIDC_AUDIENCE"], config.oidc_audience)
+        self.assertEqual(values["PAST_PARTNER_OIDC_JWKS_JSON"], config.oidc_jwks_json)
+
     def test_postgresql_backend_requires_dsn_and_normalizes_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "DSN") as captured:
             ServerConfig(metadata_backend="postgres").validated()

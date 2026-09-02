@@ -121,6 +121,8 @@ def _backfill_audit_chain(connection: object) -> None:
 # and provider identifiers that need confidentiality stay inside encrypted envelopes.
 # Version 21 adds per-owner audit chain metadata and atomically anchors existing v12
 # rows so the verification command can distinguish gaps from hash mismatches.
+# Version 22 allows OIDC-issued sessions to retain their authentication origin while
+# preserving existing loopback and device-pairing sessions.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -562,6 +564,36 @@ DEFAULT_MIGRATIONS = (
             "ON audit_events(owner_id, chain_sequence)",
         ),
         post_apply=_backfill_audit_chain,
+    ),
+    Migration(
+        version=22,
+        name="oidc_sessions",
+        requires_foreign_keys_off=True,
+        statements=(
+            """
+            CREATE TABLE local_sessions_oidc (
+                token_hash BLOB PRIMARY KEY CHECK (length(token_hash) = 32),
+                user_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                expires_at TEXT NOT NULL,
+                session_origin TEXT NOT NULL DEFAULT 'loopback'
+                    CHECK (session_origin IN ('loopback', 'device', 'oidc')),
+                pairing_token_fingerprint BLOB
+                    CHECK (pairing_token_fingerprint IS NULL OR length(pairing_token_fingerprint) = 32),
+                scopes TEXT NOT NULL CHECK (length(scopes) > 0)
+            )
+            """,
+            "INSERT INTO local_sessions_oidc "
+            "(token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes) "
+            "SELECT token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes "
+            "FROM local_sessions",
+            "DROP TABLE local_sessions",
+            "ALTER TABLE local_sessions_oidc RENAME TO local_sessions",
+        ),
+        postgres_statements=(
+            "ALTER TABLE local_sessions DROP CONSTRAINT IF EXISTS local_sessions_session_origin_check",
+            "ALTER TABLE local_sessions ADD CONSTRAINT local_sessions_session_origin_check "
+            "CHECK (session_origin IN ('loopback', 'device', 'oidc'))",
+        ),
     ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
