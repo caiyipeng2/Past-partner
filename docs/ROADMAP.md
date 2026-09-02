@@ -93,7 +93,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。真实百炼外部 smoke 已按用户决定暂缓，当前不把它写成已通过；后续恢复时仍需提供具备微调权限的可控凭据。
 - R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
-- R1-03 当前已完成第一阶段：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离，并以加密记录与身份映射校验防篡改；新增静态 JWKS RS256 OIDC ID Token 登录入口，验证通过后按 subject/tenant 建立加密本地主体会话。远程 discovery、密钥轮换、刷新令牌、账户恢复和正式租户管理仍待后续切片。
+- R1-03 当前已完成第二阶段：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离；OIDC 登录支持静态或 HTTPS URI JWKS，未知 `kid` 会按有界间隔刷新远程密钥，并按 issuer/subject/tenant 建立加密本地主体会话。远程 discovery、刷新令牌、账户恢复和正式租户管理仍待后续切片。迁移前创建的静态 OIDC 账户历史上没有 issuer 字段，迁移会将其置于 `local` 命名空间，不会自动关联到新的 OIDC issuer，需后续显式账户关联。
 - R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
 - R2-01 Android-first 后台上传、通知、模型选择持久化和会话恢复已完成分支实现及验证；仍受 Doze、电池策略、通知权限、网络约束和系统强停影响，不能视为 OS 级后台执行保证。iOS 目前只做 no-op 代码兼容和静态检查，未完成 Xcode archive/签名/真机/商店流程。
 - 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或完整运维监控。R1-04 已增加可独立启动的 worker、任务通知 outbox、测试 broker 契约以及共享后端的脱敏 worker 观测/内部告警计算；生产 broker、外部指标抓取/推送、追踪、日志外发和 SIEM 仍未完成。

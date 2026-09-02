@@ -49,6 +49,7 @@ class OwnerPrincipal:
     tenant_id: str | None = None
     subject: str | None = None
     role: str = "owner"
+    issuer: str | None = None
 
     def require(self, scope: str) -> None:
         if not self.scopes.allows(scope):
@@ -152,7 +153,7 @@ class LocalAuthService:
         if role not in self._ACCOUNT_ROLES:
             raise LocalAuthError("account_role_invalid", "local account role is invalid")
 
-        return self._create_account_record(subject, tenant_id, role)
+        return self._create_account_record("local", subject, tenant_id, role)
 
     def issue_oidc_session(
         self,
@@ -164,28 +165,30 @@ class LocalAuthService:
 
         if not isinstance(claims, OidcClaims):
             raise LocalAuthError("oidc_claims_invalid", "OIDC claims are invalid")
-        # One verifier/issuer is configured per service, so the durable identity
-        # mapping can retain the provider's subject without exposing issuer syntax.
+        issuer = self._identity_text(claims.issuer, "issuer")
         subject = self._identity_text(claims.subject, "subject")
         tenant_id = self._identity_text(claims.tenant_id, "tenant_id")
-        user_id = self._find_user_by_subject(subject)
+        user_id = self._find_user_by_identity(issuer, subject)
         if user_id is None:
             try:
-                user_id = self._create_account_record(subject, tenant_id, "member")["user_id"]
+                user_id = self._create_account_record(issuer, subject, tenant_id, "member")["user_id"]
             except LocalAuthError as exc:
                 if exc.code != "account_subject_exists":
                     raise
-                user_id = self._find_user_by_subject(subject)
+                user_id = self._find_user_by_identity(issuer, subject)
                 if user_id is None:
                     raise
         else:
             identity = self._load_identity(user_id)
             if identity["tenant_id"] != tenant_id:
                 raise LocalAuthError("oidc_identity_conflict", "OIDC subject is bound to another tenant")
+        # These scopes authorize the account's own owner_id resources; repository
+        # methods never reinterpret owner:write as tenant-wide administration.
         return self._issue_session(user_id, AccessScopes.full(), session_origin="oidc")
 
     def _create_account_record(
         self,
+        issuer: str,
         subject: str,
         tenant_id: str,
         role: str,
@@ -195,6 +198,7 @@ class LocalAuthService:
         payload = json.dumps(
             {
                 "id": user_id,
+                "issuer": issuer,
                 "role": role,
                 "subject": subject,
                 "tenant_id": tenant_id,
@@ -217,10 +221,10 @@ class LocalAuthService:
                 )
                 connection.execute(
                     """
-                    INSERT INTO local_identities (user_id, tenant_id, subject, role, created_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (user_id, tenant_id, subject, role, created_at),
+                    (user_id, issuer, tenant_id, subject, role, created_at),
                 )
                 connection.commit()
             except MetadataIntegrityError as exc:
@@ -358,7 +362,7 @@ class LocalAuthService:
                 SELECT s.user_id, s.expires_at, s.session_origin,
                        s.pairing_token_fingerprint, s.scopes,
                        u.kind, u.record_version, u.encrypted_payload,
-                       i.tenant_id, i.subject, i.role
+                       i.issuer, i.tenant_id, i.subject, i.role
                 FROM local_sessions AS s
                 JOIN local_users AS u ON u.id = s.user_id
                 JOIN local_identities AS i ON i.user_id = s.user_id
@@ -380,9 +384,10 @@ class LocalAuthService:
                 raise LocalAuthError("authentication_required", "a valid owner session is required")
         identity = {
             "user_id": str(row[0]),
-            "tenant_id": str(row[8]),
-            "subject": str(row[9]),
-            "role": str(row[10]),
+            "issuer": str(row[8]),
+            "tenant_id": str(row[9]),
+            "subject": str(row[10]),
+            "role": str(row[11]),
         }
         try:
             if row[5] == "owner":
@@ -405,6 +410,7 @@ class LocalAuthService:
             identity["tenant_id"],
             identity["subject"],
             identity["role"],
+            identity["issuer"],
         )
 
     def _authorize_device_pairing(
@@ -463,20 +469,20 @@ class LocalAuthService:
 
     def _ensure_owner_identity(self, connection: MetadataConnection, owner_id: str) -> None:
         row = connection.execute(
-            "SELECT tenant_id, subject, role FROM local_identities WHERE user_id = ?",
+            "SELECT issuer, tenant_id, subject, role FROM local_identities WHERE user_id = ?",
             (owner_id,),
         ).fetchone()
-        expected = (owner_id, owner_id, "local-owner", "owner")
+        expected = ("local", owner_id, "local-owner", "owner")
         if row is None:
             connection.execute(
                 """
-                INSERT INTO local_identities (user_id, tenant_id, subject, role, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (owner_id, *expected[1:], datetime.now(UTC).isoformat()),
+                (owner_id, *expected, datetime.now(UTC).isoformat()),
             )
             return
-        if tuple(str(value) for value in row) != expected[1:]:
+        if tuple(str(value) for value in row) != expected:
             raise LocalAuthError("auth_owner_record_invalid", "owner identity record is invalid")
 
     def _load_identity(self, user_id: str) -> dict[str, str]:
@@ -486,7 +492,7 @@ class LocalAuthService:
             row = connection.execute(
                 """
                 SELECT u.kind, u.record_version, u.encrypted_payload,
-                       i.tenant_id, i.subject, i.role
+                       i.issuer, i.tenant_id, i.subject, i.role
                 FROM local_users AS u
                 JOIN local_identities AS i ON i.user_id = u.id
                 WHERE u.id = ?
@@ -497,9 +503,10 @@ class LocalAuthService:
             raise LocalAuthError("account_not_found", "local account was not found")
         identity = {
             "user_id": user_id.strip(),
-            "tenant_id": str(row[3]),
-            "subject": str(row[4]),
-            "role": str(row[5]),
+            "issuer": str(row[3]),
+            "tenant_id": str(row[4]),
+            "subject": str(row[5]),
+            "role": str(row[6]),
         }
         try:
             if row[0] == "owner":
@@ -512,11 +519,11 @@ class LocalAuthService:
             raise LocalAuthError("account_record_invalid", "local account record is invalid") from exc
         return identity
 
-    def _find_user_by_subject(self, subject: str) -> str | None:
+    def _find_user_by_identity(self, issuer: str, subject: str) -> str | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT user_id FROM local_identities WHERE subject = ?",
-                (subject,),
+                "SELECT user_id FROM local_identities WHERE issuer = ? AND subject = ?",
+                (issuer, subject),
             ).fetchone()
         return str(row[0]) if row is not None else None
 
@@ -531,7 +538,7 @@ class LocalAuthService:
         if (
             not isinstance(value, dict)
             or value.get("id") != identity["user_id"]
-            or any(value.get(key) != identity[key] for key in ("tenant_id", "subject", "role"))
+            or any(value.get(key) != identity[key] for key in ("issuer", "tenant_id", "subject", "role"))
         ):
             raise ValueError("account identity does not match encrypted record")
 

@@ -216,7 +216,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         except OidcAuthError as exc:
             status = (
                 HTTPStatus.SERVICE_UNAVAILABLE
-                if exc.code in {"oidc_not_configured", "oidc_configuration_invalid"}
+                if exc.code in {
+                    "oidc_not_configured",
+                    "oidc_configuration_invalid",
+                    "oidc_keys_unavailable",
+                }
                 else HTTPStatus.UNAUTHORIZED
             )
             self._error(status, exc.code, str(exc))

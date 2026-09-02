@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
 import re
+import socket
+import threading
+import time
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -22,6 +28,19 @@ _MAX_SUBJECT_LENGTH = 256
 _MAX_TENANT_LENGTH = 128
 _CLOCK_SKEW_SECONDS = 60
 _MAX_JWKS_KEYS = 32
+_MAX_JWKS_BYTES = 256 * 1024
+_JWKS_FETCH_TIMEOUT_SECONDS = 5.0
+_JWKS_REFRESH_INTERVAL_SECONDS = 60.0
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so a validated HTTPS JWKS URI cannot become SSRF."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object):
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable")
+
+
+_REMOTE_JWKS_OPENER = build_opener(_NoRedirectHandler)
 
 
 class OidcAuthError(ValueError):
@@ -44,8 +63,8 @@ class OidcClaims:
 class OidcVerifier:
     """Verify signed OIDC ID tokens against an administrator-supplied JWKS.
 
-    JWKS is intentionally supplied as configuration in this first slice. Remote
-    discovery, key rotation, nonce validation, and refresh tokens remain separate
+    JWKS may be supplied inline or through an administrator-configured HTTPS URI.
+    Remote discovery, nonce validation, and refresh tokens remain separate
     lifecycle work so an unavailable identity provider cannot silently weaken auth.
     """
 
@@ -54,14 +73,27 @@ class OidcVerifier:
         *,
         issuer: str,
         audience: str,
-        jwks: Mapping[str, Any],
+        jwks: Mapping[str, Any] | None,
         clock: Callable[[], datetime] | None = None,
+        jwks_uri: str | None = None,
+        jwks_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
+        refresh_interval_seconds: float = _JWKS_REFRESH_INTERVAL_SECONDS,
     ) -> None:
         self.issuer = _bounded_text(issuer, "issuer", 2048)
         self.audience = _bounded_text(audience, "audience", 256)
         if not self.issuer.startswith("https://"):
             raise OidcAuthError("oidc_configuration_invalid", "OIDC issuer must use HTTPS")
-        self._keys = _load_rsa_keys(jwks)
+        self._jwks_uri = _validate_jwks_uri(jwks_uri)
+        if refresh_interval_seconds <= 0:
+            raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS refresh interval is invalid")
+        self._refresh_interval_seconds = float(refresh_interval_seconds)
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._jwks_fetcher = jwks_fetcher or _fetch_remote_jwks
+        self._keys = _load_rsa_keys(jwks, allow_empty=self._jwks_uri is not None)
+        self._last_refresh_at = float("-inf")
+        self._keys_lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def verify(self, token: str) -> OidcClaims:
@@ -81,10 +113,13 @@ class OidcVerifier:
         if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
             raise OidcAuthError("oidc_token_invalid", "OIDC token algorithm is not allowed")
         kid = header["kid"]
-        if not kid or len(kid) > _MAX_KID_LENGTH or kid not in self._keys:
+        if not kid or len(kid) > _MAX_KID_LENGTH:
+            raise OidcAuthError("oidc_token_invalid", "OIDC signing key is not configured")
+        key = self._key_for_kid(kid)
+        if key is None:
             raise OidcAuthError("oidc_token_invalid", "OIDC signing key is not configured")
         try:
-            self._keys[kid].verify(
+            key.verify(
                 signature,
                 f"{encoded_header}.{encoded_claims}".encode("ascii"),
                 padding.PKCS1v15(),
@@ -95,8 +130,13 @@ class OidcVerifier:
 
         if claims.get("iss") != self.issuer:
             raise OidcAuthError("oidc_claims_invalid", "OIDC issuer claim is invalid")
-        if not _audience_matches(claims.get("aud"), self.audience):
+        audience = claims.get("aud")
+        if not _audience_matches(audience, self.audience):
             raise OidcAuthError("oidc_claims_invalid", "OIDC audience claim is invalid")
+        if isinstance(audience, list) and len(audience) > 1 and claims.get("azp") != self.audience:
+            raise OidcAuthError("oidc_claims_invalid", "OIDC authorized-party claim is invalid")
+        if claims.get("azp") is not None and claims.get("azp") != self.audience:
+            raise OidcAuthError("oidc_claims_invalid", "OIDC authorized-party claim is invalid")
         subject = _bounded_text(claims.get("sub"), "subject", _MAX_SUBJECT_LENGTH)
         expires_at = _timestamp(claims.get("exp"), "expiration")
         now = self._now()
@@ -125,14 +165,55 @@ class OidcVerifier:
             raise OidcAuthError("oidc_configuration_invalid", "OIDC clock must be timezone-aware")
         return value.astimezone(UTC)
 
+    def _key_for_kid(self, kid: str) -> rsa.RSAPublicKey | None:
+        with self._keys_lock:
+            key = self._keys.get(kid)
+            if key is not None or self._jwks_uri is None:
+                return key
+        # Network I/O is deliberately outside the key cache lock. Known keys can
+        # continue authenticating while one unknown kid refreshes the cache.
+        with self._refresh_lock:
+            with self._keys_lock:
+                key = self._keys.get(kid)
+                if key is not None or self._jwks_uri is None:
+                    return key
+                now = self._monotonic_clock()
+                if now - self._last_refresh_at < self._refresh_interval_seconds:
+                    return None
+                self._last_refresh_at = now
+            try:
+                refreshed = self._jwks_fetcher(self._jwks_uri)
+                refreshed_keys = _load_rsa_keys(refreshed)
+            except OidcAuthError as exc:
+                if exc.code == "oidc_keys_unavailable":
+                    raise OidcAuthError(
+                        "oidc_keys_unavailable",
+                        "OIDC signing keys are unavailable",
+                    ) from exc
+                raise
+            except Exception as exc:
+                raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable") from exc
+            with self._keys_lock:
+                self._keys = refreshed_keys
+                return self._keys.get(kid)
 
-def _load_rsa_keys(jwks: Mapping[str, Any]) -> dict[str, rsa.RSAPublicKey]:
-    if not isinstance(jwks, Mapping) or not isinstance(jwks.get("keys"), list):
+
+def _load_rsa_keys(
+    jwks: Mapping[str, Any] | None,
+    *,
+    allow_empty: bool = False,
+) -> dict[str, rsa.RSAPublicKey]:
+    if not isinstance(jwks, Mapping):
         raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS is invalid")
-    if len(jwks["keys"]) > _MAX_JWKS_KEYS:
+    raw_keys = jwks.get("keys")
+    if raw_keys is None and allow_empty:
+        return {}
+    if not isinstance(raw_keys, list):
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS is invalid")
+    if len(raw_keys) > _MAX_JWKS_KEYS:
         raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS is too large")
     keys: dict[str, rsa.RSAPublicKey] = {}
-    for item in jwks["keys"]:
+    for item in raw_keys:
         if not isinstance(item, Mapping):
             raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS is invalid")
         kid = item.get("kid")
@@ -156,9 +237,46 @@ def _load_rsa_keys(jwks: Mapping[str, Any]) -> dict[str, rsa.RSAPublicKey]:
             keys[kid] = public_key
         except (KeyError, OidcAuthError, TypeError, ValueError):
             raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS is invalid") from None
-    if not keys:
+    if not keys and not allow_empty:
         raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS has no usable RSA signing key")
     return keys
+
+
+def _validate_jwks_uri(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 2048:
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS URI is invalid")
+    uri = value.strip()
+    parsed = urlsplit(uri)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS URI must use HTTPS")
+    return uri
+
+
+def _fetch_remote_jwks(uri: str) -> Mapping[str, Any]:
+    request = Request(uri, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with _REMOTE_JWKS_OPENER.open(request, timeout=_JWKS_FETCH_TIMEOUT_SECONDS) as response:
+            raw = response.read(_MAX_JWKS_BYTES + 1)
+    except (HTTPError, URLError, socket.timeout, TimeoutError, OSError) as exc:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable") from exc
+    if len(raw) > _MAX_JWKS_BYTES:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable") from exc
+    if not isinstance(payload, Mapping):
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC signing keys are unavailable")
+    return payload
 
 
 def _decode_segment(value: object) -> bytes:
@@ -181,7 +299,7 @@ def _json_object(raw: bytes) -> Mapping[str, Any]:
 def _audience_matches(value: object, expected: str) -> bool:
     if isinstance(value, str):
         return value == expected
-    return isinstance(value, list) and any(item == expected for item in value if isinstance(item, str))
+    return isinstance(value, list) and all(isinstance(item, str) for item in value) and expected in value
 
 
 def _bounded_text(value: object, label: str, limit: int) -> str:

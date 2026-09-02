@@ -67,6 +67,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (20, "subscription_entitlements"),
                 (21, "audit_chain"),
                 (22, "oidc_sessions"),
+                (23, "identity_issuers"),
             ],
             rows,
         )
@@ -102,7 +103,7 @@ class SQLiteMigrationTests(unittest.TestCase):
     def test_audit_chain_migration_anchors_existing_events(self) -> None:
         # Keep the audit-chain migration pending while the later OIDC session
         # migration remains outside this focused setup.
-        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-2]).migrate()
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-3]).migrate()
         key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
         encryption = AuthenticatedEncryptionService(
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
@@ -340,7 +341,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertEqual(("owner-1", "owner"), user)
         self.assertEqual(("owner-1",), persona)
         self.assertEqual(
-            {"user_id", "tenant_id", "subject", "role", "created_at"},
+            {"user_id", "issuer", "tenant_id", "subject", "role", "created_at"},
             columns,
         )
 
@@ -370,6 +371,54 @@ class SQLiteMigrationTests(unittest.TestCase):
                 "SELECT session_origin FROM local_sessions ORDER BY token_hash"
             ).fetchall()
         self.assertEqual([("loopback",), ("oidc",)], rows)
+
+    def test_identity_issuer_migration_preserves_local_accounts_and_allows_same_subject(self) -> None:
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:16]).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) "
+                "VALUES ('owner-1', 'owner', 1, X'01')"
+            )
+            connection.execute(
+                "INSERT INTO local_identities (user_id, tenant_id, subject, role, created_at) "
+                "VALUES ('owner-1', 'owner-1', 'local-owner', 'owner', '2026-01-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+        SQLiteMigrator(self.database_path).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(local_identities)").fetchall()
+            }
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) "
+                "VALUES ('member-1', 'member', 1, X'02')"
+            )
+            connection.execute(
+                "INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, created_at) "
+                "VALUES ('member-1', 'https://issuer.example', 'tenant-1', 'same-sub', 'member', '2026-01-01T00:00:00+00:00')"
+            )
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) "
+                "VALUES ('member-2', 'member', 1, X'03')"
+            )
+            connection.execute(
+                "INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, created_at) "
+                "VALUES ('member-2', 'https://other-issuer.example', 'tenant-2', 'same-sub', 'member', '2026-01-01T00:00:00+00:00')"
+            )
+            rows = connection.execute(
+                "SELECT issuer, subject FROM local_identities ORDER BY user_id"
+            ).fetchall()
+        self.assertIn("issuer", columns)
+        self.assertEqual(
+            [
+                ("https://issuer.example", "same-sub"),
+                ("https://other-issuer.example", "same-sub"),
+                ("local", "local-owner"),
+            ],
+            rows,
+        )
 
 
 if __name__ == "__main__":

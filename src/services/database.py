@@ -123,6 +123,8 @@ def _backfill_audit_chain(connection: object) -> None:
 # rows so the verification command can distinguish gaps from hash mismatches.
 # Version 22 allows OIDC-issued sessions to retain their authentication origin while
 # preserving existing loopback and device-pairing sessions.
+# Version 23 binds persisted identity subjects to their OIDC issuer, while keeping
+# the legacy local-owner namespace separate.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -593,6 +595,40 @@ DEFAULT_MIGRATIONS = (
             "ALTER TABLE local_sessions DROP CONSTRAINT IF EXISTS local_sessions_session_origin_check",
             "ALTER TABLE local_sessions ADD CONSTRAINT local_sessions_session_origin_check "
             "CHECK (session_origin IN ('loopback', 'device', 'oidc'))",
+        ),
+    ),
+    Migration(
+        version=23,
+        name="identity_issuers",
+        requires_foreign_keys_off=True,
+        statements=(
+            """
+            CREATE TABLE local_identities_issuer (
+                user_id TEXT PRIMARY KEY REFERENCES local_users(id) ON DELETE CASCADE,
+                issuer TEXT NOT NULL DEFAULT 'local'
+                    CHECK (length(issuer) BETWEEN 1 AND 2048),
+                tenant_id TEXT NOT NULL CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 256),
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "INSERT INTO local_identities_issuer "
+            "(user_id, issuer, tenant_id, subject, role, created_at) "
+            "SELECT user_id, 'local', tenant_id, subject, role, created_at "
+            "FROM local_identities",
+            "DROP TABLE local_identities",
+            "ALTER TABLE local_identities_issuer RENAME TO local_identities",
+            "CREATE UNIQUE INDEX local_identities_issuer_subject_idx "
+            "ON local_identities(issuer, subject)",
+            "CREATE INDEX local_identities_tenant_idx ON local_identities(tenant_id, user_id)",
+        ),
+        postgres_statements=(
+            "ALTER TABLE local_identities ADD COLUMN issuer TEXT NOT NULL DEFAULT 'local' "
+            "CHECK (length(issuer) BETWEEN 1 AND 2048)",
+            "ALTER TABLE local_identities DROP CONSTRAINT IF EXISTS local_identities_subject_key",
+            "ALTER TABLE local_identities ADD CONSTRAINT local_identities_issuer_subject_key "
+            "UNIQUE (issuer, subject)",
         ),
     ),
 )

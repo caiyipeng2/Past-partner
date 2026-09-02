@@ -77,6 +77,7 @@ class ServerConfig:
     oidc_issuer: str | None = None
     oidc_audience: str | None = None
     oidc_jwks_json: str | None = None
+    oidc_jwks_uri: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:3000",
         "http://localhost:3000",
@@ -138,6 +139,7 @@ class ServerConfig:
             oidc_issuer=os.getenv("PAST_PARTNER_OIDC_ISSUER"),
             oidc_audience=os.getenv("PAST_PARTNER_OIDC_AUDIENCE"),
             oidc_jwks_json=os.getenv("PAST_PARTNER_OIDC_JWKS_JSON"),
+            oidc_jwks_uri=os.getenv("PAST_PARTNER_OIDC_JWKS_URI"),
             cors_origins=tuple(item.strip() for item in origins.split(",") if item.strip()) if origins else default.cors_origins,
             max_json_bytes=_int_env("PAST_PARTNER_MAX_JSON_BYTES", default.max_json_bytes),
             max_chunk_bytes=_int_env("PAST_PARTNER_MAX_CHUNK_BYTES", default.max_chunk_bytes),
@@ -190,21 +192,36 @@ class ServerConfig:
             raise ConfigurationError("metadata_dsn_required", "metadata PostgreSQL DSN is required")
         if metadata_backend == "postgresql" and not self.metadata_dsn.strip():
             raise ConfigurationError("metadata_dsn_required", "metadata PostgreSQL DSN is required")
-        oidc_fields = (self.oidc_issuer, self.oidc_audience, self.oidc_jwks_json)
-        if any(value is not None for value in oidc_fields):
-            if not all(isinstance(value, str) and value.strip() for value in oidc_fields):
-                raise ConfigurationError("oidc_configuration_incomplete", "OIDC configuration must include issuer, audience, and JWKS")
+        oidc_fields = (self.oidc_issuer, self.oidc_audience, self.oidc_jwks_json, self.oidc_jwks_uri)
+        if any(value is not None and (not isinstance(value, str) or value.strip()) for value in oidc_fields):
+            if not all(isinstance(value, str) and value.strip() for value in oidc_fields[:2]):
+                raise ConfigurationError("oidc_configuration_incomplete", "OIDC configuration must include issuer and audience")
+            if not any(isinstance(value, str) and value.strip() for value in oidc_fields[2:]):
+                raise ConfigurationError("oidc_configuration_incomplete", "OIDC configuration must include inline JWKS or a JWKS URI")
             issuer = self.oidc_issuer.strip()
             if not issuer.startswith("https://") or len(issuer) > 2048:
                 raise ConfigurationError("oidc_issuer_invalid", "OIDC issuer must use HTTPS")
             if len(self.oidc_audience.strip()) > 256:
                 raise ConfigurationError("oidc_audience_invalid", "OIDC audience is invalid")
-            try:
-                jwks = json.loads(self.oidc_jwks_json)
-            except (TypeError, json.JSONDecodeError) as exc:
-                raise ConfigurationError("oidc_jwks_invalid", "OIDC JWKS is invalid") from exc
-            if not isinstance(jwks, dict):
-                raise ConfigurationError("oidc_jwks_invalid", "OIDC JWKS is invalid")
+            if isinstance(self.oidc_jwks_json, str) and self.oidc_jwks_json.strip():
+                try:
+                    jwks = json.loads(self.oidc_jwks_json)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ConfigurationError("oidc_jwks_invalid", "OIDC JWKS is invalid") from exc
+                if not isinstance(jwks, dict):
+                    raise ConfigurationError("oidc_jwks_invalid", "OIDC JWKS is invalid")
+            if isinstance(self.oidc_jwks_uri, str) and self.oidc_jwks_uri.strip():
+                parsed_jwks_uri = urlsplit(self.oidc_jwks_uri.strip())
+                if (
+                    parsed_jwks_uri.scheme != "https"
+                    or not parsed_jwks_uri.netloc
+                    or parsed_jwks_uri.username
+                    or parsed_jwks_uri.password
+                    or parsed_jwks_uri.query
+                    or parsed_jwks_uri.fragment
+                    or len(self.oidc_jwks_uri.strip()) > 2048
+                ):
+                    raise ConfigurationError("oidc_jwks_uri_invalid", "OIDC JWKS URI must use HTTPS")
         if min(self.max_json_bytes, self.max_chunk_bytes, self.max_import_bytes) <= 0:
             raise ValueError("request and import limits must be positive")
         if not 0 <= self.raw_retention_seconds <= MAX_RAW_RETENTION_SECONDS:
