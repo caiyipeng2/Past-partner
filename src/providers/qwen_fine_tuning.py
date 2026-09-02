@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
 
@@ -14,6 +14,8 @@ from src.providers.base import (
     FineTuningRequest,
     FineTuningStatus,
     FineTuningSubmission,
+    MediaAnalysisRequest,
+    MediaAnalysisResult,
 )
 from src.providers.openai_compatible import OpenAICompatibleAdapter, OpenAICompatibleConfig
 from src.providers.transport import (
@@ -37,6 +39,7 @@ class QwenFineTuningConfig:
     batch_size: int = 1
     max_length: int = 8192
     split: float = 0.9
+    media_capabilities: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 class QwenFineTuningAdapter:
@@ -66,6 +69,7 @@ class QwenFineTuningAdapter:
                 api_key=config.api_key,
                 allowed_models=config.allowed_models,
                 timeout_seconds=config.timeout_seconds,
+                media_capabilities=config.media_capabilities,
             ),
             transport=chat_transport,
         )
@@ -75,6 +79,12 @@ class QwenFineTuningAdapter:
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         return self._chat.chat(request)
+
+    def supports_media(self, model_id: str, media_category: str) -> bool:
+        return self._chat.supports_media(model_id, media_category)
+
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        return self._chat.analyze_media(request)
 
     def supports_fine_tuning(self, model_id: str) -> bool:
         return model_id in self.config.fine_tuning_models and self.supports_model(model_id)

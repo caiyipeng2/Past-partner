@@ -183,6 +183,7 @@ def _configure_qwen_fine_tuning(
             fine_tuning_models=fine_tuning_models,
             chat_base_url=chat.config.base_url,
             timeout_seconds=chat.config.timeout_seconds,
+            media_capabilities=chat.config.media_capabilities,
         )
     )
 

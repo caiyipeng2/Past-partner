@@ -486,8 +486,8 @@ class ProviderGatewayTests(unittest.TestCase):
         source_path.write_bytes(b"audio-bytes")
         self.addCleanup(lambda: source_path.unlink(missing_ok=True))
 
-        def fake_multipart(url, headers, fields, file_field, file_path, timeout_seconds):
-            calls.append((url, headers, fields, file_field, file_path, timeout_seconds))
+        def fake_multipart(url, headers, fields, file_field, file_path, timeout_seconds, file_content_type):
+            calls.append((url, headers, fields, file_field, file_path, timeout_seconds, file_content_type))
             return {"text": "  音频转写结果  ", "duration": 1.2}
 
         adapter = OpenAICompatibleAdapter(
@@ -526,6 +526,7 @@ class ProviderGatewayTests(unittest.TestCase):
         )
         self.assertEqual("file", calls[0][3])
         self.assertEqual(source_path, calls[0][4])
+        self.assertEqual("audio/wav", calls[0][6])
 
     def test_openai_compatible_audio_transcription_rejects_invalid_response_and_boundaries(self) -> None:
         source_fd, source_name = tempfile.mkstemp(suffix=".wav")
@@ -549,7 +550,7 @@ class ProviderGatewayTests(unittest.TestCase):
                 frozenset({"audio-model"}),
                 media_capabilities={"audio-model": frozenset({"audio"})},
             ),
-            multipart_transport=lambda *_args: {"duration": 1},
+            multipart_transport=lambda *_args, **_kwargs: {"duration": 1},
         )
         with self.assertRaises(AdapterError) as invalid_response:
             malformed.analyze_media(request)
@@ -562,7 +563,7 @@ class ProviderGatewayTests(unittest.TestCase):
                 "key",
                 frozenset({"audio-model"}),
             ),
-            multipart_transport=lambda *_args: (_ for _ in ()).throw(
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("unsupported audio must not transport")
             ),
         )
@@ -579,13 +580,44 @@ class ProviderGatewayTests(unittest.TestCase):
                 max_media_bytes=4,
                 media_capabilities={"audio-model": frozenset({"audio"})},
             ),
-            multipart_transport=lambda *_args: (_ for _ in ()).throw(
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("oversized audio must not transport")
             ),
         )
         with self.assertRaises(AdapterError) as size_error:
             oversized.analyze_media(request)
         self.assertEqual("media_too_large", size_error.exception.code)
+
+    def test_openai_compatible_audio_transcription_maps_a_racing_missing_file(self) -> None:
+        source_fd, source_name = tempfile.mkstemp(suffix=".wav")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"audio")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"audio-model"}),
+                media_capabilities={"audio-model": frozenset({"audio"})},
+            ),
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AdapterError("dataset_unavailable", "training dataset is unavailable")
+            ),
+        )
+
+        with self.assertRaises(AdapterError) as captured:
+            adapter.analyze_media(
+                MediaAnalysisRequest(
+                    "custom_openai",
+                    "audio-model",
+                    "audio/wav",
+                    source_path,
+                    "请转写",
+                )
+            )
+        self.assertEqual("media_unavailable", captured.exception.code)
 
     def test_fine_tuning_rejects_a_model_without_declared_capability(self) -> None:
         gateway = ProviderGateway(self.catalog, mode="development")

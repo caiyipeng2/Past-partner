@@ -401,7 +401,21 @@ class ProviderCatalog:
             ):
                 provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
             if provider.id in runtime_models and provider.model_discovery != "catalog":
-                    models = tuple(
+                models = tuple(
+                    ModelDefinition(
+                        model_id,
+                        model_id,
+                        ("text", *base_provider_capabilities),
+                        pricing_source=provider.pricing_source,
+                        pricing=ModelPricing(source=provider.pricing_source),
+                    )
+                    for model_id in sorted(runtime_models[provider.id])
+                )
+            elif provider.id in runtime_models:
+                known_model_ids = {model.id for model in models}
+                models = (
+                    *models,
+                    *tuple(
                         ModelDefinition(
                             model_id,
                             model_id,
@@ -409,7 +423,8 @@ class ProviderCatalog:
                             pricing_source=provider.pricing_source,
                             pricing=ModelPricing(source=provider.pricing_source),
                         )
-                    for model_id in sorted(runtime_models[provider.id])
+                        for model_id in sorted(runtime_models[provider.id] - known_model_ids)
+                    ),
                 )
             if configured_media:
                 models = tuple(

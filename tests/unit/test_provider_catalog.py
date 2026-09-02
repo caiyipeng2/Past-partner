@@ -183,6 +183,20 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertIn("audio", audio_model.capabilities)
         self.assertNotIn("audio", text_model.capabilities)
 
+    def test_explicit_runtime_model_can_extend_a_static_provider_catalog(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"openai"},
+            {"openai": frozenset({"whisper-1"})},
+            media_capabilities={"openai": {"whisper-1": frozenset({"audio"})}},
+        )
+
+        provider = catalog.provider("openai")
+        model = catalog.find_model("openai", "whisper-1")
+        self.assertIn("audio", provider.capabilities)
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertIn("audio", model.capabilities)
+
 
 if __name__ == "__main__":
     unittest.main()

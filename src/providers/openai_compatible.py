@@ -16,12 +16,7 @@ from src.providers.base import (
     MediaAnalysisRequest,
     MediaAnalysisResult,
 )
-from src.providers.transport import (
-    JsonTransport,
-    MultipartTransport,
-    urllib_json_transport,
-    urllib_multipart_transport,
-)
+from src.providers.transport import JsonTransport, MediaMultipartTransport, urllib_json_transport, urllib_multipart_transport
 
 
 Transport = JsonTransport
@@ -60,7 +55,7 @@ class OpenAICompatibleAdapter:
         self,
         config: OpenAICompatibleConfig,
         transport: Transport | None = None,
-        multipart_transport: MultipartTransport | None = None,
+        multipart_transport: MediaMultipartTransport | None = None,
     ):
         self.config = config
         self.provider_id = config.provider_id
@@ -216,7 +211,9 @@ class OpenAICompatibleAdapter:
                 raise AdapterError("media_too_large", "media exceeds the configured analysis size limit")
             if not request.media_path.is_file():
                 raise AdapterError("media_unavailable", "media source is unavailable")
-        except AdapterError:
+        except AdapterError as exc:
+            if exc.code == "dataset_unavailable":
+                raise AdapterError("media_unavailable", "media source is unavailable") from exc
             raise
         except OSError as exc:
             raise AdapterError("media_unavailable", "media source is unavailable") from exc
@@ -238,8 +235,11 @@ class OpenAICompatibleAdapter:
                 "file",
                 request.media_path,
                 self.config.timeout_seconds,
+                _audio_media_type(request.media_type),
             )
-        except AdapterError:
+        except AdapterError as exc:
+            if exc.code == "dataset_unavailable":
+                raise AdapterError("media_unavailable", "media source is unavailable") from exc
             raise
         except (socket.timeout, TimeoutError) as exc:
             raise AdapterError("provider_timeout", "provider request timed out") from exc
