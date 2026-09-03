@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import re
 import socket
 from typing import Any
 
@@ -354,7 +355,11 @@ def _video_media_type(value: object) -> str:
     if not isinstance(value, str):
         raise AdapterError("capability_not_supported", "this adapter supports video analysis only")
     media_type = value.split(";", 1)[0].strip().lower()
-    if not media_type.startswith("video/"):
+    subtype = media_type[6:] if media_type.startswith("video/") else ""
+    # Keep the outbound Content-Type within the MIME token grammar.  A broad
+    # prefix check would allow empty, whitespace-containing, or slash-delimited
+    # subtypes to reach provider-specific multipart handlers.
+    if not subtype or re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9a-z]+", subtype) is None:
         raise AdapterError("capability_not_supported", "this adapter supports video analysis only")
     return media_type
 

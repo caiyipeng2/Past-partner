@@ -685,6 +685,40 @@ class ProviderGatewayTests(unittest.TestCase):
             unsupported.analyze_media(request)
         self.assertEqual("capability_not_supported", unsupported_error.exception.code)
 
+    def test_openai_compatible_video_analysis_rejects_invalid_video_mime_subtypes(self) -> None:
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"video")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"video-model"}),
+                media_capabilities={"video-model": frozenset({"video"})},
+                video_endpoint_path="/video/analyze",
+            ),
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("invalid video MIME must not transport")
+            ),
+        )
+
+        for media_type in ("video/", "video/foo bar", "video/foo/bar"):
+            with self.subTest(media_type=media_type):
+                with self.assertRaises(AdapterError) as captured:
+                    adapter.analyze_media(
+                        MediaAnalysisRequest(
+                            "custom_openai",
+                            "video-model",
+                            media_type,
+                            source_path,
+                            "请概括",
+                        )
+                    )
+                self.assertEqual("capability_not_supported", captured.exception.code)
+
     def test_openai_compatible_audio_transcription_maps_a_racing_missing_file(self) -> None:
         source_fd, source_name = tempfile.mkstemp(suffix=".wav")
         os.close(source_fd)
