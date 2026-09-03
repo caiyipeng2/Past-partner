@@ -119,6 +119,18 @@ class PrivacyPolicyContractTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, self.policy)
 
+    def test_policy_discloses_ocr_scope_and_result_boundaries(self) -> None:
+        for boundary in (
+            "analysis_kind=ocr",
+            "显式 `ocr` 模型能力",
+            "有界 OCR 结构",
+            "扫描 PDF OCR",
+            "第三方删除仍未实现",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, self.policy)
+        self.assertNotIn("OCR 专用结构化提取和第三方删除仍未实现", self.policy)
+
 
 if __name__ == "__main__":
     unittest.main()
