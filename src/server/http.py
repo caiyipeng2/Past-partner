@@ -68,6 +68,7 @@ _CHUNK_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/chunks/(\d+)$")
 _COMPLETE_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/complete$")
 _CANCEL_PATH = re.compile(r"^/api/v1/imports/([A-Za-z0-9._-]+)/cancel$")
 _CONSENTS_PATH = "/api/v1/consents"
+_OCR_CONSENTS_PATH = "/api/v1/consents/ocr"
 _CONSENT_REVOKE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/revoke$")
 _CONSENT_AUTHORIZE_PATH = re.compile(r"^/api/v1/consents/([A-Za-z0-9._-]+)/authorize$")
 _MODEL_COST_ESTIMATE_PATH = "/api/v1/models/cost-estimate"
@@ -684,6 +685,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == _CONSENTS_PATH:
             self._json(HTTPStatus.CREATED, self.server.application.create_consent(self.owner_id, self._json_body()))
+        elif path == _OCR_CONSENTS_PATH:
+            self._json(
+                HTTPStatus.CREATED,
+                self.server.application.create_ocr_consent(self.owner_id, self._json_body()),
+            )
         elif match := _CORRECTIONS_PATH.fullmatch(path):
             self._json(
                 HTTPStatus.OK,
@@ -1005,6 +1011,10 @@ def _route_template(target: str) -> str:
             return "/api/v1/consents/{consent_id}/revoke"
         if _CONSENT_AUTHORIZE_PATH.fullmatch(path):
             return "/api/v1/consents/{consent_id}/authorize"
+        if path == _OCR_CONSENTS_PATH:
+            return _OCR_CONSENTS_PATH
+        if path == _CONSENTS_PATH:
+            return _CONSENTS_PATH
         if _TRAINING_JOB_PATH.fullmatch(path):
             return "/api/v1/training-jobs/{job_id}"
         if _TRAINING_CANCEL_PATH.fullmatch(path):

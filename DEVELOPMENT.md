@@ -103,6 +103,25 @@ python scripts/launch_smoke.py --surface module --surface cli --surface npm --su
 - `PAST_PARTNER_MASTER_KEY_SOURCE=kms`：需要 AWS-compatible KMS、key ID 和可丢弃测试密钥。
 - 任务队列、审计、用量和指标默认使用当前进程/共享元数据后端，不会自动启动外部 worker、broker 或监控系统。
 
+### OCR 专用授权 API
+
+移动端当前的普通图片授权固定为图片理解作用域，不能直接用于 OCR。需要在服务端已配置并声明 `ocr` 能力的模型上，使用当前 owner 会话调用：
+
+```powershell
+$headers = @{ Authorization = "Bearer <access-token>"; "Content-Type" = "application/json" }
+$body = @{
+  persona_id = "<persona-id>"
+  provider_id = "custom_openai"
+  model_id = "<ocr-model-id>"
+  estimated_cost = 0
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/v1/consents/ocr" -Headers $headers -Body $body
+```
+
+该接口只接受 `persona_id`、`provider_id`、`model_id` 和 `estimated_cost` 四个字段，服务端固定写入 `data_category=image`、`purpose=image_ocr` 和 `authorization_scope=persona-image-ocr`，并复用人物 owner 隔离、加密存储和重复授权检查。Provider/模型必须在服务端目录中同时声明 `ocr` 能力；OpenAI-compatible 自定义端点需把 OCR 模型加入 `PAST_PARTNER_CUSTOM_OPENAI_MODELS` 与 `PAST_PARTNER_CUSTOM_OPENAI_OCR_MODELS`。成功返回 `201`；未登录返回 `401`，模型/Provider 未声明能力返回 `422`，重复活动授权返回 `409`，缺字段或额外字段返回 `400`。
+
+创建成功后，媒体分析仍调用 `POST /api/v1/imports/{import_id}/media-analysis`，携带返回的 `consent_id`、同一 Provider/模型、`data_category=image`、`analysis_kind=ocr` 和 `authorization_scope=persona-image-ocr`。普通图片授权不会被接受为 OCR 授权。
+
 ## 5. 测试和静态检查
 
 在仓库根目录执行 Python/Node 检查：

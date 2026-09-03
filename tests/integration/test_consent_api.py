@@ -191,6 +191,149 @@ class ConsentApiTests(unittest.TestCase):
         self.assertEqual(422, status)
         self.assertEqual("model_capability_missing", payload["error"]["code"])
 
+    def test_ocr_consent_endpoint_creates_fixed_image_ocr_scope(self) -> None:
+        self._enable_ocr_model()
+
+        status, _, created = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "estimated_cost": 0.03,
+            },
+        )
+
+        self.assertEqual(201, status)
+        self.assertEqual("image", created["data_category"])
+        self.assertEqual("image_ocr", created["purpose"])
+        self.assertEqual("persona-image-ocr", created["authorization_scope"])
+        self.assertEqual("active", created["status"])
+
+    def test_ocr_consent_endpoint_rejects_model_without_ocr_capability(self) -> None:
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "openai",
+                "model_id": "gpt-4.1-mini",
+                "estimated_cost": 0,
+            },
+        )
+
+        self.assertEqual(422, status)
+        self.assertEqual("model_capability_missing", payload["error"]["code"])
+
+    def test_ocr_consent_endpoint_requires_owner_authentication(self) -> None:
+        token = self.auth_token
+        self.auth_token = None
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "estimated_cost": 0,
+            },
+        )
+        self.auth_token = token
+
+        self.assertEqual(401, status)
+        self.assertEqual("authentication_required", payload["error"]["code"])
+
+    def test_ocr_consent_endpoint_rejects_attempt_to_override_fixed_scope(self) -> None:
+        self._enable_ocr_model()
+
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "estimated_cost": 0,
+                "purpose": "普通图片理解",
+            },
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("unsupported_field", payload["error"]["code"])
+
+    def test_ocr_consent_endpoint_rejects_non_string_model_id(self) -> None:
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "custom_openai",
+                "model_id": [],
+                "estimated_cost": 0,
+            },
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_model", payload["error"]["code"])
+
+    def test_ocr_consent_endpoint_rejects_duplicate_active_scope(self) -> None:
+        self._enable_ocr_model()
+        request_body = {
+            "persona_id": self.persona_id,
+            "provider_id": "custom_openai",
+            "model_id": "ocr-model",
+            "estimated_cost": 0,
+        }
+        status, _, _ = self.request("POST", "/api/v1/consents/ocr", request_body)
+        self.assertEqual(201, status)
+
+        status, _, payload = self.request("POST", "/api/v1/consents/ocr", request_body)
+
+        self.assertEqual(409, status)
+        self.assertEqual("consent_exists", payload["error"]["code"])
+
+    def test_created_ocr_consent_authorizes_ocr_analysis(self) -> None:
+        self._enable_ocr_model()
+        status, _, created = self.request(
+            "POST",
+            "/api/v1/consents/ocr",
+            {
+                "persona_id": self.persona_id,
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "estimated_cost": 0,
+            },
+        )
+        self.assertEqual(201, status)
+
+        status, _, decision = self.request(
+            "POST",
+            f"/api/v1/consents/{created['id']}/authorize",
+            {
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "data_category": "image",
+                "authorization_scope": "persona-image-ocr",
+                "analysis_kind": "ocr",
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertTrue(decision["authorized"])
+        self.assertEqual("ocr", decision["required_capability"])
+
+    def _enable_ocr_model(self) -> None:
+        from src.providers.catalog import ProviderCatalog
+
+        catalog = ProviderCatalog.default().with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"ocr-model"})},
+            media_capabilities={"custom_openai": {"ocr-model": frozenset({"ocr"})}},
+        )
+        self.server.application.catalog = catalog
+        self.server.application.multimodal_consents.catalog = catalog
+
 
 if __name__ == "__main__":
     unittest.main()
