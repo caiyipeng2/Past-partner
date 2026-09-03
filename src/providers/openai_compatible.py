@@ -46,7 +46,7 @@ class OpenAICompatibleConfig:
             if not isinstance(categories, (set, frozenset, tuple, list)):
                 raise ValueError("media capabilities must be a collection")
             values = frozenset(categories)
-            if not values or not values.issubset({"image", "audio", "video"}):
+            if not values or not values.issubset({"image", "audio", "video", "ocr"}):
                 raise ValueError("media capability category is invalid")
             normalized[model_id] = values
         object.__setattr__(self, "media_capabilities", normalized)

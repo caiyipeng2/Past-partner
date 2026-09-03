@@ -119,6 +119,21 @@ class _MediaAnalysisAdapter:
         )
 
 
+class _OcrMediaAnalysisAdapter(_MediaAnalysisAdapter):
+    def supports_media(self, model_id: str, media_category: str) -> bool:
+        return model_id == "deterministic-ocr" and media_category == "ocr"
+
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        return MediaAnalysisResult(
+            provider_id=self.provider_id,
+            model_id=request.model_id,
+            media_type=request.media_type,
+            description="识别出的文字",
+            structured_data={"text": "识别出的文字", "blocks": []},
+            provider_request_id="ocr-test-1",
+        )
+
+
 class _FailingMediaAnalysisAdapter(_MediaAnalysisAdapter):
     def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         raise AdapterError("provider_unavailable", "provider could not be reached")
@@ -174,6 +189,25 @@ class ProviderGatewayTests(unittest.TestCase):
                     base_model,
                     id="deterministic-vision",
                     capabilities=("chat", "vision"),
+                ),
+            ),
+        )
+        return ProviderCatalog((provider,))
+
+    def _catalog_with_ocr_analysis(self) -> ProviderCatalog:
+        base_provider = self.catalog.provider("deepseek")
+        base_model = self.catalog.find_model("deepseek", "deepseek-v4-flash")
+        assert base_model is not None
+        provider = replace(
+            base_provider,
+            id="test",
+            display_name="Deterministic OCR test",
+            capabilities=("chat", "vision", "ocr"),
+            models=(
+                replace(
+                    base_model,
+                    id="deterministic-ocr",
+                    capabilities=("chat", "vision", "ocr"),
                 ),
             ),
         )
@@ -345,6 +379,41 @@ class ProviderGatewayTests(unittest.TestCase):
                 adapters={"test": _MediaAnalysisAdapter()},
             ).analyze_media(request)
         self.assertEqual("unsupported_media_category", captured.exception.code)
+
+    def test_ocr_operation_requires_explicit_capability_and_image_media(self) -> None:
+        request = MediaAnalysisRequest(
+            provider_id="test",
+            model_id="deterministic-ocr",
+            media_type="image/png",
+            media_path=Path("image.png"),
+            prompt="识别图片文字",
+            analysis_kind="ocr",
+        )
+        gateway = ProviderGateway(
+            self._catalog_with_ocr_analysis(),
+            mode="test",
+            adapters={"test": _OcrMediaAnalysisAdapter()},
+        )
+
+        result = gateway.analyze_media(request)
+
+        self.assertEqual("识别出的文字", result.description)
+        self.assertEqual({"text": "识别出的文字", "blocks": []}, result.structured_data)
+
+        with self.assertRaises(ProviderError) as non_image:
+            gateway.analyze_media(replace(request, media_type="audio/wav"))
+        self.assertEqual("unsupported_media_category", non_image.exception.code)
+
+        vision_only = self._catalog_with_media_analysis()
+        with self.assertRaises(ProviderError) as missing_ocr:
+            ProviderGateway(
+                vision_only,
+                mode="test",
+                adapters={"test": _MediaAnalysisAdapter()},
+            ).analyze_media(
+                replace(request, model_id="deterministic-vision")
+            )
+        self.assertEqual("capability_not_supported", missing_ocr.exception.code)
 
     def test_openai_compatible_media_analysis_uses_bounded_image_data_url(self) -> None:
         calls = []

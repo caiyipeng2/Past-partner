@@ -174,6 +174,34 @@ class ProviderConfigurationTests(unittest.TestCase):
 
         self.assertFalse(adapters["custom_openai"].supports_media("audio-model", "audio"))
 
+    def test_ocr_capability_is_explicitly_configured_per_model(self) -> None:
+        adapters = build_openai_compatible_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "ocr-model, vision-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_OCR_MODELS": "ocr-model",
+            },
+        )
+
+        adapter = adapters["custom_openai"]
+        self.assertEqual(
+            {"ocr-model": frozenset({"ocr"})},
+            adapter.config.media_capabilities,
+        )
+        self.assertTrue(adapter.supports_media("ocr-model", "ocr"))
+        self.assertFalse(adapter.supports_media("vision-model", "ocr"))
+
+        with self.assertRaises(ValueError):
+            build_openai_compatible_adapters(
+                ProviderCatalog.default(),
+                {
+                    "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                    "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "vision-model",
+                    "PAST_PARTNER_CUSTOM_OPENAI_OCR_MODELS": "ocr-model",
+                },
+            )
+
     def test_qwen_fine_tuning_is_explicitly_opt_in_and_keeps_chat_endpoint(self) -> None:
         adapters = build_provider_adapters(
             ProviderCatalog.default(),

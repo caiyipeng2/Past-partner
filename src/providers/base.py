@@ -55,6 +55,7 @@ class MediaAnalysisRequest:
     media_type: str
     media_path: Path
     prompt: str
+    analysis_kind: str = "description"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class MediaAnalysisResult:
     description: str
     usage: dict[str, int] | None = None
     provider_request_id: str | None = None
+    structured_data: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
