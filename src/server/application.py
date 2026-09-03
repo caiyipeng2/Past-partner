@@ -13,6 +13,8 @@ from src.domain.audit_events import AuditAction, AuditEvent, AuditOutcome
 from src.domain.personas import PersonaValidationError
 from src.services.conversation_repository import ConversationRepository
 from src.services.conversation_service import ConversationService
+from src.services.data_subject_notification_repository import DataSubjectNotificationRepository
+from src.services.data_subject_notification_service import DataSubjectNotificationService
 from src.providers.base import ChatMessage, ChatRequest
 from src.providers.catalog import ProviderCatalog
 from src.providers.configuration import build_provider_adapters
@@ -96,6 +98,7 @@ class Application:
         media_analysis: MediaAnalysisService | None = None,
         billing: BillingService | None = None,
         subscriptions: SubscriptionService | None = None,
+        notifications: DataSubjectNotificationService | None = None,
         oidc_verifier: OidcVerifier | None = None,
     ):
         self.personas = personas
@@ -118,6 +121,7 @@ class Application:
         self.deletion_receipts = deletion_receipts
         self.billing = billing
         self.subscriptions = subscriptions
+        self.notifications = notifications
         self.oidc_verifier = oidc_verifier
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         self.media_analysis = media_analysis or MediaAnalysisService(
@@ -172,6 +176,8 @@ class Application:
         billing = BillingService(billing_repository)
         subscription_repository = SubscriptionRepository(metadata_store, encryption)
         subscriptions = SubscriptionService(subscription_repository)
+        notification_repository = DataSubjectNotificationRepository(metadata_store, encryption)
+        notifications = DataSubjectNotificationService(notification_repository)
         deletion_receipts = DeletionReceiptRepository(metadata_store)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
@@ -289,6 +295,7 @@ class Application:
             deletion_receipts,
             billing=billing,
             subscriptions=subscriptions,
+            notifications=notifications,
             oidc_verifier=oidc_verifier,
         )
         return application
@@ -500,7 +507,7 @@ class Application:
             )
             return result
 
-    def export_data(self, owner_id: str) -> dict[str, Any]:
+    def export_data(self, owner_id: str, *, record_notification: bool = True) -> dict[str, Any]:
         imports = [
             {
                 "job": job.to_dict(),
@@ -528,7 +535,7 @@ class Application:
             if self.subscriptions is not None
             else {"subscription": None, "entitled": False}
         )
-        return {
+        result = {
             "export_version": 1,
             "generated_at": datetime.now(UTC).isoformat(),
             "scope": {
@@ -544,11 +551,23 @@ class Application:
             "billing": billing,
             "subscription": subscription,
         }
+        if record_notification and self.notifications is not None:
+            self.notifications.record_export(
+                owner_id,
+                counts={
+                    "personas": len(result["personas"]),
+                    "imports": len(result["imports"]),
+                    "consents": len(result["consents"]),
+                    "training_jobs": len(result["training_jobs"]),
+                    "conversations": len(result["conversations"]),
+                },
+            )
+        return result
 
     def export_archive(self, owner_id: str) -> ExportArtifact:
         if self.export_service is None:
             raise ExportServiceError("export_unavailable", "owner archive export is unavailable")
-        metadata = self.export_data(owner_id)
+        metadata = self.export_data(owner_id, record_notification=False)
         # The archive manifest must state the amount of raw material covered by
         # the export.  These values come from the owner-scoped, persisted import
         # records rather than from a second payload read, so the export remains
@@ -573,7 +592,19 @@ class Application:
             "raw_object_count": len(raw_imports) if isinstance(raw_imports, list) else 0,
             "raw_bytes": raw_bytes,
         }
-        return self.export_service.create_archive(owner_id, metadata)
+        artifact = self.export_service.create_archive(owner_id, metadata)
+        if self.notifications is not None:
+            self.notifications.record_export(
+                owner_id,
+                counts={
+                    "personas": len(metadata.get("personas", [])),
+                    "imports": len(raw_imports) if isinstance(raw_imports, list) else 0,
+                    "consents": len(metadata.get("consents", [])),
+                    "training_jobs": len(metadata.get("training_jobs", [])),
+                    "conversations": len(metadata.get("conversations", [])),
+                },
+            )
+        return artifact
 
     def delete_owner_data(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         if payload.get("confirm") != "DELETE":
@@ -637,6 +668,14 @@ class Application:
                     "DELETE FROM local_sessions WHERE user_id = ?", (owner_id,)
                 ).rowcount
                 receipt = self.deletion_receipts.create(counts, connection=connection)
+                if self.notifications is not None:
+                    self.notifications.record_deletion(
+                        owner_id,
+                        operation_id=receipt["receipt_id"],
+                        counts=counts,
+                        occurred_at=receipt["deleted_at"],
+                        connection=connection,
+                    )
             return {
                 "deleted": True,
                 "receipt_id": receipt["receipt_id"],
@@ -646,6 +685,22 @@ class Application:
                 "provider_side_cleanup_limitations": counts["provider_side_cleanup_limitations"],
                 "anonymized": True,
             }
+
+    def list_notifications(
+        self,
+        owner_id: str,
+        *,
+        limit: int = 100,
+        before: tuple[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if self.notifications is None:
+            return {"notifications": []}
+        return {
+            "notifications": [
+                notification.to_public_dict()
+                for notification in self.notifications.list(owner_id, limit=limit, before=before)
+            ]
+        }
 
     def create_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:

@@ -28,6 +28,7 @@ from src.server.application import Application, AuditServiceError, RequestValida
 from src.services.billing_service import BillingServiceError
 from src.server.config import ServerConfig
 from src.services.conversation_service import ConversationNotFoundError
+from src.services.data_subject_notification_service import DataSubjectNotificationServiceError
 from src.services.import_service import ImportNotFoundError, ImportValidationError
 from src.services.consent_service import ConsentNotFoundError
 from src.services.export_service import ExportServiceError
@@ -82,6 +83,7 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
     r"^/api/v1/conversations/([A-Za-z0-9._-]+)/messages$"
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
+_NOTIFICATIONS_PATH = "/api/v1/notifications"
 _USAGE_PATH = "/api/v1/usage"
 _BILLING_BALANCE_PATH = "/api/v1/billing/balance"
 _BILLING_ENTRIES_PATH = "/api/v1/billing/entries"
@@ -343,6 +345,18 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "subscription_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
             self._error(status, exc.code, str(exc))
+        except DataSubjectNotificationServiceError as exc:
+            status = {
+                "notification_not_found": HTTPStatus.NOT_FOUND,
+                "notification_closed": HTTPStatus.CONFLICT,
+                "notification_not_retryable": HTTPStatus.CONFLICT,
+                "notification_retry_limit": HTTPStatus.CONFLICT,
+                "notification_unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+                "notification_record_corrupt": HTTPStatus.SERVICE_UNAVAILABLE,
+                "invalid_notification_limit": HTTPStatus.BAD_REQUEST,
+                "invalid_notification_cursor": HTTPStatus.BAD_REQUEST,
+            }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
         except ExportServiceError as exc:
             status = {
                 "export_payload_unavailable": HTTPStatus.CONFLICT,
@@ -491,6 +505,33 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if events and len(events) == limit:
                 payload["next_cursor"] = _encode_audit_cursor(events[-1])
             self._json(HTTPStatus.OK, payload)
+        elif path == _NOTIFICATIONS_PATH:
+            raw_limit = query.get("limit", [None])[0]
+            limit = 100
+            if raw_limit is not None:
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError) as exc:
+                    raise RequestValidationError(
+                        "invalid_notification_limit", "notification limit is invalid"
+                    ) from exc
+                if not 1 <= limit <= 100:
+                    raise RequestValidationError(
+                        "invalid_notification_limit", "notification limit is invalid"
+                    )
+            raw_cursor = query.get("before", [None])[0]
+            before = _decode_notification_cursor(raw_cursor) if raw_cursor is not None else None
+            result = self.server.application.list_notifications(
+                self.owner_id,
+                limit=limit,
+                before=before,
+            )
+            notifications = result["notifications"]
+            if isinstance(notifications, list) and notifications and len(notifications) == limit:
+                last = notifications[-1]
+                if isinstance(last, dict):
+                    result["next_cursor"] = _encode_notification_cursor(last)
+            self._json(HTTPStatus.OK, result)
         elif path == _USAGE_PATH:
             raw_limit = query.get("limit", [None])[0]
             limit = 100
@@ -1027,6 +1068,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/conversations/{conversation_id}"
         if path == _AUDIT_EVENTS_PATH:
             return _AUDIT_EVENTS_PATH
+        if path == _NOTIFICATIONS_PATH:
+            return _NOTIFICATIONS_PATH
         if path == _USAGE_PATH:
             return _USAGE_PATH
         if path == _BILLING_BALANCE_PATH:
@@ -1081,6 +1124,26 @@ def _decode_audit_cursor(value: str) -> tuple[str, str]:
     ):
         raise RequestValidationError("invalid_audit_cursor", "audit cursor is invalid")
     return parsed.astimezone(UTC).isoformat(), event_id
+
+
+def _encode_notification_cursor(notification: dict[str, Any]) -> str:
+    raw = f"{notification['occurred_at']}\x00{notification['id']}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_notification_cursor(value: str) -> tuple[str, str]:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        raise RequestValidationError("invalid_notification_cursor", "notification cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        timestamp, notification_id = decoded.decode("utf-8").split("\x00", 1)
+        parsed = datetime.fromisoformat(timestamp)
+    except (ValueError, UnicodeError, IndexError) as exc:
+        raise RequestValidationError("invalid_notification_cursor", "notification cursor is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None or not _AUDIT_CURSOR_ID.fullmatch(notification_id):
+        raise RequestValidationError("invalid_notification_cursor", "notification cursor is invalid")
+    return parsed.astimezone(UTC).isoformat(), notification_id
 
 
 def _encode_usage_cursor(record: dict[str, Any]) -> str:

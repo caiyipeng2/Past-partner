@@ -122,6 +122,10 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/v1/consents/ocr" 
 
 创建成功后，媒体分析仍调用 `POST /api/v1/imports/{import_id}/media-analysis`，携带返回的 `consent_id`、同一 Provider/模型、`data_category=image`、`analysis_kind=ocr` 和 `authorization_scope=persona-image-ocr`。普通图片授权不会被接受为 OCR 授权。
 
+### 数据主体通知
+
+导出和账户级删除成功后，服务会在加密元数据中写入 owner 范围通知，可通过 `GET /api/v1/notifications?limit=100` 读取，使用 `before` 游标分页。通知只包含 `event_type`、`operation_id`、有限计数、UTC 时间、`pending`/`failed`/`delivered` 状态、尝试次数、下一次尝试时间和稳定错误码；响应不包含 owner、聊天正文、媒体、文件路径、Provider 载荷或凭据。通知仓储提供给后续外部投递适配器使用，当前不会自动发送短信、邮件、Webhook 或推送。
+
 ## 5. 测试和静态检查
 
 在仓库根目录执行 Python/Node 检查：

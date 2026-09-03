@@ -140,6 +140,8 @@ R2-04 Task 2 增加加密订阅权益快照：订阅状态限定为 `trial`、`a
 
 R2-04 Task 3 为 owner 范围的审计事件增加追加式序号、前链哈希和事件哈希；启动迁移会为既有脱敏事件建立确定性链，`GET /api/v1/audit-events` 在返回前校验链，发现缺口或哈希不一致时返回稳定的 `audit_chain_gap`/`audit_chain_mismatch` 运维错误。可运行 `python scripts/verify_audit_chain.py --database <metadata.sqlite3> [--owner <owner-id>]` 生成不含正文、密钥、路径或 DSN 的 JSON 校验结果。该本地链不等同于监管 WORM，生产环境仍需外部不可变存储和保留策略。
 
+R2-04 Task 4 增加 owner 范围的数据主体通知：导出和账户级删除成功后，通知以 AES-GCM 加密保存，只包含操作 ID、有限计数、UTC 时间、投递状态、尝试次数、下一次尝试时间和稳定错误码；`GET /api/v1/notifications` 只读分页返回通知，不包含 owner、原始聊天/媒体、文件路径、Provider 载荷或凭据。当前仅提供后续外部投递适配器所需的记录和重试状态，不自动发送短信、邮件、Webhook 或监管通知。
+
 P4-10 增加进程内监控基础：`GET /api/v1/health` 继续作为不需要认证的存活检查，`GET /api/v1/ready` 不需要认证并以 `200`/`503` 报告元数据后端是否可用，`GET /api/v1/metrics` 需要 `owner:read` 并返回有界的 Prometheus 文本请求计数和当前进程 in-flight 数。指标只按方法、规范化路由模板和状态码聚合，不含 owner、请求参数、请求正文、文件路径、token、API Key 或供应商响应；服务重启后指标归零。该切片不提供外部 Prometheus 推送或抓取配置、告警、追踪、日志外发、供应商/对象存储健康探测、跨进程聚合或持久化保留。
 
 移动端开发联调仍由 Python 服务负责启动。默认回环 HTTP 只适合本机浏览器和模拟器；若需要让真机访问，必须在开发模式同时配置 `PAST_PARTNER_DEV_DEVICE_BOOTSTRAP_TOKEN`、`PAST_PARTNER_DEV_DEVICE_ALLOWED_NETWORKS`、`PAST_PARTNER_DEV_DEVICE_TLS_CERT_FILE` 和 `PAST_PARTNER_DEV_DEVICE_TLS_KEY_FILE`。服务会校验私有 IPv4/IPv6 ULA 地址、证书 IP SAN 和 TLS 1.2+，并自动使用 `https://` 启动。设备通过 `X-Dev-Device-Bootstrap-Token` 仅初始化最多 1 小时的设备会话；`X-Local-Owner-Token` 仍只用于生产 owner 引导，两者不会互相替代。允许网段优先使用 `/32` 或 `/128`，不得配置公网、回环、未指定地址或 catch-all 网段。不要把真实 token、证书或私钥提交到仓库。
