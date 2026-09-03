@@ -44,7 +44,8 @@ class _FakeGateway implements MediaAnalysisGateway {
 }
 
 void main() {
-  test('client gateway posts the consent-gated media analysis request', () async {
+  test('client gateway posts the consent-gated media analysis request',
+      () async {
     final List<http.Request> requests = <http.Request>[];
     final ApiClient client = ApiClient(
       client: MockClient((http.Request request) async {
@@ -64,7 +65,9 @@ void main() {
             'provider_request_id': 'request-1',
           })),
           200,
-          headers: <String, String>{'content-type': 'application/json; charset=utf-8'},
+          headers: <String, String>{
+            'content-type': 'application/json; charset=utf-8'
+          },
         );
       }),
     );
@@ -104,6 +107,101 @@ void main() {
     });
   });
 
+  test('client gateway carries OCR operation and structured result', () async {
+    final List<http.Request> requests = <http.Request>[];
+    final ApiClient client = ApiClient(
+      client: MockClient((http.Request request) async {
+        requests.add(request);
+        return http.Response.bytes(
+          utf8.encode(jsonEncode(<String, dynamic>{
+            'import_id': 'import-1',
+            'file_id': 'file-1',
+            'state': 'uploaded',
+            'provider_id': 'openai',
+            'model_id': 'ocr-model',
+            'media_category': 'image',
+            'media_type': 'image/png',
+            'analysis_kind': 'ocr',
+            'description': '识别出的文字',
+            'structured_data': <String, dynamic>{
+              'text': '识别出的文字',
+              'blocks': <Map<String, dynamic>>[
+                <String, dynamic>{'text': '识别出的文字'},
+              ],
+            },
+            'provider_transfer': true,
+          })),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final MediaAnalysisResult result =
+        await ApiClientMediaAnalysisGateway(client).analyze(
+      MediaAnalysisRequestData(
+        endpoint: endpoint,
+        session: session,
+        importId: 'import-1',
+        consentId: 'consent-1',
+        providerId: 'openai',
+        modelId: 'ocr-model',
+        dataCategory: 'image',
+        authorizationScope: 'persona-image-ocr',
+        prompt: '识别图片文字',
+        analysisKind: 'ocr',
+      ),
+    );
+
+    expect(result.analysisKind, 'ocr');
+    expect(result.structuredData?['text'], '识别出的文字');
+    expect(
+        jsonDecode(requests.single.body), containsPair('analysis_kind', 'ocr'));
+  });
+
+  test(
+      'controller carries OCR operation and structured result without media bytes',
+      () async {
+    final _FakeGateway gateway = _FakeGateway()
+      ..result = const MediaAnalysisResult(
+        importId: 'import-1',
+        fileId: 'file-1',
+        providerId: 'openai',
+        modelId: 'ocr-model',
+        mediaCategory: 'image',
+        mediaType: 'image/png',
+        description: '识别出的文字',
+        usage: <String, int>{'prompt_tokens': 3},
+        providerTransfer: true,
+        analysisKind: 'ocr',
+        structuredData: <String, dynamic>{
+          'text': '识别出的文字',
+          'blocks': <dynamic>[]
+        },
+      );
+    final MediaAnalysisController controller = MediaAnalysisController(
+      endpoint: endpoint,
+      session: session,
+      importId: 'import-1',
+      gateway: gateway,
+    );
+
+    expect(
+      await controller.analyze(
+        consentId: 'consent-1',
+        providerId: 'openai',
+        modelId: 'ocr-model',
+        dataCategory: 'image',
+        authorizationScope: 'persona-image-ocr',
+        prompt: '识别图片文字',
+        analysisKind: 'ocr',
+      ),
+      isTrue,
+    );
+    expect(gateway.lastRequest?.analysisKind, 'ocr');
+    expect(controller.result?.structuredData?['text'], '识别出的文字');
+  });
+
   test('controller exposes loading and success without retaining media bytes',
       () async {
     final _FakeGateway gateway = _FakeGateway();
@@ -131,7 +229,8 @@ void main() {
     expect(gateway.lastRequest?.prompt, '描述图片');
   });
 
-  test('controller maps capability/provider errors and retries the same request',
+  test(
+      'controller maps capability/provider errors and retries the same request',
       () async {
     final _FakeGateway gateway = _FakeGateway()
       ..error = const ApiFailure('capability_not_supported', 'unsupported');

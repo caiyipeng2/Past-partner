@@ -786,6 +786,7 @@ class Application:
                 data_category=payload["data_category"],
                 authorization_scope=payload["authorization_scope"],
                 prompt=payload["prompt"],
+                analysis_kind=payload.get("analysis_kind", "description"),
                 file_id=payload.get("file_id"),
             )
         except KeyError as exc:

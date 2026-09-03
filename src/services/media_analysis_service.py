@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+import math
 import os
 from pathlib import Path
 import shutil
@@ -77,6 +78,7 @@ class MediaAnalysisService:
         data_category: str,
         authorization_scope: str,
         prompt: str,
+        analysis_kind: str = "description",
         file_id: str | None = None,
     ) -> dict[str, Any]:
         job = self._get_job(owner_id, import_id)
@@ -87,6 +89,9 @@ class MediaAnalysisService:
             )
 
         category = _category(data_category)
+        operation = _analysis_kind(analysis_kind)
+        if operation == "ocr" and category != "image":
+            raise MediaAnalysisError("unsupported_media_operation", "OCR requires image media")
         file_spec, file_offset = self._select_file(job, file_id)
         declared_category = _mime_category(file_spec.media_type)
         if declared_category != category:
@@ -139,6 +144,7 @@ class MediaAnalysisService:
                 media_type=file_spec.media_type,
                 media_path=destination,
                 prompt=clean_prompt,
+                analysis_kind=operation,
             )
             with self._provider_handoff_guard():
                 try:
@@ -173,7 +179,7 @@ class MediaAnalysisService:
                         "media provider could not complete analysis",
                     ) from exc
 
-        return self._normalize_result(result, category, import_id, file_spec.file_id)
+        return self._normalize_result(result, category, operation, import_id, file_spec.file_id)
 
     @contextmanager
     def _provider_handoff_guard(self) -> Iterator[None]:
@@ -297,6 +303,7 @@ class MediaAnalysisService:
     def _normalize_result(
         result: MediaAnalysisResult,
         category: str,
+        operation: str,
         import_id: str,
         file_id: str,
     ) -> dict[str, Any]:
@@ -306,19 +313,24 @@ class MediaAnalysisService:
         if not isinstance(description, str) or not description.strip():
             raise MediaAnalysisError("invalid_provider_result", "media provider returned no description")
         description = description.strip()[:MAX_DESCRIPTION_CHARACTERS]
-        return {
+        normalized = {
             "import_id": import_id,
             "state": ImportState.UPLOADED.value,
             "provider_id": result.provider_id,
             "model_id": result.model_id,
             "file_id": file_id,
             "media_category": category,
+            "analysis_kind": operation,
             "media_type": result.media_type,
             "description": description,
             "usage": _usage(result.usage),
             "provider_transfer": True,
             **_provider_request_id(result.provider_request_id),
         }
+        structured_data = _structured_data(result.structured_data, operation)
+        if structured_data is not None:
+            normalized["structured_data"] = structured_data
+        return normalized
 
 
 def _category(value: object) -> str:
@@ -328,6 +340,17 @@ def _category(value: object) -> str:
     if category is None:
         raise MediaAnalysisError("unsupported_media_category", "data category is not supported")
     return category
+
+
+def _analysis_kind(value: object) -> str:
+    if not isinstance(value, str):
+        raise MediaAnalysisError("unsupported_media_operation", "media analysis operation is not supported")
+    operation = value.strip().casefold()
+    if operation in {"description", "describe"}:
+        return "description"
+    if operation == "ocr":
+        return operation
+    raise MediaAnalysisError("unsupported_media_operation", "media analysis operation is not supported")
 
 
 def _mime_category(value: object) -> str:
@@ -346,6 +369,50 @@ def _prompt(value: object) -> str:
     if len(prompt) > MAX_ANALYSIS_PROMPT_CHARACTERS:
         raise MediaAnalysisError("invalid_prompt", "analysis prompt is too long")
     return prompt
+
+
+def _structured_data(value: object, operation: str) -> dict[str, Any] | None:
+    if operation != "ocr":
+        return None
+    if not isinstance(value, Mapping):
+        raise MediaAnalysisError("invalid_provider_result", "media provider OCR result is invalid")
+    text = value.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text.strip()) > MAX_DESCRIPTION_CHARACTERS:
+        raise MediaAnalysisError("invalid_provider_result", "media provider OCR text is invalid")
+    raw_blocks = value.get("blocks", [])
+    if not isinstance(raw_blocks, list) or len(raw_blocks) > 256:
+        raise MediaAnalysisError("invalid_provider_result", "media provider OCR blocks are invalid")
+    blocks: list[dict[str, Any]] = []
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, Mapping):
+            raise MediaAnalysisError("invalid_provider_result", "media provider OCR blocks are invalid")
+        block_text = raw_block.get("text")
+        if not isinstance(block_text, str) or not block_text.strip() or len(block_text.strip()) > 2_048:
+            raise MediaAnalysisError("invalid_provider_result", "media provider OCR block text is invalid")
+        block: dict[str, Any] = {"text": block_text.strip()}
+        if "confidence" in raw_block:
+            confidence = raw_block["confidence"]
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+                raise MediaAnalysisError("invalid_provider_result", "media provider OCR confidence is invalid")
+            confidence_value = float(confidence)
+            if not math.isfinite(confidence_value) or not 0 <= confidence_value <= 1:
+                raise MediaAnalysisError("invalid_provider_result", "media provider OCR confidence is invalid")
+            block["confidence"] = confidence_value
+        if "bbox" in raw_block:
+            bbox = raw_block["bbox"]
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                raise MediaAnalysisError("invalid_provider_result", "media provider OCR bounding box is invalid")
+            normalized_bbox: list[float] = []
+            for coordinate in bbox:
+                if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
+                    raise MediaAnalysisError("invalid_provider_result", "media provider OCR bounding box is invalid")
+                coordinate_value = float(coordinate)
+                if not math.isfinite(coordinate_value) or not 0 <= coordinate_value <= 1:
+                    raise MediaAnalysisError("invalid_provider_result", "media provider OCR bounding box is invalid")
+                normalized_bbox.append(coordinate_value)
+            block["bbox"] = normalized_bbox
+        blocks.append(block)
+    return {"text": text.strip(), "blocks": blocks}
 
 
 def _usage(value: object) -> dict[str, int] | None:

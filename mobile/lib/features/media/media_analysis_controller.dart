@@ -19,6 +19,7 @@ class MediaAnalysisRequestData {
     required this.authorizationScope,
     required this.prompt,
     this.fileId,
+    this.analysisKind = 'description',
   });
 
   final ApiEndpoint endpoint;
@@ -31,6 +32,7 @@ class MediaAnalysisRequestData {
   final String authorizationScope;
   final String prompt;
   final String? fileId;
+  final String analysisKind;
 }
 
 class MediaAnalysisResult {
@@ -44,6 +46,8 @@ class MediaAnalysisResult {
     required this.description,
     required this.usage,
     required this.providerTransfer,
+    this.analysisKind = 'description',
+    this.structuredData,
     this.providerRequestId,
   });
 
@@ -56,6 +60,8 @@ class MediaAnalysisResult {
   final String description;
   final Map<String, int>? usage;
   final bool providerTransfer;
+  final String analysisKind;
+  final Map<String, dynamic>? structuredData;
   final String? providerRequestId;
 
   factory MediaAnalysisResult.fromJson(Map<String, dynamic> json) {
@@ -65,16 +71,26 @@ class MediaAnalysisResult {
     final dynamic modelId = json['model_id'];
     final dynamic mediaCategory = json['media_category'];
     final dynamic mediaType = json['media_type'];
+    final dynamic analysisKind = json['analysis_kind'] ?? 'description';
     final dynamic description = json['description'];
     final dynamic providerTransfer = json['provider_transfer'];
     final dynamic providerRequestId = json['provider_request_id'];
-    if (importId is! String || importId.isEmpty ||
-        fileId is! String || fileId.isEmpty ||
-        providerId is! String || providerId.isEmpty ||
-        modelId is! String || modelId.isEmpty ||
-        mediaCategory is! String || mediaCategory.isEmpty ||
-        mediaType is! String || mediaType.isEmpty ||
-        description is! String || description.isEmpty ||
+    if (importId is! String ||
+        importId.isEmpty ||
+        fileId is! String ||
+        fileId.isEmpty ||
+        providerId is! String ||
+        providerId.isEmpty ||
+        modelId is! String ||
+        modelId.isEmpty ||
+        mediaCategory is! String ||
+        mediaCategory.isEmpty ||
+        mediaType is! String ||
+        mediaType.isEmpty ||
+        analysisKind is! String ||
+        (analysisKind != 'description' && analysisKind != 'ocr') ||
+        description is! String ||
+        description.isEmpty ||
         providerTransfer != true ||
         (providerRequestId != null && providerRequestId is! String)) {
       throw const FormatException('The media analysis response is invalid.');
@@ -108,6 +124,8 @@ class MediaAnalysisResult {
       description: description,
       usage: usage,
       providerTransfer: true,
+      analysisKind: analysisKind,
+      structuredData: _parseStructuredData(json['structured_data']),
       providerRequestId: providerRequestId as String?,
     );
   }
@@ -136,6 +154,7 @@ class ApiClientMediaAnalysisGateway implements MediaAnalysisGateway {
         authorizationScope: request.authorizationScope,
         prompt: request.prompt,
         fileId: request.fileId,
+        analysisKind: request.analysisKind,
       ),
     );
   }
@@ -167,6 +186,7 @@ class MediaAnalysisController extends ChangeNotifier {
     required String dataCategory,
     required String authorizationScope,
     required String prompt,
+    String analysisKind = 'description',
     String? fileId,
   }) async {
     if (state == MediaAnalysisState.loading) return false;
@@ -181,6 +201,7 @@ class MediaAnalysisController extends ChangeNotifier {
       authorizationScope: authorizationScope,
       prompt: prompt,
       fileId: fileId,
+      analysisKind: analysisKind,
     );
     _lastRequest = request;
     return _run(request);
@@ -231,4 +252,69 @@ class MediaAnalysisController extends ChangeNotifier {
     }
     return '媒体分析失败，请重试。';
   }
+}
+
+Map<String, dynamic>? _parseStructuredData(Object? value) {
+  if (value == null) return null;
+  if (value is! Map || value.length > 2) {
+    throw const FormatException(
+        'The media analysis structured result is invalid.');
+  }
+  final Object? rawText = value['text'];
+  final Object? rawBlocks = value['blocks'];
+  if (rawText is! String ||
+      rawText.isEmpty ||
+      rawText.length > 8192 ||
+      rawBlocks is! List ||
+      rawBlocks.length > 256) {
+    throw const FormatException(
+        'The media analysis structured result is invalid.');
+  }
+  final List<Map<String, dynamic>> blocks = <Map<String, dynamic>>[];
+  for (final Object? rawBlock in rawBlocks) {
+    if (rawBlock is! Map) {
+      throw const FormatException(
+          'The media analysis structured result is invalid.');
+    }
+    final Object? rawBlockText = rawBlock['text'];
+    if (rawBlockText is! String ||
+        rawBlockText.isEmpty ||
+        rawBlockText.length > 2048) {
+      throw const FormatException(
+          'The media analysis structured result is invalid.');
+    }
+    final Map<String, dynamic> block = <String, dynamic>{'text': rawBlockText};
+    final Object? confidence = rawBlock['confidence'];
+    if (confidence != null) {
+      if (confidence is! num ||
+          !confidence.isFinite ||
+          confidence < 0 ||
+          confidence > 1) {
+        throw const FormatException(
+            'The media analysis structured result is invalid.');
+      }
+      block['confidence'] = confidence.toDouble();
+    }
+    final Object? rawBbox = rawBlock['bbox'];
+    if (rawBbox != null) {
+      if (rawBbox is! List ||
+          rawBbox.length != 4 ||
+          rawBbox.any((Object? coordinate) =>
+              coordinate is! num ||
+              !coordinate.isFinite ||
+              coordinate < 0 ||
+              coordinate > 1)) {
+        throw const FormatException(
+            'The media analysis structured result is invalid.');
+      }
+      block['bbox'] = List<double>.unmodifiable(
+        rawBbox.map((Object? coordinate) => (coordinate as num).toDouble()),
+      );
+    }
+    blocks.add(Map<String, dynamic>.unmodifiable(block));
+  }
+  return Map<String, dynamic>.unmodifiable(<String, dynamic>{
+    'text': rawText,
+    'blocks': List<Map<String, dynamic>>.unmodifiable(blocks),
+  });
 }

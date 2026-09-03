@@ -24,7 +24,7 @@ class _FakeMediaAnalysisService:
         self.calls.append((owner_id, import_id, payload))
         if self.error is not None:
             raise self.error
-        return {
+        result = {
             "import_id": import_id,
             "file_id": payload.get("file_id") or "legacy-file",
             "state": "uploaded",
@@ -37,6 +37,15 @@ class _FakeMediaAnalysisService:
             "provider_transfer": True,
             "provider_request_id": "request-1",
         }
+        if payload.get("analysis_kind") == "ocr":
+            result.update(
+                {
+                    "analysis_kind": "ocr",
+                    "description": "受控 OCR 文本",
+                    "structured_data": {"text": "受控 OCR 文本", "blocks": [{"text": "受控 OCR 文本"}]},
+                }
+            )
+        return result
 
 
 class HttpMediaAnalysisTests(unittest.TestCase):
@@ -185,6 +194,30 @@ class HttpMediaAnalysisTests(unittest.TestCase):
         self.assertEqual("video", payload["media_category"])
         self.assertEqual("受控视频描述", payload["description"])
         self.assertEqual("video/mp4", payload["media_type"])
+        self.assertNotIn("raw_bytes", payload)
+        self.assertNotIn("media_path", payload)
+
+    def test_media_analysis_route_exposes_normalized_ocr_result(self) -> None:
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/imports/import-1/media-analysis",
+            {
+                "consent_id": "consent-ocr",
+                "provider_id": "custom_openai",
+                "model_id": "ocr-model",
+                "data_category": "image",
+                "analysis_kind": "ocr",
+                "authorization_scope": "persona-image-ocr",
+                "prompt": "识别图片文字",
+                "file_id": "file-1",
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("image", payload["media_category"])
+        self.assertEqual("ocr", payload["analysis_kind"])
+        self.assertEqual("受控 OCR 文本", payload["description"])
+        self.assertEqual({"text": "受控 OCR 文本", "blocks": [{"text": "受控 OCR 文本"}]}, payload["structured_data"])
         self.assertNotIn("raw_bytes", payload)
         self.assertNotIn("media_path", payload)
 
