@@ -126,6 +126,10 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/v1/consents/ocr" 
 
 导出和账户级删除成功后，服务会在加密元数据中写入 owner 范围通知，可通过 `GET /api/v1/notifications?limit=100` 读取，使用 `before` 游标分页。通知只包含 `event_type`、`operation_id`、有限计数、UTC 时间、`pending`/`failed`/`delivered` 状态、尝试次数、下一次尝试时间和稳定错误码；响应不包含 owner、聊天正文、媒体、文件路径、Provider 载荷或凭据。通知仓储提供给后续外部投递适配器使用，当前不会自动发送短信、邮件、Webhook 或推送。
 
+### 管理员运营摘要
+
+development/test 环境可通过 `LocalAuthService.create_local_account(..., role="admin")` 创建管理员测试主体，再使用其 owner 会话读取 `GET /api/v1/operations/summary`。该接口需要 `owner:read` 且要求 `admin` 角色，只返回有界队列状态、任务 outbox 数量、本地账务计数与 `local_ledger_only` 对账状态、审计链健康、通知失败计数、worker 结果计数和最近 20 个诊断 ID。成员、普通 owner 或未认证请求都会被拒绝；接口没有 POST/PATCH/DELETE 变更入口。摘要不包含 owner ID、聊天正文、媒体、文件路径、Provider 响应、DSN、密钥或完整错误文本。
+
 ## 5. 测试和静态检查
 
 在仓库根目录执行 Python/Node 检查：

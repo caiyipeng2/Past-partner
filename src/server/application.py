@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import json
+from collections import deque
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Mapping
@@ -45,6 +46,7 @@ from src.services.master_key import MasterKeyProvider, build_master_key_provider
 from src.services.media_analysis_service import MediaAnalysisService
 from src.services.metadata_store import MetadataStore, MetadataStoreError, build_metadata_store
 from src.services.oidc_verifier import OidcAuthError, OidcClaims, OidcVerifier
+from src.services.operations_summary import OperationsSummaryService
 from src.services.persona_service import PersonaService
 from src.services.persona_repository import PersonaRepository
 from src.services.retention_service import RetentionService
@@ -99,6 +101,7 @@ class Application:
         billing: BillingService | None = None,
         subscriptions: SubscriptionService | None = None,
         notifications: DataSubjectNotificationService | None = None,
+        operations: OperationsSummaryService | None = None,
         oidc_verifier: OidcVerifier | None = None,
     ):
         self.personas = personas
@@ -122,7 +125,9 @@ class Application:
         self.billing = billing
         self.subscriptions = subscriptions
         self.notifications = notifications
+        self.operations = operations
         self.oidc_verifier = oidc_verifier
+        self._recent_diagnostic_ids: deque[str] = deque(maxlen=100)
         self.multimodal_consents = MultimodalConsentGate(consents, catalog)
         self.media_analysis = media_analysis or MediaAnalysisService(
             uploads.storage,
@@ -178,6 +183,7 @@ class Application:
         subscriptions = SubscriptionService(subscription_repository)
         notification_repository = DataSubjectNotificationRepository(metadata_store, encryption)
         notifications = DataSubjectNotificationService(notification_repository)
+        operations = OperationsSummaryService(metadata_store, audit_repository)
         deletion_receipts = DeletionReceiptRepository(metadata_store)
         task_queue = TaskQueue(metadata_store, encryption)
         auth = LocalAuthService(
@@ -296,6 +302,7 @@ class Application:
             billing=billing,
             subscriptions=subscriptions,
             notifications=notifications,
+            operations=operations,
             oidc_verifier=oidc_verifier,
         )
         return application
@@ -341,6 +348,20 @@ class Application:
             "version": "v1",
             "checks": {"metadata_store": metadata_state},
         }
+
+    def record_diagnostic_id(self, diagnostic_id: str) -> None:
+        """Retain only recent UUID diagnostics for the admin summary."""
+
+        if isinstance(diagnostic_id, str) and len(diagnostic_id) == 36:
+            self._recent_diagnostic_ids.append(diagnostic_id)
+
+    def operations_summary(self, principal: OwnerPrincipal) -> dict[str, object]:
+        if self.operations is None:
+            raise AuditServiceError("operations_unavailable", "operations summary is unavailable")
+        return self.operations.summarize(
+            principal,
+            diagnostic_ids=tuple(self._recent_diagnostic_ids),
+        )
 
     def issue_session(
         self,

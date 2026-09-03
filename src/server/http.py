@@ -38,6 +38,7 @@ from src.services.media_analysis_service import MediaAnalysisError
 from src.services.metrics import MetricsRegistry
 from src.services.persona_service import PersonaNotFoundError
 from src.services.oidc_verifier import OidcAuthError
+from src.services.operations_summary import OperationsSummaryError
 from src.services.training_service import TrainingServiceError
 from src.services.upload_service import UploadError
 from src.services.subscription_service import SubscriptionServiceError
@@ -84,6 +85,7 @@ _CONVERSATION_MESSAGES_PATH = re.compile(
 )
 _AUDIT_EVENTS_PATH = "/api/v1/audit-events"
 _NOTIFICATIONS_PATH = "/api/v1/notifications"
+_OPERATIONS_SUMMARY_PATH = "/api/v1/operations/summary"
 _USAGE_PATH = "/api/v1/usage"
 _BILLING_BALANCE_PATH = "/api/v1/billing/balance"
 _BILLING_ENTRIES_PATH = "/api/v1/billing/entries"
@@ -202,9 +204,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if self._requires_auth(path):
                 principal = self.server.application.authenticate(self.headers.get("Authorization"))
                 principal.require("owner:read" if self.command == "GET" else "owner:write")
+                self.principal = principal
                 self.owner_id = principal.user_id
             else:
+                self.principal = None
                 self.owner_id = None
+            record_diagnostic_id = getattr(self.server.application, "record_diagnostic_id", None)
+            if callable(record_diagnostic_id):
+                record_diagnostic_id(self._diagnostic_id)
             operation()
         except LocalAuthError as exc:
             if exc.code == "insufficient_scope":
@@ -356,6 +363,13 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "invalid_notification_limit": HTTPStatus.BAD_REQUEST,
                 "invalid_notification_cursor": HTTPStatus.BAD_REQUEST,
             }.get(exc.code, HTTPStatus.BAD_REQUEST)
+            self._error(status, exc.code, str(exc))
+        except OperationsSummaryError as exc:
+            status = (
+                HTTPStatus.FORBIDDEN
+                if exc.code == "operations_admin_required"
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
             self._error(status, exc.code, str(exc))
         except ExportServiceError as exc:
             status = {
@@ -532,6 +546,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 if isinstance(last, dict):
                     result["next_cursor"] = _encode_notification_cursor(last)
             self._json(HTTPStatus.OK, result)
+        elif path == _OPERATIONS_SUMMARY_PATH:
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.operations_summary(self.principal),
+            )
         elif path == _USAGE_PATH:
             raw_limit = query.get("limit", [None])[0]
             limit = 100
@@ -1070,6 +1089,8 @@ def _route_template(target: str) -> str:
             return _AUDIT_EVENTS_PATH
         if path == _NOTIFICATIONS_PATH:
             return _NOTIFICATIONS_PATH
+        if path == _OPERATIONS_SUMMARY_PATH:
+            return _OPERATIONS_SUMMARY_PATH
         if path == _USAGE_PATH:
             return _USAGE_PATH
         if path == _BILLING_BALANCE_PATH:
