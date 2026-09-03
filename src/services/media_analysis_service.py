@@ -113,6 +113,7 @@ class MediaAnalysisService:
                 model_id=model_id,
                 data_category=category,
                 authorization_scope=authorization_scope,
+                analysis_kind=operation,
             )
         except ConsentNotFoundError as exc:
             raise MediaAnalysisError("consent_not_found", "media analysis consent was not found") from exc
@@ -157,6 +158,7 @@ class MediaAnalysisService:
                         model_id=model_id,
                         data_category=category,
                         authorization_scope=authorization_scope,
+                        analysis_kind=operation,
                     )
                 except ConsentNotFoundError as exc:
                     raise MediaAnalysisError("consent_not_found", "media analysis consent was not found") from exc

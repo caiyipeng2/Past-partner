@@ -218,7 +218,7 @@ R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 p
 
 OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和逗号分隔的模型名；`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 可选，留空时适用于无认证的本地模型服务。`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
 
-OpenAI-compatible provider 的音频转写还需要配置对应的 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS`，其值必须是同一 provider `*_MODELS` 的子集；留空时音频能力保持关闭。视频语义分析需要额外配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，两个配置缺一时不会启用视频能力。音频使用 `/audio/transcriptions` multipart 接口，视频使用部署者明确配置的 Provider 专用路径；当前自动化真实 HTTP smoke 使用 `custom_openai` 本地端点，其他 Provider 只有在其端点协议兼容并通过独立验证后才应启用。响应中的 `description` 是归一化文本；OCR、流式处理和供应商原生 ASR/视频差异仍未实现。
+OpenAI-compatible provider 的音频转写还需要配置对应的 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS`，其值必须是同一 provider `*_MODELS` 的子集；留空时音频能力保持关闭。视频语义分析需要额外配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，两个配置缺一时不会启用视频能力。OCR 需要配置同一 provider `*_OCR_MODELS` 子集，复用视觉 chat 接口并返回有界结构化文字；当前自动化真实 HTTP smoke 使用 `custom_openai` 本地端点，其他 Provider 只有在其端点协议兼容并通过独立验证后才应启用。响应中的 `description` 是归一化文本；扫描 PDF OCR、流式处理和供应商原生 ASR/视频差异仍未实现。
 
 ### Provider smoke
 

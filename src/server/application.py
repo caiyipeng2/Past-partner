@@ -692,6 +692,7 @@ class Application:
                 model_id=payload["model_id"],
                 data_category=payload["data_category"],
                 authorization_scope=payload["authorization_scope"],
+                analysis_kind=payload.get("analysis_kind", "description"),
             )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc

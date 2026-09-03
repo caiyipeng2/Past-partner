@@ -130,6 +130,7 @@ class PrivacyPolicyContractTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, self.policy)
         self.assertNotIn("OCR 专用结构化提取和第三方删除仍未实现", self.policy)
+        self.assertNotIn("不代表已经具备 OCR", self.policy)
 
 
 if __name__ == "__main__":
