@@ -125,6 +125,9 @@ def _backfill_audit_chain(connection: object) -> None:
 # preserving existing loopback and device-pairing sessions.
 # Version 23 binds persisted identity subjects to their OIDC issuer, while keeping
 # the legacy local-owner namespace separate.
+# Version 24 adds encrypted owner-scoped data-subject notifications. Queryable columns
+# contain only lifecycle routing and retry metadata; operation counts and IDs remain
+# inside the authenticated envelope alongside the same bounded public representation.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -629,6 +632,30 @@ DEFAULT_MIGRATIONS = (
             "ALTER TABLE local_identities DROP CONSTRAINT IF EXISTS local_identities_subject_key",
             "ALTER TABLE local_identities ADD CONSTRAINT local_identities_issuer_subject_key "
             "UNIQUE (issuer, subject)",
+        ),
+    ),
+    Migration(
+        version=24,
+        name="data_subject_notifications",
+        statements=(
+            """
+            CREATE TABLE data_subject_notifications (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL CHECK (event_type IN ('export_completed', 'deletion_completed')),
+                operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 128),
+                status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+                attempts INTEGER NOT NULL CHECK (attempts BETWEEN 0 AND 32),
+                next_attempt_at TEXT,
+                last_error_code TEXT CHECK (last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 128),
+                occurred_at TEXT NOT NULL,
+                record_version INTEGER NOT NULL CHECK (record_version = 1),
+                encrypted_payload BLOB NOT NULL CHECK (length(encrypted_payload) > 0),
+                UNIQUE(owner_id, event_type, operation_id)
+            )
+            """,
+            "CREATE INDEX data_subject_notifications_owner_cursor_idx "
+            "ON data_subject_notifications(owner_id, occurred_at, id)",
         ),
     ),
 )

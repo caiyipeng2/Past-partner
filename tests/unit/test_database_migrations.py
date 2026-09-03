@@ -68,18 +68,20 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (21, "audit_chain"),
                 (22, "oidc_sessions"),
                 (23, "identity_issuers"),
+                (24, "data_subject_notifications"),
             ],
             rows,
         )
         with closing(sqlite3.connect(self.database_path)) as connection:
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
-                "AND name IN ('personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings') ORDER BY name"
+                "AND name IN ('personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings', 'data_subject_notifications') ORDER BY name"
             ).fetchall()
         self.assertEqual(
             [
                 ("billing_accounts",),
                 ("billing_entries",),
+                ("data_subject_notifications",),
                 ("long_term_memories",),
                 ("personas",),
                 ("style_profiles",),
@@ -103,7 +105,7 @@ class SQLiteMigrationTests(unittest.TestCase):
     def test_audit_chain_migration_anchors_existing_events(self) -> None:
         # Keep the audit-chain migration pending while the later OIDC session
         # migration remains outside this focused setup.
-        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:-3]).migrate()
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:20]).migrate()
         key = base64.b64encode(b"m" * MASTER_KEY_BYTES).decode("ascii")
         encryption = AuthenticatedEncryptionService(
             EnvironmentMasterKeyProvider({MASTER_KEY_ENV_VAR: key})
