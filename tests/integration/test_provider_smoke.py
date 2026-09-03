@@ -74,7 +74,22 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 response_body = {"id": "audio-local-smoke", "text": "来自本地转写端点的结果"}
         else:
             self.__class__.request_body = json.loads(raw_body.decode("utf-8"))
-            response_body = self.response_body
+            if self.__class__.request_body.get("response_format") == {"type": "json_object"}:
+                response_body = {
+                    "id": "ocr-local-smoke",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {"text": "本地 OCR 结果", "blocks": [{"text": "本地 OCR 结果"}]},
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ],
+                }
+            else:
+                response_body = self.response_body
         payload = json.dumps(response_body, ensure_ascii=False).encode("utf-8")
         self.send_response(self.response_status)
         self.send_header("Content-Type", "application/json")
@@ -234,6 +249,52 @@ class ProviderSmokeTests(unittest.TestCase):
         body = _OpenAICompatibleHandler.request_body
         self.assertEqual("smoke-model", body["model"])
         image = next(item for item in body["messages"][0]["content"] if item["type"] == "image_url")
+        self.assertEqual(
+            "data:image/png;base64," + base64.b64encode(media).decode("ascii"),
+            image["image_url"]["url"],
+        )
+        self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_custom_openai_ocr_crosses_real_http_transport(self) -> None:
+        port = self.server.server_address[1]
+        environ = {
+            "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+            "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+            "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "ocr-model",
+            "PAST_PARTNER_CUSTOM_OPENAI_OCR_MODELS": "ocr-model",
+        }
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(base_catalog, environ)
+        adapter = adapters["custom_openai"]
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"ocr-model"})},
+            media_capabilities={"custom_openai": adapter.config.media_capabilities},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
+        media = b"fake-ocr-image"
+        source_fd, source_name = tempfile.mkstemp(suffix=".png")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(media)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+
+        response = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="ocr-model",
+                media_type="image/png",
+                media_path=source_path,
+                prompt="识别 smoke 图片文字",
+                analysis_kind="ocr",
+            )
+        )
+
+        self.assertEqual("本地 OCR 结果", response.description)
+        self.assertEqual({"text": "本地 OCR 结果", "blocks": [{"text": "本地 OCR 结果"}]}, response.structured_data)
+        self.assertEqual("/v1/chat/completions", _OpenAICompatibleHandler.request_path)
+        self.assertEqual({"type": "json_object"}, _OpenAICompatibleHandler.request_body["response_format"])
+        image = next(item for item in _OpenAICompatibleHandler.request_body["messages"][0]["content"] if item["type"] == "image_url")
         self.assertEqual(
             "data:image/png;base64," + base64.b64encode(media).decode("ascii"),
             image["image_url"]["url"],

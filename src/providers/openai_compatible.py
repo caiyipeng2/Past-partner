@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import json
+import math
 import re
 import socket
 from typing import Any
@@ -125,9 +127,15 @@ class OpenAICompatibleAdapter:
     def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         if request.provider_id != self.provider_id:
             raise AdapterError("invalid_provider_request", "media request provider does not match the adapter")
-        if _media_category(request.media_type) == "audio":
+        operation = _analysis_kind(request.analysis_kind)
+        media_category = _media_category(request.media_type)
+        if operation == "ocr":
+            if media_category != "image":
+                raise AdapterError("capability_not_supported", "OCR requires image media")
+            return self._analyze_ocr(request)
+        if media_category == "audio":
             return self._transcribe_audio(request)
-        if _media_category(request.media_type) == "video":
+        if media_category == "video":
             return self._analyze_video(request)
         media_type = _image_media_type(request.media_type)
         if not self.supports_media(request.model_id, "image"):
@@ -203,6 +211,80 @@ class OpenAICompatibleAdapter:
             description=description,
             usage=normalized_usage,
             provider_request_id=str(payload["id"]) if payload.get("id") is not None else None,
+        )
+
+    def _analyze_ocr(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        if not self.supports_media(request.model_id, "ocr"):
+            raise AdapterError("capability_not_supported", "this adapter does not support OCR")
+        media_type = _image_media_type(request.media_type)
+        if not isinstance(request.prompt, str) or not request.prompt.strip():
+            raise AdapterError("invalid_prompt", "OCR prompt is required")
+        try:
+            size = request.media_path.stat().st_size
+            if size < 0 or size > self.config.max_media_bytes:
+                raise AdapterError("media_too_large", "media exceeds the configured analysis size limit")
+            with request.media_path.open("rb") as source:
+                raw_media = source.read(self.config.max_media_bytes + 1)
+        except AdapterError:
+            raise
+        except OSError as exc:
+            raise AdapterError("media_unavailable", "media source is unavailable") from exc
+        if len(raw_media) > self.config.max_media_bytes:
+            raise AdapterError("media_too_large", "media exceeds the configured analysis size limit")
+
+        body: JsonObject = {
+            "model": request.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": request.prompt.strip()},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{base64.b64encode(raw_media).decode('ascii')}"
+                            },
+                        },
+                    ],
+                }
+            ],
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
+        try:
+            payload = self.transport(endpoint, headers, body, self.config.timeout_seconds)
+        except AdapterError:
+            raise
+        except (socket.timeout, TimeoutError) as exc:
+            raise AdapterError("provider_timeout", "provider request timed out") from exc
+        except OSError as exc:
+            raise AdapterError("provider_unavailable", "provider could not be reached") from exc
+
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AdapterError("invalid_provider_response", "provider response has no OCR result") from exc
+        structured = _structured_ocr(content)
+        usage = payload.get("usage")
+        normalized_usage = None
+        if isinstance(usage, Mapping):
+            normalized_usage = {
+                key: usage[key]
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+            }
+        return MediaAnalysisResult(
+            provider_id=self.provider_id,
+            model_id=request.model_id,
+            media_type=request.media_type,
+            description=structured["text"],
+            usage=normalized_usage,
+            provider_request_id=str(payload["id"]) if payload.get("id") is not None else None,
+            structured_data=structured,
         )
 
     def _transcribe_audio(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
@@ -371,6 +453,64 @@ def _media_category(value: object) -> str:
     if category not in {"image", "audio", "video"}:
         raise AdapterError("capability_not_supported", "media type is not supported")
     return category
+
+
+def _analysis_kind(value: object) -> str:
+    if not isinstance(value, str):
+        raise AdapterError("unsupported_media_operation", "media analysis operation is not supported")
+    operation = value.strip().lower()
+    if operation in {"description", "describe"}:
+        return "description"
+    if operation == "ocr":
+        return operation
+    raise AdapterError("unsupported_media_operation", "media analysis operation is not supported")
+
+
+def _structured_ocr(value: object) -> dict[str, Any]:
+    if not isinstance(value, str) or len(value) > 64 * 1024:
+        raise AdapterError("invalid_provider_response", "provider OCR result is not valid JSON")
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise AdapterError("invalid_provider_response", "provider OCR result is not valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise AdapterError("invalid_provider_response", "provider OCR result must be an object")
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text.strip()) > 8_192:
+        raise AdapterError("invalid_provider_response", "provider OCR result has no bounded text")
+    raw_blocks = payload.get("blocks", [])
+    if not isinstance(raw_blocks, list) or len(raw_blocks) > 256:
+        raise AdapterError("invalid_provider_response", "provider OCR blocks are invalid")
+    blocks: list[dict[str, Any]] = []
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, Mapping):
+            raise AdapterError("invalid_provider_response", "provider OCR blocks are invalid")
+        block_text = raw_block.get("text")
+        if not isinstance(block_text, str) or not block_text.strip() or len(block_text.strip()) > 2_048:
+            raise AdapterError("invalid_provider_response", "provider OCR block text is invalid")
+        block: dict[str, Any] = {"text": block_text.strip()}
+        if "confidence" in raw_block:
+            confidence = raw_block["confidence"]
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+                raise AdapterError("invalid_provider_response", "provider OCR confidence is invalid")
+            if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
+                raise AdapterError("invalid_provider_response", "provider OCR confidence is invalid")
+            block["confidence"] = float(confidence)
+        if "bbox" in raw_block:
+            bbox = raw_block["bbox"]
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                raise AdapterError("invalid_provider_response", "provider OCR bounding box is invalid")
+            normalized_bbox: list[float] = []
+            for value in bbox:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise AdapterError("invalid_provider_response", "provider OCR bounding box is invalid")
+                number = float(value)
+                if not math.isfinite(number) or not 0 <= number <= 1:
+                    raise AdapterError("invalid_provider_response", "provider OCR bounding box is invalid")
+                normalized_bbox.append(number)
+            block["bbox"] = normalized_bbox
+        blocks.append(block)
+    return {"text": text.strip(), "blocks": blocks}
 
 
 def _validate_video_endpoint_path(value: object) -> str:
