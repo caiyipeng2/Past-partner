@@ -78,6 +78,7 @@ class _FakeGateway:
         self.requests: list[MediaAnalysisRequest] = []
         self.observed_payloads: list[bytes] = []
         self.error: Exception | None = None
+        self.description = "一张测试图片"
 
     def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         self.requests.append(request)
@@ -88,7 +89,7 @@ class _FakeGateway:
             provider_id=request.provider_id,
             model_id=request.model_id,
             media_type=request.media_type,
-            description="一张测试图片",
+            description=self.description,
             usage={"media_units": 1},
             provider_request_id="request-1",
         )
@@ -220,6 +221,31 @@ class MediaAnalysisServiceTests(unittest.TestCase):
             self._analyze()
         self.assertEqual("provider_unavailable", provider_error.exception.code)
         self.assertFalse(list((self.root / "media-analysis").glob("*.bin")))
+
+    def test_audio_transcription_reuses_exact_audio_consent_and_normalizes_text(self) -> None:
+        self.uploads.job.media_type = "audio/wav"
+        self.uploads.job.files = (
+            ImportFile.create(
+                file_id="file-1",
+                source_name="voice.wav",
+                media_type="audio/wav",
+                total_bytes=len(self.uploads.payload),
+            ),
+        )
+        self.gateway.description = "这是一段音频转写文本"
+
+        result = self._analyze(
+            data_category="audio",
+            authorization_scope="persona-audio-transcription",
+            prompt="请转写音频",
+        )
+
+        self.assertEqual("audio", result["media_category"])
+        self.assertEqual("这是一段音频转写文本", result["description"])
+        self.assertEqual("audio", self.consent_gate.calls[0][2]["data_category"])
+        self.assertEqual("persona-audio-transcription", self.consent_gate.calls[0][2]["authorization_scope"])
+        self.assertEqual("audio/wav", self.gateway.requests[0].media_type)
+        self.assertFalse(self.gateway.requests[0].media_path.exists())
 
 
 if __name__ == "__main__":

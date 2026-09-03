@@ -70,7 +70,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 | 编号 | 任务 | 依赖 | 验收证据 |
 | --- | --- | --- | --- |
 | R2-01 | Android 后台上传、通知、模型选择持久化和真实会话恢复（Android-first 实现完成） | P3-05/P3-07/P3-09 | 分支测试、Debug/Release 构建和双真机进程重启冒烟；系统强停后的后台执行仍受 OS 调度约束 |
-| R2-02 | OCR、ASR、视觉/音视频语义处理和媒体模型实际调用 | P1-10/P2-06 授权门控、R0-03 Provider | 当前首片完成授权后图像分析与 Android 状态；音视频/OCR 专项适配仍待完成 |
+| R2-02 | OCR、ASR、视觉/音视频语义处理和媒体模型实际调用 | P1-10/P2-06 授权门控、R0-03 Provider | 当前已完成授权后图像分析和显式 OpenAI-compatible 音频转写；视频/OCR 专项适配仍待完成 |
 | R2-03 | macOS/Xcode iOS archive、签名、真机和商店发布验证 | R2-01/R2-02 | Release ATS/Manifest 检查、Xcode archive、设备安装和签名产物均有 CI/人工证据；Windows 静态检查不算完成 |
 | R2-04 | 支付/订阅/余额、合规审计 WORM、数据主体通知和运营后台 | R1-03/R1-04 | 账单对账、权限审计、保留策略、删除证明和异常告警可追溯 |
 
@@ -89,7 +89,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 - R0-02 的 Docker Compose、可安装服务 CLI 和统一 smoke runner 已提供；当前验证分支已实测模块、CLI、npm 和 Compose 四个入口。Compose 要求显式提供 `PAST_PARTNER_MASTER_KEY`，smoke runner 会为每次运行生成可丢弃的密钥并使用唯一项目名，结束后清理自身资源；其他开发机仍需先安装 Docker Desktop 或兼容 Compose 的运行时。
 - R0-01 的本机 disposable PostgreSQL/S3/KMS/任务队列回归已完成；其他开发机若未配置可删除资源仍会安全跳过，不能把跳过结果写成真实集成证据。
 - R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，2026-09-01 已使用进程级可控凭据完成 DeepSeek `deepseek-v4-flash` 真实 smoke。其他供应商仍需各自的可撤销或可控额度测试凭据，不能以 DeepSeek 结果替代。
-- 默认真实 Provider 仍主要声明文本 chat；R2-02 已为 OpenAI-compatible 适配器增加受目录 vision 能力约束的图像分析，音视频/OCR 专项、流式和 Embedding 仍未完成；R0-04 仅为显式开启的千问模型增加原生微调能力。
+- 默认真实 Provider 仍主要声明文本 chat；R2-02 已为 OpenAI-compatible 适配器增加受目录 vision 能力约束的图像分析，以及通过 `*_AUDIO_MODELS` 显式开启的 `/audio/transcriptions` 音频转写，视频/OCR 专项、流式和 Embedding 仍未完成；R0-04 仅为显式开启的千问模型增加原生微调能力。
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。真实百炼外部 smoke 已按用户决定暂缓，当前不把它写成已通过；后续恢复时仍需提供具备微调权限的可控凭据。
 - R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。

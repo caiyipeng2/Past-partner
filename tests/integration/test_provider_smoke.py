@@ -1,4 +1,6 @@
 import base64
+from email.parser import BytesParser
+from email.policy import default
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,11 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "provider_smoke.py"
 class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
     request_body: dict[str, object] | None = None
     request_authorization: str | None = None
+    multipart_fields: dict[str, str] | None = None
+    multipart_file: bytes | None = None
+    multipart_file_content_type: str | None = None
+    multipart_file_name: str | None = None
+    request_path: str | None = None
     response_status = 200
     response_body = {
         "id": "chatcmpl-local-smoke",
@@ -36,8 +43,36 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 - stdlib handler API
         length = int(self.headers.get("Content-Length", "0"))
         self.__class__.request_authorization = self.headers.get("Authorization")
-        self.__class__.request_body = json.loads(self.rfile.read(length).decode("utf-8"))
-        payload = json.dumps(self.response_body, ensure_ascii=False).encode("utf-8")
+        self.__class__.request_path = self.path
+        raw_body = self.rfile.read(length)
+        if self.path.endswith("/audio/transcriptions"):
+            envelope = (
+                b"Content-Type: "
+                + self.headers["Content-Type"].encode("ascii")
+                + b"\r\nMIME-Version: 1.0\r\n\r\n"
+                + raw_body
+            )
+            message = BytesParser(policy=default).parsebytes(envelope)
+            fields: dict[str, str] = {}
+            file_bytes = None
+            for part in message.walk():
+                if part.is_multipart():
+                    continue
+                name = part.get_param("name", header="content-disposition")
+                if name == "file":
+                    file_bytes = part.get_payload(decode=True)
+                    self.__class__.multipart_file_content_type = part.get_content_type()
+                    self.__class__.multipart_file_name = part.get_filename()
+                elif isinstance(name, str):
+                    value = part.get_payload(decode=True) or b""
+                    fields[name] = value.decode("utf-8")
+            self.__class__.multipart_fields = fields
+            self.__class__.multipart_file = file_bytes
+            response_body = {"id": "audio-local-smoke", "text": "来自本地转写端点的结果"}
+        else:
+            self.__class__.request_body = json.loads(raw_body.decode("utf-8"))
+            response_body = self.response_body
+        payload = json.dumps(response_body, ensure_ascii=False).encode("utf-8")
         self.send_response(self.response_status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -52,6 +87,11 @@ class ProviderSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         _OpenAICompatibleHandler.request_body = None
         _OpenAICompatibleHandler.request_authorization = None
+        _OpenAICompatibleHandler.multipart_fields = None
+        _OpenAICompatibleHandler.multipart_file = None
+        _OpenAICompatibleHandler.multipart_file_content_type = None
+        _OpenAICompatibleHandler.multipart_file_name = None
+        _OpenAICompatibleHandler.request_path = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -195,6 +235,52 @@ class ProviderSmokeTests(unittest.TestCase):
             "data:image/png;base64," + base64.b64encode(media).decode("ascii"),
             image["image_url"]["url"],
         )
+        self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_custom_openai_audio_transcription_crosses_real_multipart_transport(self) -> None:
+        port = self.server.server_address[1]
+        environ = {
+            "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+            "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+            "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "audio-model",
+            "PAST_PARTNER_CUSTOM_OPENAI_AUDIO_MODELS": "audio-model",
+        }
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(base_catalog, environ)
+        adapter = adapters["custom_openai"]
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"audio-model"})},
+            media_capabilities={"custom_openai": adapter.config.media_capabilities},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
+        media = b"fake-audio"
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(media)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+
+        response = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="audio-model",
+                media_type="audio/wav",
+                media_path=source_path,
+                prompt="请转写 smoke 音频",
+            )
+        )
+
+        self.assertEqual("来自本地转写端点的结果", response.description)
+        self.assertEqual("audio-local-smoke", response.provider_request_id)
+        self.assertEqual("/v1/audio/transcriptions", _OpenAICompatibleHandler.request_path)
+        self.assertEqual(
+            {"model": "audio-model", "prompt": "请转写 smoke 音频", "response_format": "json"},
+            _OpenAICompatibleHandler.multipart_fields,
+        )
+        self.assertEqual(media, _OpenAICompatibleHandler.multipart_file)
+        self.assertEqual("audio/wav", _OpenAICompatibleHandler.multipart_file_content_type)
+        self.assertEqual("audio.wav", _OpenAICompatibleHandler.multipart_file_name)
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
 

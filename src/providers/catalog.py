@@ -363,29 +363,83 @@ class ProviderCatalog:
         provider_ids: set[str],
         runtime_models: dict[str, frozenset[str]] | None = None,
         fine_tuning_models: Mapping[str, frozenset[str]] | None = None,
+        media_capabilities: Mapping[str, Mapping[str, frozenset[str]]] | None = None,
     ) -> "ProviderCatalog":
         runtime_models = runtime_models or {}
         fine_tuning_models = fine_tuning_models or {}
+        media_capabilities = media_capabilities or {}
         providers: list[ProviderDefinition] = []
         for provider in self.providers():
             models = provider.models
             supported_fine_tuning = fine_tuning_models.get(provider.id, frozenset())
-            provider_capabilities = provider.capabilities
-            if supported_fine_tuning and any(
-                model.id in supported_fine_tuning for model in models
-            ):
-                provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
+            configured_media = media_capabilities.get(provider.id, {})
+            media_provider_capabilities: set[str] = set()
+            for model_id, categories in configured_media.items():
+                if not isinstance(model_id, str) or not model_id.strip():
+                    raise CatalogValidationError(
+                        "invalid_media_capabilities",
+                        "media capability model IDs must be non-empty strings",
+                    )
+                if not isinstance(categories, (set, frozenset, tuple, list)):
+                    raise CatalogValidationError(
+                        "invalid_media_capabilities",
+                        "media capabilities must be a list of supported categories",
+                    )
+                for category in categories:
+                    if category not in {"image", "audio", "video"}:
+                        raise CatalogValidationError(
+                            "invalid_media_capabilities",
+                            "media capability categories are invalid",
+                        )
+                    media_provider_capabilities.add("vision" if category == "image" else category)
+            base_provider_capabilities = provider.capabilities
+            provider_capabilities = base_provider_capabilities
+            for capability in sorted(media_provider_capabilities):
+                provider_capabilities = _append_capability(provider_capabilities, capability)
             if provider.id in runtime_models and provider.model_discovery != "catalog":
                 models = tuple(
                     ModelDefinition(
                         model_id,
                         model_id,
-                        ("text", *provider_capabilities),
+                        ("text", *base_provider_capabilities),
                         pricing_source=provider.pricing_source,
                         pricing=ModelPricing(source=provider.pricing_source),
                     )
                     for model_id in sorted(runtime_models[provider.id])
                 )
+            elif provider.id in runtime_models:
+                known_model_ids = {model.id for model in models}
+                models = (
+                    *models,
+                    *tuple(
+                        ModelDefinition(
+                            model_id,
+                            model_id,
+                            ("text", *base_provider_capabilities),
+                            pricing_source=provider.pricing_source,
+                            pricing=ModelPricing(source=provider.pricing_source),
+                        )
+                        for model_id in sorted(runtime_models[provider.id] - known_model_ids)
+                    ),
+                )
+            if configured_media:
+                models = tuple(
+                    replace(
+                        model,
+                        capabilities=_append_capabilities(
+                            model.capabilities,
+                            {
+                                "vision" if category == "image" else category
+                                for category in configured_media.get(model.id, frozenset())
+                            },
+                        ),
+                    )
+                    for model in models
+                )
+            if supported_fine_tuning and any(
+                model.id in supported_fine_tuning for model in models
+            ):
+                provider_capabilities = _append_capability(provider_capabilities, "fine_tuning")
             providers.append(
                 replace(
                     provider,
@@ -443,6 +497,13 @@ def _provider(
 
 def _append_capability(capabilities: tuple[str, ...], capability: str) -> tuple[str, ...]:
     return capabilities if capability in capabilities else (*capabilities, capability)
+
+
+def _append_capabilities(capabilities: tuple[str, ...], additions: set[str]) -> tuple[str, ...]:
+    result = capabilities
+    for capability in sorted(additions):
+        result = _append_capability(result, capability)
+    return result
 
 
 def _optional_price(value: object, field_name: str) -> float | None:

@@ -1,10 +1,13 @@
 import json
+import http.client
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from src.providers.base import AdapterError
-from src.providers.transport import urllib_json_request_transport, urllib_json_transport
+from src.providers.transport import urllib_json_request_transport, urllib_json_transport, urllib_multipart_transport
 
 
 class ProviderTransportTests(unittest.TestCase):
@@ -71,6 +74,26 @@ class ProviderTransportTests(unittest.TestCase):
         request = opened.call_args.args[0]
         self.assertEqual("GET", request.get_method())
         self.assertIsNone(request.data)
+
+    def test_multipart_protocol_interrupt_maps_to_provider_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "voice.wav"
+            source.write_bytes(b"audio")
+            with patch(
+                "src.providers.transport.http.client.HTTPConnection",
+                side_effect=http.client.HTTPException("connection interrupted"),
+            ):
+                with self.assertRaises(AdapterError) as captured:
+                    urllib_multipart_transport(
+                        "http://provider.invalid/audio/transcriptions",
+                        {},
+                        {"model": "audio-model"},
+                        "file",
+                        source,
+                        1.0,
+                        "audio/wav",
+                    )
+        self.assertEqual("provider_unavailable", captured.exception.code)
 
 
 if __name__ == "__main__":

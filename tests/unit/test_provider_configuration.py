@@ -90,6 +90,51 @@ class ProviderConfigurationTests(unittest.TestCase):
         self.assertTrue(catalog.provider("qwen").configured)
         self.assertFalse(catalog.provider("xiaomi_mimo").configured)
 
+    def test_audio_capability_is_explicitly_configured_per_model(self) -> None:
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(
+            base_catalog,
+            {
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "audio-model, text-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_AUDIO_MODELS": "audio-model",
+            },
+        )
+
+        adapter = adapters["custom_openai"]
+        self.assertEqual(
+            {"audio-model": frozenset({"audio"})},
+            adapter.config.media_capabilities,
+        )
+        self.assertTrue(adapter.supports_media("audio-model", "audio"))
+        self.assertFalse(adapter.supports_media("text-model", "audio"))
+
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"audio-model", "text-model"})},
+            media_capabilities={"custom_openai": adapter.config.media_capabilities},
+        )
+        provider = catalog.provider("custom_openai")
+        audio_model = catalog.find_model("custom_openai", "audio-model")
+        text_model = catalog.find_model("custom_openai", "text-model")
+        self.assertIn("audio", provider.capabilities)
+        self.assertIsNotNone(audio_model)
+        self.assertIsNotNone(text_model)
+        assert audio_model is not None and text_model is not None
+        self.assertIn("audio", audio_model.capabilities)
+        self.assertNotIn("audio", text_model.capabilities)
+
+    def test_audio_model_list_without_explicit_capability_stays_unavailable(self) -> None:
+        adapters = build_openai_compatible_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "audio-model",
+            },
+        )
+
+        self.assertFalse(adapters["custom_openai"].supports_media("audio-model", "audio"))
+
     def test_qwen_fine_tuning_is_explicitly_opt_in_and_keeps_chat_endpoint(self) -> None:
         adapters = build_provider_adapters(
             ProviderCatalog.default(),

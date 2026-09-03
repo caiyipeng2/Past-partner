@@ -22,6 +22,9 @@ JsonRequestTransport = Callable[
 MultipartTransport = Callable[
     [str, dict[str, str], dict[str, str], str, Path, float], Mapping[str, object]
 ]
+MediaMultipartTransport = Callable[
+    [str, dict[str, str], dict[str, str], str, Path, float, str], Mapping[str, object]
+]
 
 
 def urllib_json_transport(
@@ -82,6 +85,7 @@ def urllib_multipart_transport(
     file_field: str,
     file_path: Path,
     timeout_seconds: float,
+    file_content_type: str | None = None,
 ) -> Mapping[str, object]:
     """Upload one file without materializing the dataset in memory.
 
@@ -97,6 +101,11 @@ def urllib_multipart_transport(
         raise AdapterError("invalid_provider_request", "provider upload URL is invalid")
     boundary = f"----PastPartner{uuid4().hex}"
     filename = file_path.name or "dataset.jsonl"
+    content_type = file_content_type or "application/jsonl"
+    if not isinstance(content_type, str) or "/" not in content_type or "\r" in content_type or "\n" in content_type:
+        raise AdapterError("invalid_provider_request", "multipart file content type is invalid")
+    if file_content_type is not None and file_path.suffix.casefold() == ".bin":
+        filename = _media_filename(content_type)
     parts: list[bytes] = []
     for name, value in fields.items():
         parts.extend(
@@ -112,7 +121,7 @@ def urllib_multipart_transport(
             f"--{boundary}\r\n".encode("utf-8"),
             (
                 f'Content-Disposition: form-data; name="{file_field}"; '
-                f'filename="{filename}"\r\nContent-Type: application/jsonl\r\n\r\n'
+                f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'
             ).encode("utf-8"),
         ]
     )
@@ -159,10 +168,28 @@ def urllib_multipart_transport(
         raise
     except (socket.timeout, TimeoutError) as exc:
         raise AdapterError("provider_timeout", "provider request timed out") from exc
-    except (OSError, URLError) as exc:
+    except (OSError, URLError, http.client.HTTPException) as exc:
         raise AdapterError("provider_unavailable", "provider could not be reached") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterError("invalid_provider_response", "provider returned invalid JSON") from exc
     if not isinstance(payload, Mapping):
         raise AdapterError("invalid_provider_response", "provider response must be a JSON object")
     return payload
+
+
+def _media_filename(content_type: str) -> str:
+    extension = {
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/mp4": "m4a",
+        "audio/x-m4a": "m4a",
+        "audio/ogg": "ogg",
+        "audio/webm": "webm",
+        "audio/flac": "flac",
+    }.get(content_type.casefold())
+    if extension is None:
+        subtype = content_type.split("/", 1)[1].split(";", 1)[0].casefold()
+        extension = "".join(character for character in subtype if character.isalnum()) or "audio"
+    return f"audio.{extension}"

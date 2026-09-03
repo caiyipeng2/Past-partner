@@ -162,6 +162,19 @@ class QwenFineTuningAdapterTests(unittest.TestCase):
                 self.adapter.submit_fine_tuning(request)
         self.assertEqual("capability_not_supported", captured.exception.code)
 
+    def test_qwen_fine_tuning_adapter_preserves_explicit_audio_media_capability(self) -> None:
+        config = QwenFineTuningConfig(
+            provider_id="qwen",
+            base_url="https://example.invalid/api/v1",
+            api_key="secret",
+            allowed_models=frozenset({"audio-model"}),
+            fine_tuning_models=frozenset({"audio-model"}),
+            media_capabilities={"audio-model": frozenset({"audio"})},
+        )
+        adapter = QwenFineTuningAdapter(config, chat_transport=lambda *_args: {})
+
+        self.assertTrue(adapter.supports_media("audio-model", "audio"))
+
     def test_malformed_upload_response_is_a_stable_error(self) -> None:
         def malformed_upload(url, headers, fields, file_field, file_path, timeout_seconds):
             return {"data": {"uploaded_files": []}}
