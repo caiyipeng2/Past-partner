@@ -114,6 +114,12 @@ class MediaAnalysisResult {
       }
       usage = Map<String, int>.unmodifiable(parsed);
     }
+    final Map<String, dynamic>? structuredData =
+        _parseStructuredData(json['structured_data']);
+    if (analysisKind == 'ocr' && structuredData == null) {
+      throw const FormatException(
+          'The media analysis structured result is invalid.');
+    }
     return MediaAnalysisResult(
       importId: importId,
       fileId: fileId,
@@ -125,7 +131,7 @@ class MediaAnalysisResult {
       usage: usage,
       providerTransfer: true,
       analysisKind: analysisKind,
-      structuredData: _parseStructuredData(json['structured_data']),
+      structuredData: structuredData,
       providerRequestId: providerRequestId as String?,
     );
   }

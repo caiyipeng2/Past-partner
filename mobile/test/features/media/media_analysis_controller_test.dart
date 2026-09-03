@@ -159,6 +159,23 @@ void main() {
         jsonDecode(requests.single.body), containsPair('analysis_kind', 'ocr'));
   });
 
+  test('OCR result requires structured data', () {
+    expect(
+      () => MediaAnalysisResult.fromJson(<String, dynamic>{
+        'import_id': 'import-1',
+        'file_id': 'file-1',
+        'provider_id': 'openai',
+        'model_id': 'ocr-model',
+        'media_category': 'image',
+        'media_type': 'image/png',
+        'analysis_kind': 'ocr',
+        'description': '识别出的文字',
+        'provider_transfer': true,
+      }),
+      throwsFormatException,
+    );
+  });
+
   test(
       'controller carries OCR operation and structured result without media bytes',
       () async {
