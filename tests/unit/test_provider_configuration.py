@@ -83,6 +83,45 @@ class ProviderConfigurationTests(unittest.TestCase):
         self.assertIn("custom_openai", adapters)
         self.assertIsNone(adapters["custom_openai"].config.api_key)
 
+    def test_video_capability_requires_explicit_models_and_endpoint_path(self) -> None:
+        adapters = build_openai_compatible_adapters(
+            ProviderCatalog.default(),
+            {
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "video-model, text-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_MODELS": "video-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_ENDPOINT_PATH": "/video/analyze",
+            },
+        )
+
+        adapter = adapters["custom_openai"]
+        self.assertEqual("/video/analyze", adapter.config.video_endpoint_path)
+        self.assertTrue(adapter.supports_media("video-model", "video"))
+        self.assertFalse(adapter.supports_media("text-model", "video"))
+
+        with self.assertRaises(ValueError):
+            build_openai_compatible_adapters(
+                ProviderCatalog.default(),
+                {
+                    "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                    "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "video-model",
+                    "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_MODELS": "video-model",
+                },
+            )
+
+    def test_video_endpoint_path_rejects_query_fragment_and_absolute_values(self) -> None:
+        for path in ("https://provider.example/video", "/video/analyze?secret=1", "/video/analyze#fragment"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                build_openai_compatible_adapters(
+                    ProviderCatalog.default(),
+                    {
+                        "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": "https://models.example/v1",
+                        "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "video-model",
+                        "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_MODELS": "video-model",
+                        "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_ENDPOINT_PATH": path,
+                    },
+                )
+
     def test_catalog_marks_only_runtime_adapters_as_configured(self) -> None:
         catalog = ProviderCatalog.default().with_configured({"deepseek", "qwen"})
 

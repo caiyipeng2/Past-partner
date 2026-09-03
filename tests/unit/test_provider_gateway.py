@@ -588,6 +588,137 @@ class ProviderGatewayTests(unittest.TestCase):
             oversized.analyze_media(request)
         self.assertEqual("media_too_large", size_error.exception.code)
 
+    def test_openai_compatible_video_analysis_uses_configured_multipart_endpoint(self) -> None:
+        calls = []
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"video-bytes")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+
+        def fake_multipart(url, headers, fields, file_field, file_path, timeout_seconds, file_content_type):
+            calls.append((url, headers, fields, file_field, file_path, timeout_seconds, file_content_type))
+            return {"description": "视频语义描述", "id": "video-response-1"}
+
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                provider_id="custom_openai",
+                base_url="https://example.invalid/v1",
+                api_key="video-key",
+                allowed_models=frozenset({"video-model"}),
+                media_capabilities={"video-model": frozenset({"video"})},
+                video_endpoint_path="/video/analyze",
+            ),
+            multipart_transport=fake_multipart,
+        )
+        catalog = self.catalog.with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"video-model"})},
+            media_capabilities={"custom_openai": {"video-model": frozenset({"video"})}},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters={"custom_openai": adapter})
+
+        result = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="video-model",
+                media_type="video/mp4",
+                media_path=source_path,
+                prompt="请概括视频内容",
+            )
+        )
+
+        self.assertEqual("视频语义描述", result.description)
+        self.assertEqual("video-response-1", result.provider_request_id)
+        self.assertEqual("https://example.invalid/v1/video/analyze", calls[0][0])
+        self.assertEqual("Bearer video-key", calls[0][1]["Authorization"])
+        self.assertEqual(
+            {"model": "video-model", "prompt": "请概括视频内容", "response_format": "json"},
+            calls[0][2],
+        )
+        self.assertEqual("file", calls[0][3])
+        self.assertEqual(source_path, calls[0][4])
+        self.assertEqual("video/mp4", calls[0][6])
+
+    def test_openai_compatible_video_analysis_rejects_missing_endpoint_and_invalid_response(self) -> None:
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"video")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        request = MediaAnalysisRequest(
+            "custom_openai",
+            "video-model",
+            "video/mp4",
+            source_path,
+            "请概括",
+        )
+
+        missing_endpoint = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"video-model"}),
+                media_capabilities={"video-model": frozenset({"video"})},
+                video_endpoint_path="/video/analyze",
+            ),
+            multipart_transport=lambda *_args, **_kwargs: {"text": "ok"},
+        )
+        with self.assertRaises(Exception) as invalid_response:
+            missing_endpoint.analyze_media(request)
+        self.assertEqual("invalid_provider_response", invalid_response.exception.code)
+
+        unsupported = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"video-model"}),
+                video_endpoint_path="/video/analyze",
+            ),
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unsupported video must not transport")
+            ),
+        )
+        with self.assertRaises(AdapterError) as unsupported_error:
+            unsupported.analyze_media(request)
+        self.assertEqual("capability_not_supported", unsupported_error.exception.code)
+
+    def test_openai_compatible_video_analysis_rejects_invalid_video_mime_subtypes(self) -> None:
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"video")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"video-model"}),
+                media_capabilities={"video-model": frozenset({"video"})},
+                video_endpoint_path="/video/analyze",
+            ),
+            multipart_transport=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("invalid video MIME must not transport")
+            ),
+        )
+
+        for media_type in ("video/", "video/foo bar", "video/foo/bar"):
+            with self.subTest(media_type=media_type):
+                with self.assertRaises(AdapterError) as captured:
+                    adapter.analyze_media(
+                        MediaAnalysisRequest(
+                            "custom_openai",
+                            "video-model",
+                            media_type,
+                            source_path,
+                            "请概括",
+                        )
+                    )
+                self.assertEqual("capability_not_supported", captured.exception.code)
+
     def test_openai_compatible_audio_transcription_maps_a_racing_missing_file(self) -> None:
         source_fd, source_name = tempfile.mkstemp(suffix=".wav")
         os.close(source_fd)

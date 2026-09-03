@@ -31,8 +31,8 @@ class _FakeMediaAnalysisService:
             "provider_id": payload["provider_id"],
             "model_id": payload["model_id"],
             "media_category": payload["data_category"],
-            "media_type": "audio/wav" if payload["data_category"] == "audio" else "image/png",
-            "description": "受控音频转写" if payload["data_category"] == "audio" else "受控图片描述",
+            "media_type": "audio/wav" if payload["data_category"] == "audio" else ("video/mp4" if payload["data_category"] == "video" else "image/png"),
+            "description": "受控音频转写" if payload["data_category"] == "audio" else ("受控视频描述" if payload["data_category"] == "video" else "受控图片描述"),
             "usage": {"prompt_tokens": 3},
             "provider_transfer": True,
             "provider_request_id": "request-1",
@@ -163,6 +163,28 @@ class HttpMediaAnalysisTests(unittest.TestCase):
         self.assertEqual("audio", payload["media_category"])
         self.assertEqual("受控音频转写", payload["description"])
         self.assertEqual("audio/wav", payload["media_type"])
+        self.assertNotIn("raw_bytes", payload)
+        self.assertNotIn("media_path", payload)
+
+    def test_media_analysis_route_exposes_normalized_video_description(self) -> None:
+        status, _, payload = self.request(
+            "POST",
+            "/api/v1/imports/import-1/media-analysis",
+            {
+                "consent_id": "consent-video",
+                "provider_id": "custom_openai",
+                "model_id": "video-model",
+                "data_category": "video",
+                "authorization_scope": "persona-video-analysis",
+                "prompt": "请概括视频",
+                "file_id": "file-1",
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("video", payload["media_category"])
+        self.assertEqual("受控视频描述", payload["description"])
+        self.assertEqual("video/mp4", payload["media_type"])
         self.assertNotIn("raw_bytes", payload)
         self.assertNotIn("media_path", payload)
 

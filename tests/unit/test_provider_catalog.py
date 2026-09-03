@@ -197,6 +197,20 @@ class ProviderCatalogTests(unittest.TestCase):
         assert model is not None
         self.assertIn("audio", model.capabilities)
 
+    def test_explicit_runtime_model_can_receive_video_capability(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"openai"},
+            {"openai": frozenset({"video-model"})},
+            media_capabilities={"openai": {"video-model": frozenset({"video"})}},
+        )
+
+        provider = catalog.provider("openai")
+        model = catalog.find_model("openai", "video-model")
+        self.assertIn("video", provider.capabilities)
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertIn("video", model.capabilities)
+
     def test_runtime_qwen_model_can_receive_audio_and_fine_tuning_capabilities(self) -> None:
         catalog = ProviderCatalog.default().with_configured(
             {"qwen"},

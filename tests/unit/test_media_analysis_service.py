@@ -222,6 +222,31 @@ class MediaAnalysisServiceTests(unittest.TestCase):
         self.assertEqual("provider_unavailable", provider_error.exception.code)
         self.assertFalse(list((self.root / "media-analysis").glob("*.bin")))
 
+    def test_video_analysis_reuses_exact_video_consent_and_normalizes_description(self) -> None:
+        self.uploads.job.media_type = "video/mp4"
+        self.uploads.job.files = (
+            ImportFile.create(
+                file_id="file-1",
+                source_name="clip.mp4",
+                media_type="video/mp4",
+                total_bytes=len(self.uploads.payload),
+            ),
+        )
+        self.gateway.description = "这是一个视频语义描述"
+
+        result = self._analyze(
+            data_category="video",
+            authorization_scope="persona-video-analysis",
+            prompt="请概括视频",
+        )
+
+        self.assertEqual("video", result["media_category"])
+        self.assertEqual("这是一个视频语义描述", result["description"])
+        self.assertEqual("video", self.consent_gate.calls[0][2]["data_category"])
+        self.assertEqual("persona-video-analysis", self.consent_gate.calls[0][2]["authorization_scope"])
+        self.assertEqual("video/mp4", self.gateway.requests[0].media_type)
+        self.assertFalse(self.gateway.requests[0].media_path.exists())
+
     def test_audio_transcription_reuses_exact_audio_consent_and_normalizes_text(self) -> None:
         self.uploads.job.media_type = "audio/wav"
         self.uploads.job.files = (

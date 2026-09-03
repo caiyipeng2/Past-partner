@@ -95,6 +95,54 @@ class ProviderTransportTests(unittest.TestCase):
                     )
         self.assertEqual("provider_unavailable", captured.exception.code)
 
+    def test_multipart_video_filename_is_derived_from_validated_mime(self) -> None:
+        captured = {}
+
+        class _Response:
+            status = 200
+
+            def read(self, *_args):
+                return b'{}'
+
+        class _Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def putrequest(self, *_args):
+                pass
+
+            def putheader(self, *_args):
+                pass
+
+            def endheaders(self):
+                pass
+
+            def send(self, payload):
+                captured.setdefault("body", b"")
+                captured["body"] += payload
+
+            def getresponse(self):
+                return _Response()
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "payload.bin"
+            source.write_bytes(b"video")
+            with patch("src.providers.transport.http.client.HTTPConnection", _Connection):
+                urllib_multipart_transport(
+                    "http://provider.invalid/video/analyze",
+                    {},
+                    {"model": "video-model"},
+                    "file",
+                    source,
+                    1.0,
+                    "video/mp4",
+                )
+        self.assertIn(b'filename="video.mp4"', captured["body"])
+        self.assertIn(b"Content-Type: video/mp4", captured["body"])
+
 
 if __name__ == "__main__":
     unittest.main()
