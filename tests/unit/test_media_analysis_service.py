@@ -79,6 +79,7 @@ class _FakeGateway:
         self.observed_payloads: list[bytes] = []
         self.error: Exception | None = None
         self.description = "一张测试图片"
+        self.structured_data = None
 
     def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         self.requests.append(request)
@@ -92,6 +93,7 @@ class _FakeGateway:
             description=self.description,
             usage={"media_units": 1},
             provider_request_id="request-1",
+            structured_data=self.structured_data,
         )
 
 
@@ -271,6 +273,26 @@ class MediaAnalysisServiceTests(unittest.TestCase):
         self.assertEqual("persona-audio-transcription", self.consent_gate.calls[0][2]["authorization_scope"])
         self.assertEqual("audio/wav", self.gateway.requests[0].media_type)
         self.assertFalse(self.gateway.requests[0].media_path.exists())
+
+    def test_ocr_reuses_image_consent_and_normalizes_structured_result(self) -> None:
+        self.gateway.description = "订单号 123"
+        self.gateway.structured_data = {
+            "text": "订单号 123",
+            "blocks": [{"text": "订单号 123", "confidence": 0.98}],
+        }
+
+        result = self._analyze(
+            analysis_kind="ocr",
+            authorization_scope="persona-image-ocr",
+            prompt="识别图片文字",
+        )
+
+        self.assertEqual("image", result["media_category"])
+        self.assertEqual("ocr", result["analysis_kind"])
+        self.assertEqual(self.gateway.structured_data, result["structured_data"])
+        self.assertEqual("image", self.consent_gate.calls[0][2]["data_category"])
+        self.assertEqual("persona-image-ocr", self.consent_gate.calls[0][2]["authorization_scope"])
+        self.assertEqual("ocr", self.gateway.requests[0].analysis_kind)
 
 
 if __name__ == "__main__":

@@ -91,6 +91,9 @@ def build_openai_compatible_adapters(
         video_models = _models(environment.get(f"{definition.prefix}_VIDEO_MODELS"))
         if not video_models.issubset(allowed_models):
             raise ValueError(f"{definition.prefix}_VIDEO_MODELS must be included in {definition.prefix}_MODELS")
+        ocr_models = _models(environment.get(f"{definition.prefix}_OCR_MODELS"))
+        if not ocr_models.issubset(allowed_models):
+            raise ValueError(f"{definition.prefix}_OCR_MODELS must be included in {definition.prefix}_MODELS")
         video_endpoint_path = _first_value(environment, f"{definition.prefix}_VIDEO_ENDPOINT_PATH")
         if video_models and not video_endpoint_path:
             raise ValueError(f"{definition.prefix}_VIDEO_ENDPOINT_PATH is required for video models")
@@ -103,10 +106,14 @@ def build_openai_compatible_adapters(
                 media_capabilities={
                     model_id: frozenset(
                         category
-                        for category, models in (("audio", audio_models), ("video", video_models))
+                        for category, models in (
+                            ("audio", audio_models),
+                            ("video", video_models),
+                            ("ocr", ocr_models),
+                        )
                         if model_id in models
                     )
-                    for model_id in audio_models | video_models
+                    for model_id in audio_models | video_models | ocr_models
                 },
                 video_endpoint_path=video_endpoint_path,
             )

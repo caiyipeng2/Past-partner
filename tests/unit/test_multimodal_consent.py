@@ -103,6 +103,53 @@ class MultimodalConsentTests(unittest.TestCase):
             )
         self.assertEqual("unknown_model", model_error.exception.code)
 
+    def test_ocr_requires_dedicated_purpose_and_reports_ocr_capability(self) -> None:
+        consent = MediaConsent.create(
+            persona_id="persona-1",
+            provider_id="custom_openai",
+            model_id="ocr-model",
+            data_category="image",
+            estimated_cost=0,
+            purpose="image_ocr",
+            authorization_scope="persona-image-ocr",
+            created_at="2026-08-11T00:00:00+00:00",
+            consent_id="consent-ocr",
+        )
+        catalog = ProviderCatalog.default().with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"ocr-model"})},
+            media_capabilities={"custom_openai": {"ocr-model": frozenset({"ocr"})}},
+        )
+        gate = MultimodalConsentGate(StubConsentService(consent), catalog)
+
+        decision = gate.authorize(
+            owner_id="owner-1",
+            consent_id=consent.id,
+            provider_id="custom_openai",
+            model_id="ocr-model",
+            data_category="image",
+            analysis_kind="ocr",
+            authorization_scope=consent.authorization_scope,
+        )
+
+        self.assertTrue(decision.authorized)
+        self.assertEqual("ocr", decision.required_capability)
+        self.assertEqual("ocr", decision.to_dict()["required_capability"])
+
+        ordinary_image = _consent("custom_openai", "ocr-model", "image")
+        ordinary_gate = MultimodalConsentGate(StubConsentService(ordinary_image), catalog)
+        with self.assertRaises(ConsentValidationError) as mismatch:
+            ordinary_gate.authorize(
+                owner_id="owner-1",
+                consent_id=ordinary_image.id,
+                provider_id="custom_openai",
+                model_id="ocr-model",
+                data_category="image",
+                analysis_kind="ocr",
+                authorization_scope=ordinary_image.authorization_scope,
+            )
+        self.assertEqual("consent_scope_mismatch", mismatch.exception.code)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,7 @@ class ProviderGateway:
         not implement text chat with the same endpoint or credentials.
         """
 
-        category = _media_category(request.media_type)
+        category = _analysis_category(request)
         adapter = self._media_analysis_adapter(request.provider_id, request.model_id, category)
         try:
             result = adapter.analyze_media(request)
@@ -408,3 +408,19 @@ def _media_capability(media_category: str) -> str:
     """Map transport media categories to catalog capability names."""
 
     return "vision" if media_category == "image" else media_category
+
+
+def _analysis_category(request: MediaAnalysisRequest) -> str:
+    """Resolve the transport media category plus an explicitly requested operation."""
+
+    media_category = _media_category(request.media_type)
+    if not isinstance(request.analysis_kind, str):
+        raise ProviderError("unsupported_media_operation", "media analysis operation is not supported")
+    operation = request.analysis_kind.strip().lower()
+    if operation in {"description", "describe"}:
+        return media_category
+    if operation == "ocr":
+        if media_category != "image":
+            raise ProviderError("unsupported_media_category", "OCR requires image media")
+        return "ocr"
+    raise ProviderError("unsupported_media_operation", "media analysis operation is not supported")

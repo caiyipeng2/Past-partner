@@ -296,6 +296,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "media_type_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "import_persona_mismatch": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "unsupported_media_category": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "unsupported_media_operation": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "invalid_prompt": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "invalid_provider_result": HTTPStatus.BAD_GATEWAY,
                 "media_analysis_storage_unavailable": HTTPStatus.INSUFFICIENT_STORAGE,

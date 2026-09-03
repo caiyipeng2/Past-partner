@@ -472,6 +472,7 @@ class ApiClient {
     required String dataCategory,
     required String authorizationScope,
     required String prompt,
+    String analysisKind = 'description',
     String? fileId,
   }) async {
     final String normalizedImportId = importId.trim();
@@ -480,9 +481,20 @@ class ApiClient {
         !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(normalizedImportId)) {
       throw const ApiFailure('invalid_request', 'The import id is invalid.');
     }
-    if (consentId.trim().isEmpty || providerId.trim().isEmpty || modelId.trim().isEmpty ||
-        dataCategory.trim().isEmpty || authorizationScope.trim().isEmpty || prompt.trim().isEmpty) {
-      throw const ApiFailure('invalid_request', 'The media analysis request is invalid.');
+    if (consentId.trim().isEmpty ||
+        providerId.trim().isEmpty ||
+        modelId.trim().isEmpty ||
+        dataCategory.trim().isEmpty ||
+        authorizationScope.trim().isEmpty ||
+        prompt.trim().isEmpty) {
+      throw const ApiFailure(
+          'invalid_request', 'The media analysis request is invalid.');
+    }
+    if (analysisKind.trim().isEmpty ||
+        (analysisKind.trim() != 'description' &&
+            analysisKind.trim() != 'ocr')) {
+      throw const ApiFailure(
+          'invalid_request', 'The media analysis request is invalid.');
     }
     final Map<String, dynamic> payload = <String, dynamic>{
       'consent_id': consentId.trim(),
@@ -491,6 +503,8 @@ class ApiClient {
       'data_category': dataCategory.trim(),
       'authorization_scope': authorizationScope.trim(),
       'prompt': prompt.trim(),
+      if (analysisKind.trim() != 'description')
+        'analysis_kind': analysisKind.trim(),
       if (fileId != null && fileId.trim().isNotEmpty) 'file_id': fileId.trim(),
     };
     final http.Response response = await _sendJson(

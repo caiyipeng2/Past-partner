@@ -386,7 +386,7 @@ class ProviderCatalog:
                         "media capabilities must be a list of supported categories",
                     )
                 for category in categories:
-                    if category not in {"image", "audio", "video"}:
+                    if category not in {"image", "audio", "video", "ocr"}:
                         raise CatalogValidationError(
                             "invalid_media_capabilities",
                             "media capability categories are invalid",

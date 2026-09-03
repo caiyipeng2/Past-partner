@@ -1,5 +1,6 @@
 from dataclasses import replace
 import base64
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -119,6 +120,21 @@ class _MediaAnalysisAdapter:
         )
 
 
+class _OcrMediaAnalysisAdapter(_MediaAnalysisAdapter):
+    def supports_media(self, model_id: str, media_category: str) -> bool:
+        return model_id == "deterministic-ocr" and media_category == "ocr"
+
+    def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        return MediaAnalysisResult(
+            provider_id=self.provider_id,
+            model_id=request.model_id,
+            media_type=request.media_type,
+            description="识别出的文字",
+            structured_data={"text": "识别出的文字", "blocks": []},
+            provider_request_id="ocr-test-1",
+        )
+
+
 class _FailingMediaAnalysisAdapter(_MediaAnalysisAdapter):
     def analyze_media(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
         raise AdapterError("provider_unavailable", "provider could not be reached")
@@ -174,6 +190,25 @@ class ProviderGatewayTests(unittest.TestCase):
                     base_model,
                     id="deterministic-vision",
                     capabilities=("chat", "vision"),
+                ),
+            ),
+        )
+        return ProviderCatalog((provider,))
+
+    def _catalog_with_ocr_analysis(self) -> ProviderCatalog:
+        base_provider = self.catalog.provider("deepseek")
+        base_model = self.catalog.find_model("deepseek", "deepseek-v4-flash")
+        assert base_model is not None
+        provider = replace(
+            base_provider,
+            id="test",
+            display_name="Deterministic OCR test",
+            capabilities=("chat", "vision", "ocr"),
+            models=(
+                replace(
+                    base_model,
+                    id="deterministic-ocr",
+                    capabilities=("chat", "vision", "ocr"),
                 ),
             ),
         )
@@ -346,6 +381,41 @@ class ProviderGatewayTests(unittest.TestCase):
             ).analyze_media(request)
         self.assertEqual("unsupported_media_category", captured.exception.code)
 
+    def test_ocr_operation_requires_explicit_capability_and_image_media(self) -> None:
+        request = MediaAnalysisRequest(
+            provider_id="test",
+            model_id="deterministic-ocr",
+            media_type="image/png",
+            media_path=Path("image.png"),
+            prompt="识别图片文字",
+            analysis_kind="ocr",
+        )
+        gateway = ProviderGateway(
+            self._catalog_with_ocr_analysis(),
+            mode="test",
+            adapters={"test": _OcrMediaAnalysisAdapter()},
+        )
+
+        result = gateway.analyze_media(request)
+
+        self.assertEqual("识别出的文字", result.description)
+        self.assertEqual({"text": "识别出的文字", "blocks": []}, result.structured_data)
+
+        with self.assertRaises(ProviderError) as non_image:
+            gateway.analyze_media(replace(request, media_type="audio/wav"))
+        self.assertEqual("unsupported_media_category", non_image.exception.code)
+
+        vision_only = self._catalog_with_media_analysis()
+        with self.assertRaises(ProviderError) as missing_ocr:
+            ProviderGateway(
+                vision_only,
+                mode="test",
+                adapters={"test": _MediaAnalysisAdapter()},
+            ).analyze_media(
+                replace(request, model_id="deterministic-vision")
+            )
+        self.assertEqual("capability_not_supported", missing_ocr.exception.code)
+
     def test_openai_compatible_media_analysis_uses_bounded_image_data_url(self) -> None:
         calls = []
         payload = b"fake-image-bytes"
@@ -399,6 +469,110 @@ class ProviderGatewayTests(unittest.TestCase):
             image["image_url"]["url"],
         )
         self.assertEqual("Bearer test-key", calls[0][1]["Authorization"])
+
+    def test_openai_compatible_ocr_uses_json_vision_request_and_normalizes_blocks(self) -> None:
+        calls = []
+        payload = b"fake-ocr-image"
+
+        def fake_transport(url, headers, body, timeout_seconds):
+            calls.append((url, headers, body, timeout_seconds))
+            return {
+                "id": "ocr-response-1",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "text": "订单号 123",
+                                    "blocks": [
+                                        {"text": "订单号 123", "confidence": 0.98, "bbox": [0, 0, 1, 1]}
+                                    ],
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            }
+
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                provider_id="custom_openai",
+                base_url="https://example.invalid/v1",
+                api_key="ocr-key",
+                allowed_models=frozenset({"ocr-model"}),
+                media_capabilities={"ocr-model": frozenset({"ocr"})},
+            ),
+            transport=fake_transport,
+        )
+        catalog = self.catalog.with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"ocr-model"})},
+            media_capabilities={"custom_openai": {"ocr-model": frozenset({"ocr"})}},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters={"custom_openai": adapter})
+        source_fd, source_name = tempfile.mkstemp(suffix=".png")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(payload)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+
+        result = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="ocr-model",
+                media_type="image/png",
+                media_path=source_path,
+                prompt="识别图片文字",
+                analysis_kind="ocr",
+            )
+        )
+
+        self.assertEqual("订单号 123", result.description)
+        self.assertEqual(
+            {"text": "订单号 123", "blocks": [{"text": "订单号 123", "confidence": 0.98, "bbox": [0, 0, 1, 1]}]},
+            result.structured_data,
+        )
+        self.assertEqual("https://example.invalid/v1/chat/completions", calls[0][0])
+        self.assertEqual({"type": "json_object"}, calls[0][2]["response_format"])
+        self.assertEqual("Bearer ocr-key", calls[0][1]["Authorization"])
+
+    def test_openai_compatible_ocr_rejects_malformed_structured_response(self) -> None:
+        source_fd, source_name = tempfile.mkstemp(suffix=".png")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(b"image")
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+        adapter = OpenAICompatibleAdapter(
+            OpenAICompatibleConfig(
+                "custom_openai",
+                "https://example.invalid/v1",
+                "key",
+                frozenset({"ocr-model"}),
+                media_capabilities={"ocr-model": frozenset({"ocr"})},
+            ),
+            transport=lambda *_args: {
+                "choices": [{"message": {"content": json.dumps({"blocks": "invalid"})}}]
+            },
+        )
+        catalog = self.catalog.with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"ocr-model"})},
+            media_capabilities={"custom_openai": {"ocr-model": frozenset({"ocr"})}},
+        )
+        with self.assertRaises(ProviderError) as captured:
+            ProviderGateway(catalog, mode="development", adapters={"custom_openai": adapter}).analyze_media(
+                MediaAnalysisRequest(
+                    "custom_openai",
+                    "ocr-model",
+                    "image/png",
+                    source_path,
+                    "识别",
+                    "ocr",
+                )
+            )
+        self.assertEqual("invalid_provider_response", captured.exception.code)
 
     def test_openai_compatible_media_analysis_maps_response_and_transport_errors(self) -> None:
         request_fd, request_name = tempfile.mkstemp(suffix=".png")

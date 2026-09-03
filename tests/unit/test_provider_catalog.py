@@ -183,6 +183,23 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertIn("audio", audio_model.capabilities)
         self.assertNotIn("audio", text_model.capabilities)
 
+    def test_explicit_ocr_capability_is_added_only_to_selected_models(self) -> None:
+        catalog = ProviderCatalog.default().with_configured(
+            {"custom_openai"},
+            {"custom_openai": frozenset({"ocr-model", "vision-model"})},
+            media_capabilities={"custom_openai": {"ocr-model": frozenset({"ocr"})}},
+        )
+
+        provider = catalog.provider("custom_openai")
+        ocr_model = catalog.find_model("custom_openai", "ocr-model")
+        vision_model = catalog.find_model("custom_openai", "vision-model")
+        self.assertIn("ocr", provider.capabilities)
+        self.assertIsNotNone(ocr_model)
+        self.assertIsNotNone(vision_model)
+        assert ocr_model is not None and vision_model is not None
+        self.assertIn("ocr", ocr_model.capabilities)
+        self.assertNotIn("ocr", vision_model.capabilities)
+
     def test_explicit_runtime_model_can_extend_a_static_provider_catalog(self) -> None:
         catalog = ProviderCatalog.default().with_configured(
             {"openai"},

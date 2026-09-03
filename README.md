@@ -179,13 +179,13 @@ P2-04 已增加本地长期记忆候选提取：从规范化消息生成事实�
 
 P2-05 已增加 provider-independent `VectorMemoryRetriever`：对已审核为 `accepted` 的长期记忆候选执行确定性稀疏向量检索，默认只允许 `persona`/`user` 说话人范围，并按候选数、token 总量和可选时间窗口限制结果。结果只返回有限证据文本、稳定记忆 ID、来源记录 ID、排序分数和排除计数；原始查询只保留 SHA-256 指纹，不调用 embedding 或聊天供应商。R1-01 同时加密保存版本化稀疏索引，并提供 `POST /api/v1/personas/{persona_id}/learning/retrieve`；索引损坏或与记忆不一致时 fail closed。
 
-P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。能力不匹配时明确拒绝；该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
+P2-06 已增加多模态能力门控：`POST /api/v1/consents/{consent_id}/authorize` 在媒体发送或处理前同时核对活动授权、供应商/模型/数据范围，以及目录声明的 `vision`、`audio` 或 `video` 能力。R2-02 的 OCR 还会在 Provider 网关使用独立的 `ocr` 模型能力门控；能力不匹配时明确拒绝。该接口只返回授权决定和能力证据，不上传媒体、不替代供应商隐私承诺。
 
 P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 只在本地短暂构建并清除受限 JSONL，返回样本量、摘要和价格；创建任务要求独立的 `persona_text`、`fine_tuning`、`fine_tuning:{import_id}` 精确授权，且同一份成本授权只能提交一次。数据集只包含已接受的 `persona` 文本，用户、其他参与者、未审核或已拒绝记录不会作为目标样本。任务元数据（状态、进度、可重试性、诊断 ID、摘要、成本、Provider 工件和评测）以 AES-GCM 加密保存，不保存正文、临时路径、凭据或完整 Provider 响应；`GET /api/v1/training-jobs`、`GET /api/v1/training-jobs/{job_id}` 与 `POST /api/v1/training-jobs/{job_id}/cancel` 提供 owner 范围状态管理。外发前会加密保存 `submission_started` 意图；任何微调适配器都必须能按本地 job ID 对账，才能在 Provider 已接受而远端 ID 持久化失败后继续查询或取消。`local_cleanup_failure_code` 独立记录临时明文清理故障，不会把已验证的 Provider 完成结果改写为 `failed`。只有 Provider 返回非空工件 ID 和评测对象才会标记 `completed`。当前真实供应商适配器尚未声明 `fine_tuning` 能力，开发和生产环境会明确拒绝；确定性 Provider 仅在 `PAST_PARTNER_MODE=test` 下用于自动化合同测试，不能视为实际模型训练。
 
 媒体处理实测补充（不占用原路线图任务编号）：已完成上传的图片、音频或视频可调用 `GET /api/v1/imports/{import_id}/media-inspection` 获取本地验证的格式元数据。当前图片格式映射为 BMP、GIF、ICO、JPEG、PNG、TIFF、WebP；音频格式映射为 Ogg、WAV、MP3；视频格式映射为 WebM、MP4（其他格式会明确拒绝，不伪造成功）。图片返回格式和尺寸；音频/视频返回格式、时长、编码、采样率或画面尺寸。该接口仅在服务端受控临时路径中处理单个文件边界，响应不包含原始字节或本地路径，且明确返回 `provider_transfer: false`。它不执行 OCR、ASR、图片/视频语义理解，也不调用模型；图片检测需要 `requirements-parsers.txt` 中的 Pillow，音频和视频检测还需要本机 `ffprobe` 位于 `PATH`。
 
-R2-02 增加了受精确授权和目录能力门控的 OpenAI-compatible 音频转写：将 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS` 配置为对应模型白名单后，`POST /api/v1/imports/{import_id}/media-analysis` 使用 `data_category=audio` 才会调用标准 `/audio/transcriptions` multipart 接口。只发送用户选择的单个受限音频文件、模型、转写提示词和 `response_format=json`，响应中的 `description` 是归一化转写文本；未显式配置的模型返回 `capability_not_supported`。视频语义分析现在也支持同一路由，但必须同时配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和安全的相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，只发送单个受限视频、模型、提示词和 `response_format=json`，Provider 返回的 `description` 才会进入结果。视频端点没有被假设为所有 OpenAI-compatible 服务的通用标准；OCR 专用结构化提取、供应商原生 ASR/视频差异、流式处理和第三方删除仍未实现。
+R2-02 增加了受精确授权和目录能力门控的 OpenAI-compatible 音频转写：将 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS` 配置为对应模型白名单后，`POST /api/v1/imports/{import_id}/media-analysis` 使用 `data_category=audio` 才会调用标准 `/audio/transcriptions` multipart 接口。只发送用户选择的单个受限音频文件、模型、转写提示词和 `response_format=json`，响应中的 `description` 是归一化转写文本；未显式配置的模型返回 `capability_not_supported`。视频语义分析现在也支持同一路由，但必须同时配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和安全的相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，只发送单个受限视频、模型、提示词和 `response_format=json`，Provider 返回的 `description` 才会进入结果。OCR 通过 `PAST_PARTNER_<PROVIDER>_OCR_MODELS` 显式开启，调用 OpenAI-compatible 视觉 chat 接口并要求 `response_format={"type":"json_object"}`；请求仍使用 `data_category=image` 的精确图片授权，但 `analysis_kind=ocr` 必须匹配 OCR purpose/scope，响应只返回有界 `text`、`blocks`、可选置信度和归一化边界框。视频端点没有被假设为所有 OpenAI-compatible 服务的通用标准；供应商原生 ASR/视频差异、扫描 PDF OCR、流式处理和第三方删除仍未实现。
 
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
@@ -218,7 +218,7 @@ R0-04 的外部链路需要显式执行 `PAST_PARTNER_QWEN_FINE_TUNING_SMOKE=1 p
 
 OpenAI、DeepSeek、小米 MiMo、阿里千问、Anthropic、Gemini、Ollama 与自定义 OpenAI-compatible 接口的环境变量模板见 `.env.example`。模板只用于列出变量名，服务不会从前端接收或返回 API Key。自定义 OpenAI-compatible endpoint 需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和逗号分隔的模型名；`PAST_PARTNER_CUSTOM_OPENAI_API_KEY` 可选，留空时适用于无认证的本地模型服务。`custom_http` 仍保留给后续非兼容协议插件，不会因为目录可见而伪造可用状态。
 
-OpenAI-compatible provider 的音频转写还需要配置对应的 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS`，其值必须是同一 provider `*_MODELS` 的子集；留空时音频能力保持关闭。视频语义分析需要额外配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，两个配置缺一时不会启用视频能力。音频使用 `/audio/transcriptions` multipart 接口，视频使用部署者明确配置的 Provider 专用路径；当前自动化真实 HTTP smoke 使用 `custom_openai` 本地端点，其他 Provider 只有在其端点协议兼容并通过独立验证后才应启用。响应中的 `description` 是归一化文本；OCR、流式处理和供应商原生 ASR/视频差异仍未实现。
+OpenAI-compatible provider 的音频转写还需要配置对应的 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS`，其值必须是同一 provider `*_MODELS` 的子集；留空时音频能力保持关闭。视频语义分析需要额外配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，两个配置缺一时不会启用视频能力。OCR 需要配置同一 provider `*_OCR_MODELS` 子集，复用视觉 chat 接口并返回有界结构化文字；当前自动化真实 HTTP smoke 使用 `custom_openai` 本地端点，其他 Provider 只有在其端点协议兼容并通过独立验证后才应启用。响应中的 `description` 是归一化文本；扫描 PDF OCR、流式处理和供应商原生 ASR/视频差异仍未实现。
 
 ### Provider smoke
 
