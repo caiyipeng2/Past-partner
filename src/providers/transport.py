@@ -178,6 +178,7 @@ def urllib_multipart_transport(
 
 
 def _media_filename(content_type: str) -> str:
+    media_category = content_type.split("/", 1)[0].casefold()
     extension = {
         "audio/wav": "wav",
         "audio/x-wav": "wav",
@@ -188,8 +189,12 @@ def _media_filename(content_type: str) -> str:
         "audio/ogg": "ogg",
         "audio/webm": "webm",
         "audio/flac": "flac",
+        "video/mp4": "mp4",
+        "video/webm": "webm",
+        "video/quicktime": "mov",
+        "video/x-msvideo": "avi",
     }.get(content_type.casefold())
     if extension is None:
         subtype = content_type.split("/", 1)[1].split(";", 1)[0].casefold()
         extension = "".join(character for character in subtype if character.isalnum()) or "audio"
-    return f"audio.{extension}"
+    return f"{media_category}.{extension}"

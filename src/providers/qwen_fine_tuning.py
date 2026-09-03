@@ -40,6 +40,7 @@ class QwenFineTuningConfig:
     max_length: int = 8192
     split: float = 0.9
     media_capabilities: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    video_endpoint_path: str | None = None
 
 
 class QwenFineTuningAdapter:
@@ -70,6 +71,7 @@ class QwenFineTuningAdapter:
                 allowed_models=config.allowed_models,
                 timeout_seconds=config.timeout_seconds,
                 media_capabilities=config.media_capabilities,
+                video_endpoint_path=config.video_endpoint_path,
             ),
             transport=chat_transport,
         )

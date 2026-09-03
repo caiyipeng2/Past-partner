@@ -45,7 +45,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
         self.__class__.request_authorization = self.headers.get("Authorization")
         self.__class__.request_path = self.path
         raw_body = self.rfile.read(length)
-        if self.path.endswith("/audio/transcriptions"):
+        if self.path.endswith("/audio/transcriptions") or self.path.endswith("/video/analyze"):
             envelope = (
                 b"Content-Type: "
                 + self.headers["Content-Type"].encode("ascii")
@@ -68,7 +68,10 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
                     fields[name] = value.decode("utf-8")
             self.__class__.multipart_fields = fields
             self.__class__.multipart_file = file_bytes
-            response_body = {"id": "audio-local-smoke", "text": "来自本地转写端点的结果"}
+            if self.path.endswith("/video/analyze"):
+                response_body = {"id": "video-local-smoke", "description": "来自本地视频端点的结果"}
+            else:
+                response_body = {"id": "audio-local-smoke", "text": "来自本地转写端点的结果"}
         else:
             self.__class__.request_body = json.loads(raw_body.decode("utf-8"))
             response_body = self.response_body
@@ -281,6 +284,53 @@ class ProviderSmokeTests(unittest.TestCase):
         self.assertEqual(media, _OpenAICompatibleHandler.multipart_file)
         self.assertEqual("audio/wav", _OpenAICompatibleHandler.multipart_file_content_type)
         self.assertEqual("audio.wav", _OpenAICompatibleHandler.multipart_file_name)
+        self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_custom_openai_video_analysis_crosses_real_multipart_transport(self) -> None:
+        port = self.server.server_address[1]
+        environ = {
+            "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+            "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+            "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "video-model",
+            "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_MODELS": "video-model",
+            "PAST_PARTNER_CUSTOM_OPENAI_VIDEO_ENDPOINT_PATH": "/video/analyze",
+        }
+        base_catalog = ProviderCatalog.default()
+        adapters = build_openai_compatible_adapters(base_catalog, environ)
+        adapter = adapters["custom_openai"]
+        catalog = base_catalog.with_configured(
+            set(adapters),
+            {"custom_openai": frozenset({"video-model"})},
+            media_capabilities={"custom_openai": adapter.config.media_capabilities},
+        )
+        gateway = ProviderGateway(catalog, mode="development", adapters=adapters)
+        media = b"fake-video"
+        source_fd, source_name = tempfile.mkstemp(suffix=".bin")
+        os.close(source_fd)
+        source_path = Path(source_name)
+        source_path.write_bytes(media)
+        self.addCleanup(lambda: source_path.unlink(missing_ok=True))
+
+        response = gateway.analyze_media(
+            MediaAnalysisRequest(
+                provider_id="custom_openai",
+                model_id="video-model",
+                media_type="video/mp4",
+                media_path=source_path,
+                prompt="请概括 smoke 视频",
+            )
+        )
+
+        self.assertEqual("来自本地视频端点的结果", response.description)
+        self.assertEqual("video-local-smoke", response.provider_request_id)
+        self.assertEqual("/v1/video/analyze", _OpenAICompatibleHandler.request_path)
+        self.assertEqual(
+            {"model": "video-model", "prompt": "请概括 smoke 视频", "response_format": "json"},
+            _OpenAICompatibleHandler.multipart_fields,
+        )
+        self.assertEqual(media, _OpenAICompatibleHandler.multipart_file)
+        self.assertEqual("video/mp4", _OpenAICompatibleHandler.multipart_file_content_type)
+        self.assertEqual("video.mp4", _OpenAICompatibleHandler.multipart_file_name)
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
 
 

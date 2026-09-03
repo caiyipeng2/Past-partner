@@ -88,6 +88,12 @@ def build_openai_compatible_adapters(
         audio_models = _models(environment.get(f"{definition.prefix}_AUDIO_MODELS"))
         if not audio_models.issubset(allowed_models):
             raise ValueError(f"{definition.prefix}_AUDIO_MODELS must be included in {definition.prefix}_MODELS")
+        video_models = _models(environment.get(f"{definition.prefix}_VIDEO_MODELS"))
+        if not video_models.issubset(allowed_models):
+            raise ValueError(f"{definition.prefix}_VIDEO_MODELS must be included in {definition.prefix}_MODELS")
+        video_endpoint_path = _first_value(environment, f"{definition.prefix}_VIDEO_ENDPOINT_PATH")
+        if video_models and not video_endpoint_path:
+            raise ValueError(f"{definition.prefix}_VIDEO_ENDPOINT_PATH is required for video models")
         adapters[definition.provider_id] = OpenAICompatibleAdapter(
             OpenAICompatibleConfig(
                 provider_id=definition.provider_id,
@@ -95,9 +101,14 @@ def build_openai_compatible_adapters(
                 api_key=api_key,
                 allowed_models=allowed_models,
                 media_capabilities={
-                    model_id: frozenset({"audio"})
-                    for model_id in audio_models
+                    model_id: frozenset(
+                        category
+                        for category, models in (("audio", audio_models), ("video", video_models))
+                        if model_id in models
+                    )
+                    for model_id in audio_models | video_models
                 },
+                video_endpoint_path=video_endpoint_path,
             )
         )
     return adapters
@@ -184,6 +195,7 @@ def _configure_qwen_fine_tuning(
             chat_base_url=chat.config.base_url,
             timeout_seconds=chat.config.timeout_seconds,
             media_capabilities=chat.config.media_capabilities,
+            video_endpoint_path=chat.config.video_endpoint_path,
         )
     )
 

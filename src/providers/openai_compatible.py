@@ -31,6 +31,7 @@ class OpenAICompatibleConfig:
     timeout_seconds: float = 60.0
     max_media_bytes: int = 32 * 1024**2
     media_capabilities: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    video_endpoint_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0:
@@ -48,6 +49,8 @@ class OpenAICompatibleConfig:
                 raise ValueError("media capability category is invalid")
             normalized[model_id] = values
         object.__setattr__(self, "media_capabilities", normalized)
+        if self.video_endpoint_path is not None:
+            object.__setattr__(self, "video_endpoint_path", _validate_video_endpoint_path(self.video_endpoint_path))
 
 
 class OpenAICompatibleAdapter:
@@ -123,6 +126,8 @@ class OpenAICompatibleAdapter:
             raise AdapterError("invalid_provider_request", "media request provider does not match the adapter")
         if _media_category(request.media_type) == "audio":
             return self._transcribe_audio(request)
+        if _media_category(request.media_type) == "video":
+            return self._analyze_video(request)
         media_type = _image_media_type(request.media_type)
         if not self.supports_media(request.model_id, "image"):
             raise AdapterError("capability_not_supported", "this adapter supports image analysis only")
@@ -258,6 +263,74 @@ class OpenAICompatibleAdapter:
             provider_request_id=str(payload["id"]) if payload.get("id") is not None else None,
         )
 
+    def _analyze_video(self, request: MediaAnalysisRequest) -> MediaAnalysisResult:
+        if not self.supports_media(request.model_id, "video"):
+            raise AdapterError("capability_not_supported", "this adapter does not support video analysis")
+        if self.config.video_endpoint_path is None:
+            raise AdapterError("provider_not_configured", "video analysis endpoint is not configured")
+        media_type = _video_media_type(request.media_type)
+        if not isinstance(request.prompt, str) or not request.prompt.strip():
+            raise AdapterError("invalid_prompt", "video analysis prompt is required")
+        try:
+            size = request.media_path.stat().st_size
+            if size < 0 or size > self.config.max_media_bytes:
+                raise AdapterError("media_too_large", "media exceeds the configured analysis size limit")
+            if not request.media_path.is_file():
+                raise AdapterError("media_unavailable", "media source is unavailable")
+        except AdapterError:
+            raise
+        except OSError as exc:
+            raise AdapterError("media_unavailable", "media source is unavailable") from exc
+
+        fields = {
+            "model": request.model_id,
+            "prompt": request.prompt.strip(),
+            "response_format": "json",
+        }
+        headers = {"Accept": "application/json"}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        endpoint = f"{self.config.base_url.rstrip('/')}{self.config.video_endpoint_path}"
+        try:
+            payload = self.multipart_transport(
+                endpoint,
+                headers,
+                fields,
+                "file",
+                request.media_path,
+                self.config.timeout_seconds,
+                media_type,
+            )
+        except AdapterError as exc:
+            if exc.code == "dataset_unavailable":
+                raise AdapterError("media_unavailable", "media source is unavailable") from exc
+            raise
+        except (socket.timeout, TimeoutError) as exc:
+            raise AdapterError("provider_timeout", "provider request timed out") from exc
+        except OSError as exc:
+            raise AdapterError("provider_unavailable", "provider could not be reached") from exc
+        if not isinstance(payload, Mapping):
+            raise AdapterError("invalid_provider_response", "provider response must be a JSON object")
+        description = payload.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise AdapterError("invalid_provider_response", "provider response has no video description")
+        usage = payload.get("usage")
+        normalized_usage = None
+        if isinstance(usage, Mapping):
+            normalized_usage = {
+                key: usage[key]
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+            }
+        return MediaAnalysisResult(
+            provider_id=self.provider_id,
+            model_id=request.model_id,
+            media_type=request.media_type,
+            description=description.strip(),
+            usage=normalized_usage,
+            provider_request_id=str(payload["id"]) if payload.get("id") is not None else None,
+        )
+
 
 def _image_media_type(value: object) -> str:
     if not isinstance(value, str):
@@ -277,6 +350,15 @@ def _audio_media_type(value: object) -> str:
     return media_type
 
 
+def _video_media_type(value: object) -> str:
+    if not isinstance(value, str):
+        raise AdapterError("capability_not_supported", "this adapter supports video analysis only")
+    media_type = value.split(";", 1)[0].strip().lower()
+    if not media_type.startswith("video/"):
+        raise AdapterError("capability_not_supported", "this adapter supports video analysis only")
+    return media_type
+
+
 def _media_category(value: object) -> str:
     if not isinstance(value, str) or "/" not in value:
         raise AdapterError("capability_not_supported", "media type is not supported")
@@ -284,6 +366,23 @@ def _media_category(value: object) -> str:
     if category not in {"image", "audio", "video"}:
         raise AdapterError("capability_not_supported", "media type is not supported")
     return category
+
+
+def _validate_video_endpoint_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("video endpoint path must be a string")
+    path = value.strip()
+    if (
+        not path
+        or len(path) > 256
+        or not path.startswith("/")
+        or path.startswith("//")
+        or "?" in path
+        or "#" in path
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in path)
+    ):
+        raise ValueError("video endpoint path must be a safe relative path")
+    return path
 
 
 def _analysis_description(value: object) -> str:
