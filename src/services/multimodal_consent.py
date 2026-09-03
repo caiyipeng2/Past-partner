@@ -64,6 +64,40 @@ class MultimodalConsentGate:
         self.consents = consents
         self.catalog = catalog
 
+    def ensure_capability(
+        self,
+        provider_id: str,
+        model_id: str,
+        required_capability: str,
+    ) -> None:
+        """Validate provider/model capability before issuing a new consent.
+
+        Authorization checks already enforce this immediately before media leaves
+        the process. The creation endpoint performs the same check early so a
+        consent cannot be issued for a model that could never satisfy its scope.
+        """
+
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            raise ConsentValidationError("invalid_provider", "provider_id must be a non-empty string")
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise ConsentValidationError("invalid_model", "model_id must be a non-empty string")
+        provider = self.catalog.find_provider(provider_id)
+        if provider is None:
+            raise ConsentValidationError("unknown_provider", "provider does not exist")
+        model = self.catalog.find_model(provider_id, model_id)
+        if model is None:
+            raise ConsentValidationError("unknown_model", "model is not in the provider catalog")
+        if required_capability not in model.capabilities:
+            raise ConsentValidationError(
+                "model_capability_missing",
+                f"model does not advertise the required {required_capability} capability",
+            )
+        if required_capability not in provider.capabilities:
+            raise ConsentValidationError(
+                "provider_capability_missing",
+                f"provider does not advertise the required {required_capability} capability",
+            )
+
     def authorize(
         self,
         owner_id: str,

@@ -29,7 +29,11 @@ from src.services.consent_service import ConsentService
 from src.services.deletion_receipt_repository import DeletionReceiptRepository
 from src.services.export_service import ExportArtifact, ExportService
 from src.services.export_service import ExportServiceError
-from src.services.multimodal_consent import MultimodalConsentGate
+from src.services.multimodal_consent import (
+    OCR_AUTHORIZATION_SCOPE,
+    OCR_PURPOSE,
+    MultimodalConsentGate,
+)
 from src.services.import_repository import ImportRepository
 from src.services.import_service import ImportService
 from src.services.learning_repository import LearningRepository
@@ -658,6 +662,38 @@ class Application:
                 )
         except KeyError as exc:
             raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+        return consent.to_dict()
+
+    def create_ocr_consent(self, owner_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Create the fixed-scope consent required by image OCR processing."""
+
+        allowed_fields = {"persona_id", "provider_id", "model_id", "estimated_cost"}
+        unsupported = set(payload) - allowed_fields
+        if unsupported:
+            raise RequestValidationError(
+                "unsupported_field",
+                "OCR consent accepts only persona_id, provider_id, model_id, and estimated_cost",
+            )
+        try:
+            persona_id = payload["persona_id"]
+            provider_id = payload["provider_id"]
+            model_id = payload["model_id"]
+            estimated_cost = payload["estimated_cost"]
+        except KeyError as exc:
+            raise RequestValidationError("missing_field", f"missing {exc.args[0]}") from exc
+
+        self.multimodal_consents.ensure_capability(provider_id, model_id, "ocr")
+        with self._persona_lifecycle_lock:
+            consent = self.consents.create(
+                owner_id=owner_id,
+                persona_id=persona_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                data_category="image",
+                estimated_cost=estimated_cost,
+                purpose=OCR_PURPOSE,
+                authorization_scope=OCR_AUTHORIZATION_SCOPE,
+            )
         return consent.to_dict()
 
     def list_consents(self, owner_id: str, persona_id: str | None = None) -> dict[str, Any]:

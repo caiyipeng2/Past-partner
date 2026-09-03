@@ -187,6 +187,8 @@ P2-07 已增加能力门控微调任务：`POST /api/v1/training-jobs/estimate` 
 
 R2-02 增加了受精确授权和目录能力门控的 OpenAI-compatible 音频转写：将 `PAST_PARTNER_<PROVIDER>_AUDIO_MODELS` 配置为对应模型白名单后，`POST /api/v1/imports/{import_id}/media-analysis` 使用 `data_category=audio` 才会调用标准 `/audio/transcriptions` multipart 接口。只发送用户选择的单个受限音频文件、模型、转写提示词和 `response_format=json`，响应中的 `description` 是归一化转写文本；未显式配置的模型返回 `capability_not_supported`。视频语义分析现在也支持同一路由，但必须同时配置 `PAST_PARTNER_<PROVIDER>_VIDEO_MODELS` 和安全的相对 `PAST_PARTNER_<PROVIDER>_VIDEO_ENDPOINT_PATH`，只发送单个受限视频、模型、提示词和 `response_format=json`，Provider 返回的 `description` 才会进入结果。OCR 通过 `PAST_PARTNER_<PROVIDER>_OCR_MODELS` 显式开启，调用 OpenAI-compatible 视觉 chat 接口并要求 `response_format={"type":"json_object"}`；请求仍使用 `data_category=image` 的精确图片授权，但 `analysis_kind=ocr` 必须匹配 OCR purpose/scope，响应只返回有界 `text`、`blocks`、可选置信度和归一化边界框。视频端点没有被假设为所有 OpenAI-compatible 服务的通用标准；供应商原生 ASR/视频差异、扫描 PDF OCR、流式处理和第三方删除仍未实现。
 
+OCR 专用授权可通过 `POST /api/v1/consents/ocr` 创建。该接口只接受 `persona_id`、`provider_id`、`model_id` 和 `estimated_cost`，服务端固定写入 `data_category=image`、`purpose=image_ocr`、`authorization_scope=persona-image-ocr`，并要求目录中的 Provider 与模型同时声明 `ocr` 能力；移动端普通图片授权不能替代该专用授权。
+
 断点续传可通过 `GET /api/v1/imports/{import_id}/missing-chunks?expected_chunks=N` 查询已接收和缺失的分片索引。
 导入进度可通过 `GET /api/v1/imports/{import_id}/progress` 查询服务端确认的字节数、分片索引和百分比。
 错误响应统一返回稳定 `error.code` 和 UUID 格式的 `error.diagnostic_id`；诊断 ID 同时写入服务端日志，便于在不暴露内部异常细节的情况下定位请求。
