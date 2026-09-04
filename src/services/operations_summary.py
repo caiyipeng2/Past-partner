@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from src.services.audit_repository import AuditRepository, AuditRepositoryError
 from src.services.local_auth import OwnerPrincipal
@@ -24,6 +23,16 @@ class OperationsSummaryService:
     """Aggregate fixed operational counters without exposing business records."""
 
     _MAX_DIAGNOSTIC_IDS = 20
+    _MAX_AUDIT_OWNERS = 100
+    _MAX_AUDIT_EVENTS_PER_OWNER = 100
+    _EXPECTED_COUNTS = {
+        ("task_queue", "state"): ("queued", "leased", "succeeded", "failed", "cancelled"),
+        ("data_subject_notifications", "status"): ("pending", "delivered", "failed"),
+        (
+            "worker_observations",
+            "outcome",
+        ): ("idle", "succeeded", "retryable_failure", "terminal_failure", "lease_lost"),
+    }
 
     def __init__(self, metadata_store: MetadataStore, audit_repository: AuditRepository | None):
         self.metadata_store = require_metadata_store(metadata_store)
@@ -65,7 +74,12 @@ class OperationsSummaryService:
                 "operations_unavailable", "operations summary is unavailable"
             ) from exc
 
-        audit = self._audit_summary()
+        try:
+            audit = self._audit_summary()
+        except MetadataStoreError as exc:
+            raise OperationsSummaryError(
+                "operations_unavailable", "operations summary is unavailable"
+            ) from exc
         safe_diagnostics = tuple(
             value for value in diagnostic_ids[-self._MAX_DIAGNOSTIC_IDS :] if _is_uuid_text(value)
         )
@@ -91,18 +105,49 @@ class OperationsSummaryService:
         if self.audit_repository is None:
             return {"status": "unavailable", "event_count": 0, "error_code": "audit_unavailable"}
         try:
-            verified = AuditRepository.verify_database(self.metadata_store)
+            with closing(self.metadata_store.connect()) as connection:
+                owner_rows = connection.execute(
+                    "SELECT DISTINCT owner_id FROM audit_events ORDER BY owner_id LIMIT ?",
+                    (self._MAX_AUDIT_OWNERS + 1,),
+                ).fetchall()
+                complete = len(owner_rows) <= self._MAX_AUDIT_OWNERS
+                event_count = 0
+                checked_owners = 0
+                checked_events = 0
+                for row in owner_rows[: self._MAX_AUDIT_OWNERS]:
+                    if not isinstance(row, (tuple, list)) or len(row) != 1:
+                        return {
+                            "status": "unavailable",
+                            "event_count": 0,
+                            "error_code": "audit_record_corrupt",
+                        }
+                    owner_id = AuditRepository._owner(row[0])
+                    event_rows = connection.execute(
+                        "SELECT id, owner_id, action, outcome, resource_type, resource_id, occurred_at, "
+                        "record_version, encrypted_payload, chain_sequence, previous_hash, event_hash "
+                        "FROM audit_events WHERE owner_id = ? ORDER BY chain_sequence ASC, id ASC LIMIT ?",
+                        (owner_id, self._MAX_AUDIT_EVENTS_PER_OWNER + 1),
+                    ).fetchall()
+                    owner_complete = len(event_rows) <= self._MAX_AUDIT_EVENTS_PER_OWNER
+                    complete = complete and owner_complete
+                    bounded_rows = event_rows[: self._MAX_AUDIT_EVENTS_PER_OWNER]
+                    verified = AuditRepository._verify_rows(bounded_rows, owner_id)
+                    event_count += int(verified["event_count"])
+                    checked_owners += 1
+                    checked_events += len(bounded_rows)
+                return {
+                    "status": "ok" if complete else "partial",
+                    "event_count": event_count,
+                    "complete": complete,
+                    "checked_owners": checked_owners,
+                    "checked_events": checked_events,
+                }
         except AuditRepositoryError as exc:
             return {"status": "unavailable", "event_count": 0, "error_code": exc.code}
-        owners = verified.get("owners", [])
-        if not isinstance(owners, list):
-            return {"status": "unavailable", "event_count": 0, "error_code": "audit_record_corrupt"}
-        event_count = sum(
-            int(item.get("event_count", 0))
-            for item in owners
-            if isinstance(item, dict) and isinstance(item.get("event_count", 0), int)
-        )
-        return {"status": "ok", "event_count": event_count}
+        except MetadataStoreError as exc:
+            raise OperationsSummaryError(
+                "operations_unavailable", "operations summary is unavailable"
+            ) from exc
 
     @staticmethod
     def _scalar(connection: object, query: str) -> int:
@@ -114,22 +159,24 @@ class OperationsSummaryService:
 
     @classmethod
     def _counts(cls, connection: object, table: str, column: str) -> dict[str, int]:
-        allowed = {
-            ("task_queue", "state"),
-            ("data_subject_notifications", "status"),
-            ("worker_observations", "outcome"),
-        }
-        if (table, column) not in allowed:
+        expected = cls._EXPECTED_COUNTS.get((table, column))
+        if expected is None:
             raise OperationsSummaryError("operations_record_corrupt", "operations summary is invalid")
         rows = connection.execute(
             f"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}"
         ).fetchall()
-        result: Counter[str] = Counter()
+        result = {key: 0 for key in expected}
         for key, count in rows:
-            if not isinstance(key, str) or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            if (
+                not isinstance(key, str)
+                or key not in result
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+            ):
                 raise OperationsSummaryError("operations_record_corrupt", "operations summary is invalid")
             result[key] = count
-        return dict(sorted(result.items()))
+        return result
 
 
 def _is_uuid_text(value: object) -> bool:

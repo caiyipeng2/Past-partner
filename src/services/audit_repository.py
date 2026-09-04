@@ -169,6 +169,16 @@ class AuditRepository:
             "FROM audit_events WHERE owner_id = ? ORDER BY chain_sequence ASC, id ASC",
             (owner_id,),
         ).fetchall()
+        return AuditRepository._verify_rows(rows, owner_id)
+
+    @staticmethod
+    def _verify_rows(rows: Iterable[object], owner_id: str) -> dict[str, object]:
+        """Verify one already-bounded owner prefix without issuing another query.
+
+        Operational health checks use a bounded query before calling this helper.
+        The regular owner verification path still passes the complete result set,
+        so the chain rules remain defined in one place.
+        """
         expected_sequence = 1
         previous_hash = GENESIS_HASH
         for row in rows:

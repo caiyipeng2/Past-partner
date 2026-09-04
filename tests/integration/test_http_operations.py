@@ -8,11 +8,13 @@ from pathlib import Path
 import shutil
 import threading
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from src.server.application import Application
 from src.server.config import ServerConfig
 from src.server.http import create_server
+from src.services.audit_repository import AuditRepository
 
 
 class HttpOperationsSummaryTests(unittest.TestCase):
@@ -153,6 +155,44 @@ class HttpOperationsSummaryTests(unittest.TestCase):
         self.assertEqual(1, payload["queue"]["states"]["queued"])
         self.assertEqual(1, payload["notifications"]["failed"])
         self.assertEqual("ok", payload["audit"]["status"])
+
+    def test_operations_summary_uses_bounded_audit_check_instead_of_full_scan(self) -> None:
+        admin = self.application.auth.create_local_account(
+            "operations-bounded-admin", tenant_id="operations", role="admin"
+        )
+        admin_session = self.application.auth.issue_account_session(admin["user_id"])
+
+        with patch.object(
+            AuditRepository,
+            "verify_database",
+            side_effect=AssertionError("unbounded audit verification must not run"),
+        ):
+            status, _, payload = self.request(
+                "GET", "/api/v1/operations/summary", token=admin_session["access_token"]
+            )
+
+        self.assertEqual(200, status)
+        self.assertIn(payload["audit"]["status"], {"ok", "partial"})
+
+    def test_operations_summary_maps_audit_store_failure_to_stable_503(self) -> None:
+        admin = self.application.auth.create_local_account(
+            "operations-audit-failure-admin", tenant_id="operations", role="admin"
+        )
+        admin_session = self.application.auth.issue_account_session(admin["user_id"])
+
+        with patch.object(
+            self.application.operations,
+            "_audit_summary",
+            side_effect=__import__("src.services.metadata_store", fromlist=["MetadataStoreError"]).MetadataStoreError(
+                "metadata_operational_error", "metadata operational error"
+            ),
+        ):
+            status, _, payload = self.request(
+                "GET", "/api/v1/operations/summary", token=admin_session["access_token"]
+            )
+
+        self.assertEqual(503, status)
+        self.assertEqual("operations_unavailable", payload["error"]["code"])
 
 
 if __name__ == "__main__":
