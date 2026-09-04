@@ -142,7 +142,7 @@ R2-04 Task 3 为 owner 范围的审计事件增加追加式序号、前链哈希
 
 R2-04 Task 4 增加 owner 范围的数据主体通知：导出和账户级删除成功后，通知以 AES-GCM 加密保存，只包含操作 ID、有限计数、UTC 时间、投递状态、尝试次数、下一次尝试时间和稳定错误码；`GET /api/v1/notifications` 只读分页返回通知，不包含 owner、原始聊天/媒体、文件路径、Provider 载荷或凭据。当前仅提供后续外部投递适配器所需的记录和重试状态，不自动发送短信、邮件、Webhook 或监管通知。
 
-R2-04 Task 5 增加管理员角色保护的 `GET /api/v1/operations/summary` 只读运营摘要：返回有界队列/outbox 状态、本地账务计数与 `local_ledger_only` 对账状态、审计链健康、通知失败数、worker 结果计数和最近诊断 ID。只有 `admin` 角色且具备 `owner:read` 的会话可读取，成员/普通 owner 不能访问；响应不含 owner、正文、媒体、路径、Provider 载荷、DSN、密钥或完整错误文本。该接口不执行运维写操作，不代表已接入支付对账、外部监控、SIEM、WORM 或通知渠道。
+R2-04 Task 5 增加管理员角色保护的 `GET /api/v1/operations/summary` 只读运营摘要：返回有界队列/outbox 状态、本地账务计数与 `local_ledger_only` 对账状态、审计链健康、通知失败数、worker 结果计数和最近诊断 ID。审计健康检查最多校验 100 个 owner、每个 owner 100 条链记录，超出范围会返回 `partial` 和边界计数，不触发全量扫描。只有 `admin` 角色且具备 `owner:read` 的会话可读取，成员/普通 owner 不能访问；响应不含 owner、正文、媒体、路径、Provider 载荷、DSN、密钥或完整错误文本。该接口不执行运维写操作，不代表已接入支付对账、外部监控、SIEM、WORM 或通知渠道。
 
 P4-10 增加进程内监控基础：`GET /api/v1/health` 继续作为不需要认证的存活检查，`GET /api/v1/ready` 不需要认证并以 `200`/`503` 报告元数据后端是否可用，`GET /api/v1/metrics` 需要 `owner:read` 并返回有界的 Prometheus 文本请求计数和当前进程 in-flight 数。指标只按方法、规范化路由模板和状态码聚合，不含 owner、请求参数、请求正文、文件路径、token、API Key 或供应商响应；服务重启后指标归零。该切片不提供外部 Prometheus 推送或抓取配置、告警、追踪、日志外发、供应商/对象存储健康探测、跨进程聚合或持久化保留。
 
