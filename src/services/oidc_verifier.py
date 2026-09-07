@@ -63,9 +63,9 @@ class OidcClaims:
 class OidcVerifier:
     """Verify signed OIDC ID tokens against an administrator-supplied JWKS.
 
-    JWKS may be supplied inline or through an administrator-configured HTTPS URI.
-    Remote discovery, nonce validation, and refresh tokens remain separate
-    lifecycle work so an unavailable identity provider cannot silently weaken auth.
+    JWKS may be supplied inline, through an administrator-configured HTTPS URI, or
+    through a bounded OpenID Connect discovery document. Nonce validation and
+    refresh tokens remain separate lifecycle work.
     """
 
     def __init__(
@@ -77,6 +77,8 @@ class OidcVerifier:
         clock: Callable[[], datetime] | None = None,
         jwks_uri: str | None = None,
         jwks_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
+        discovery_uri: str | None = None,
+        discovery_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
         monotonic_clock: Callable[[], float] | None = None,
         refresh_interval_seconds: float = _JWKS_REFRESH_INTERVAL_SECONDS,
     ) -> None:
@@ -85,12 +87,20 @@ class OidcVerifier:
         if not self.issuer.startswith("https://"):
             raise OidcAuthError("oidc_configuration_invalid", "OIDC issuer must use HTTPS")
         self._jwks_uri = _validate_jwks_uri(jwks_uri)
+        self._discovery_uri = _validate_discovery_uri(discovery_uri)
+        if self._jwks_uri is not None and self._discovery_uri is not None:
+            raise OidcAuthError("oidc_configuration_conflict", "OIDC key sources conflict")
         if refresh_interval_seconds <= 0:
             raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS refresh interval is invalid")
         self._refresh_interval_seconds = float(refresh_interval_seconds)
         self._monotonic_clock = monotonic_clock or time.monotonic
         self._jwks_fetcher = jwks_fetcher or _fetch_remote_jwks
-        self._keys = _load_rsa_keys(jwks, allow_empty=self._jwks_uri is not None)
+        initial_jwks = {} if jwks is None and self._discovery_uri is not None else jwks
+        self._discovery_fetcher = discovery_fetcher or _fetch_oidc_discovery
+        self._keys = _load_rsa_keys(
+            initial_jwks,
+            allow_empty=self._jwks_uri is not None or self._discovery_uri is not None,
+        )
         self._last_refresh_at = float("-inf")
         self._keys_lock = threading.RLock()
         self._refresh_lock = threading.Lock()
@@ -168,20 +178,25 @@ class OidcVerifier:
     def _key_for_kid(self, kid: str) -> rsa.RSAPublicKey | None:
         with self._keys_lock:
             key = self._keys.get(kid)
-            if key is not None or self._jwks_uri is None:
+            if key is not None or (self._jwks_uri is None and self._discovery_uri is None):
                 return key
         # Network I/O is deliberately outside the key cache lock. Known keys can
         # continue authenticating while one unknown kid refreshes the cache.
         with self._refresh_lock:
             with self._keys_lock:
                 key = self._keys.get(kid)
-                if key is not None or self._jwks_uri is None:
+                if key is not None or (self._jwks_uri is None and self._discovery_uri is None):
                     return key
                 now = self._monotonic_clock()
                 if now - self._last_refresh_at < self._refresh_interval_seconds:
                     return None
                 self._last_refresh_at = now
             try:
+                if self._jwks_uri is None:
+                    if self._discovery_uri is None:
+                        return None
+                    metadata = self._discovery_fetcher(self._discovery_uri)
+                    self._jwks_uri = _discovered_jwks_uri(metadata, self.issuer)
                 refreshed = self._jwks_fetcher(self._jwks_uri)
                 refreshed_keys = _load_rsa_keys(refreshed)
             except OidcAuthError as exc:
@@ -259,6 +274,56 @@ def _validate_jwks_uri(value: str | None) -> str | None:
     ):
         raise OidcAuthError("oidc_configuration_invalid", "OIDC JWKS URI must use HTTPS")
     return uri
+
+
+def _validate_discovery_uri(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 2048:
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC discovery URI is invalid")
+    uri = value.strip()
+    parsed = urlsplit(uri)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC discovery URI must use HTTPS")
+    return uri
+
+
+def _discovered_jwks_uri(metadata: Mapping[str, Any], issuer: str) -> str:
+    if not isinstance(metadata, Mapping) or metadata.get("issuer") != issuer:
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC discovery issuer is invalid")
+    jwks_uri = metadata.get("jwks_uri")
+    try:
+        validated = _validate_jwks_uri(jwks_uri)
+    except OidcAuthError as exc:
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC discovery JWKS URI is invalid") from exc
+    if validated is None:
+        raise OidcAuthError("oidc_configuration_invalid", "OIDC discovery JWKS URI is invalid")
+    return validated
+
+
+def _fetch_oidc_discovery(uri: str) -> Mapping[str, Any]:
+    request = Request(uri, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with _REMOTE_JWKS_OPENER.open(request, timeout=_JWKS_FETCH_TIMEOUT_SECONDS) as response:
+            raw = response.read(_MAX_JWKS_BYTES + 1)
+    except (HTTPError, URLError, socket.timeout, TimeoutError, OSError) as exc:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC discovery is unavailable") from exc
+    if len(raw) > _MAX_JWKS_BYTES:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC discovery is unavailable")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC discovery is unavailable") from exc
+    if not isinstance(payload, Mapping):
+        raise OidcAuthError("oidc_keys_unavailable", "OIDC discovery is unavailable")
+    return payload
 
 
 def _fetch_remote_jwks(uri: str) -> Mapping[str, Any]:

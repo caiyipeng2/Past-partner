@@ -208,6 +208,12 @@ class Application:
                     if isinstance(config.oidc_jwks_uri, str) and config.oidc_jwks_uri.strip()
                     else None
                 ),
+                discovery_uri=(
+                    config.oidc_discovery_uri.strip()
+                    if isinstance(config.oidc_discovery_uri, str)
+                    and config.oidc_discovery_uri.strip()
+                    else None
+                ),
             )
         persona_repository = PersonaRepository(metadata_store, encryption)
         persona_repository.assign_unowned(auth.owner_id)
