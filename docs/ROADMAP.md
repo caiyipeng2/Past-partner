@@ -33,7 +33,7 @@
 
 - `R0-01` 已合并到 `main`（`f598c28`）。统一 disposable runner 已在本机可删除的 PostgreSQL、Moto S3/KMS 和任务队列环境中完成回归，报告与资源清理证据随该提交保留。
 - `R0-02` 的四种启动入口实现已在当前验证分支：Python 模块、安装后的 `companion-server` CLI、npm wrapper 和 Docker Compose 均已完成 health/API smoke。本机已安装并启动 Docker Desktop，Compose 烟测使用临时主密钥和唯一项目名，测试结束后容器、网络和卷均已清理；未安装 Docker 的其他开发机仍只能完成静态合同检查。
-- `R0-03` 的 Provider 配置、OpenAI-compatible 运行时适配器和脱敏 smoke runner 已实现；本地自定义端点 subprocess 链路及未配置/超时/限流/非 JSON 稳定错误测试已通过。2026-09-01 本机使用用户提供的可控 DeepSeek 凭据完成 `deepseek-v4-flash` 最小文本 smoke，凭据仅存在于进程环境，输出未包含提示词、回复正文或 API Key。
+- `R0-03` 的 Provider 配置、OpenAI-compatible 运行时适配器和脱敏 smoke runner 已实现；本地自定义端点 subprocess 链路及未配置/超时/限流/非 JSON 稳定错误测试已通过。当前矩阵验收以端点格式和可归一化返回为准：限流、额度不足或其他已收到的 Provider HTTP 错误返回 `response_received`，不要求真实业务成功。2026-09-01 本机使用用户提供的可控 DeepSeek 凭据完成 `deepseek-v4-flash` 最小文本 smoke，凭据仅存在于进程环境，输出未包含提示词、回复正文或 API Key。
 
 以下测试当前会在未配置 disposable 环境时跳过，不能把“跳过”写成“真实集成已验证”：PostgreSQL 元数据、S3-compatible 对象存储、KMS 主密钥和真实外部任务队列。所有真实集成测试必须使用可删除资源，证据和资源清理记录应附在对应功能验收中。
 
@@ -54,7 +54,7 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 | --- | --- | --- | --- |
 | R0-01 | 真实 disposable 集成回归：PostgreSQL 元数据、S3/MinIO 对象、KMS 主密钥和任务队列 | 可删除的本地容器或测试账号 | 统一 runner；测试日志包含成功和故障分支；测试结束资源为空；无 DSN/密钥泄露 |
 | R0-02 | 增加 Docker Compose 和可安装 `companion-server` CLI，确保 Python 模块、CLI、Compose、npm wrapper 行为一致 | R0-01 的后端配置契约 | 四种启动方式均通过 health/API smoke；README 给出一条跨平台启动命令 |
-| R0-03 | 真实 Provider smoke 和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过 `PAST_PARTNER_PROVIDER_SMOKE=1 python scripts/provider_smoke.py` 发起脱敏最小文本请求，验证 DeepSeek、小米、千问或 OpenAI 之一；未配置、超时、限流、非 JSON 均映射稳定错误；自定义 endpoint 可按文档运行 |
+| R0-03 | Provider 端点矩阵和自定义 OpenAI-compatible HTTP 运行时适配器 | P2-01/P2-02 已有目录和合同 | 通过 `PAST_PARTNER_PROVIDER_SMOKE=1 python scripts/provider_smoke.py` 发起脱敏最小文本请求，验证端点格式、请求链路和归一化返回；限流/额度不足等已收到响应记为 `response_received`，未配置、超时、不可达、非 JSON 仍映射稳定失败；自定义 endpoint 可按文档运行 |
 | R0-04 | 至少一个真实微调 Provider 适配器；未支持的供应商继续明确 `capability_not_supported` | P2-07 任务门控、授权、成本和取消合同 | 真实提交/查询/取消、工件 ID、评测、重试和远端清理均有测试；禁止用测试确定性适配器冒充生产训练 |
 
 ### R1：核心产品持久化和数据治理
@@ -79,9 +79,9 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 
 1. 本次跨电脑开发手册、路线图和 R2-01 整体验证完成后，优先执行 `R0-01`，使用统一 runner 把当前被跳过的真实 PostgreSQL/S3/KMS/队列验证补成可复核证据。
 2. `R0-01` 已完成后执行 `R0-02` 验证，确认 Docker Compose、安装 CLI、Python 模块和 npm wrapper 使用同一服务入口；本机已完成 Compose 运行证据，没有 Docker 的开发机仍须保留未执行状态，不以静态检查替代容器运行证据。
-3. 执行 `R0-03`，验证用户已选择的 DeepSeek、小米、阿里千问和自定义模型真实 HTTP 链路。
+3. 执行 `R0-03`，按端点格式和响应边界验证 DeepSeek、小米、阿里千问和自定义模型；没有额度时接受稳定的额度/限流响应，不要求真实业务成功。
 4. 执行 `R0-04`，再进入 R1 的持久化学习与数据治理；如果供应商暂不提供微调能力，保持明确不可用，不伪造成功。
-5. R1 完成后再做 `R2-02` 媒体模型、`R2-03` iOS 发布和商业化能力；支付、运营和合规 WORM 放在最后。
+5. R1 完成后再做 `R2-02` 媒体模型和商业化能力；iOS 的 `R2-03` 暂缓，待具备 macOS/Xcode 环境后再恢复。
 
 每个条目都使用独立 feature 分支，完成聚焦测试和全量回归后交用户验收；验收通过才合并 `main` 并推送远端。路线图本身不代表任务已开始或已验收。
 
@@ -89,13 +89,13 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 
 - R0-02 的 Docker Compose、可安装服务 CLI 和统一 smoke runner 已提供；当前验证分支已实测模块、CLI、npm 和 Compose 四个入口。Compose 要求显式提供 `PAST_PARTNER_MASTER_KEY`，smoke runner 会为每次运行生成可丢弃的密钥并使用唯一项目名，结束后清理自身资源；其他开发机仍需先安装 Docker Desktop 或兼容 Compose 的运行时。
 - R0-01 的本机 disposable PostgreSQL/S3/KMS/任务队列回归已完成；其他开发机若未配置可删除资源仍会安全跳过，不能把跳过结果写成真实集成证据。
-- R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，2026-09-01 已使用进程级可控凭据完成 DeepSeek `deepseek-v4-flash` 真实 smoke。其他供应商仍需各自的可撤销或可控额度测试凭据，不能以 DeepSeek 结果替代。
+- R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，2026-09-01 已使用进程级可控凭据完成 DeepSeek `deepseek-v4-flash` 真实 smoke。其他供应商矩阵只要求端点格式、请求链路和有界返回；额度不足、限流或 HTTP 错误只要确实收到 Provider 响应即可记为 `response_received`，不把无额度误记为业务成功，也不要求继续消耗真实额度。
 - 默认真实 Provider 仍主要声明文本 chat；R2-02 已为 OpenAI-compatible 适配器增加受目录 vision 能力约束的图像分析、通过 `*_OCR_MODELS` 显式开启的视觉 chat JSON OCR、通过 `*_AUDIO_MODELS` 显式开启的 `/audio/transcriptions` 音频转写，以及通过 `*_VIDEO_MODELS` + `*_VIDEO_ENDPOINT_PATH` 显式开启的 Provider 专用视频语义分析，流式和 Embedding 仍未完成；R0-04 仅为显式开启的千问模型增加原生微调能力。
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。真实百炼外部 smoke 已按用户决定暂缓，当前不把它写成已通过；后续恢复时仍需提供具备微调权限的可控凭据。
 - R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
 - R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
 - R1-03 当前已完成第二阶段：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离；OIDC 登录支持静态或 HTTPS URI JWKS，未知 `kid` 会按有界间隔刷新远程密钥，并按 issuer/subject/tenant 建立加密本地主体会话。远程 discovery、刷新令牌、账户恢复和正式租户管理仍待后续切片。迁移前创建的静态 OIDC 账户历史上没有 issuer 字段，迁移会将其置于 `local` 命名空间，不会自动关联到新的 OIDC issuer，需后续显式账户关联。
 - R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
-- R2-01 Android-first 后台上传、通知、模型选择持久化和会话恢复已完成分支实现及验证；仍受 Doze、电池策略、通知权限、网络约束和系统强停影响，不能视为 OS 级后台执行保证。iOS 目前只做 no-op 代码兼容和静态检查，未完成 Xcode archive/签名/真机/商店流程。
+- R2-01 Android-first 后台上传、通知、模型选择持久化和会话恢复已完成分支实现及验证；仍受 Doze、电池策略、通知权限、网络约束和系统强停影响，不能视为 OS 级后台执行保证。iOS 目前只做 no-op 代码兼容和静态检查，`R2-03` 发布链路按当前决定暂缓。
 - R2-04 Task 1-5 已完成代码基础：余额账本、订阅快照、审计链校验、数据主体通知和管理员运营摘要均使用现有 owner/角色/加密边界。支付 Provider webhook、真实账单对账、短信/邮件/Webhook 通知、监管 WORM、外部 SIEM、告警编排和完整运营后台仍未接入。
 - 审计、用量和指标是应用级基础，不等同于合规 WORM、支付、外部 SIEM 或完整运维监控。R1-04 已增加可独立启动的 worker、任务通知 outbox、测试 broker 契约以及共享后端的脱敏 worker 观测/内部告警计算；生产 broker、外部指标抓取/推送、追踪、日志外发和 SIEM 仍未完成。
