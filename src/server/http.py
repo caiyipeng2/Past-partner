@@ -96,6 +96,7 @@ _READY_PATH = "/api/v1/ready"
 _METRICS_PATH = "/api/v1/metrics"
 _OIDC_SESSION_PATH = "/api/v1/auth/oidc/session"
 _OIDC_REFRESH_PATH = "/api/v1/auth/oidc/refresh"
+_REVOKE_ALL_SESSIONS_PATH = "/api/v1/auth/sessions/revoke-all"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -220,6 +221,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             elif exc.code.startswith("auth_owner_record_"):
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             elif exc.code == "oidc_tls_required":
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+            elif exc.code in {"refresh_token_unavailable", "session_revocation_unavailable"}:
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             else:
                 status = HTTPStatus.UNAUTHORIZED
@@ -697,6 +700,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     self.client_address[0],
                 ),
             )
+        elif path == _REVOKE_ALL_SESSIONS_PATH:
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.revoke_all_sessions(self.owner_id),
+            )
         elif path == "/api/v1/auth/session":
             self._json(
                 HTTPStatus.CREATED,
@@ -1115,6 +1123,8 @@ def _route_template(target: str) -> str:
             return _BILLING_ENTRIES_PATH
         if path == _SUBSCRIPTION_PATH:
             return _SUBSCRIPTION_PATH
+        if path == _REVOKE_ALL_SESSIONS_PATH:
+            return _REVOKE_ALL_SESSIONS_PATH
         if path == _READY_PATH:
             return _READY_PATH
         if path == _METRICS_PATH:

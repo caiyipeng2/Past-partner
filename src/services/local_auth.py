@@ -28,6 +28,7 @@ from src.services.metadata_store import (
     MetadataConnection,
     MetadataIntegrityError,
     MetadataStore,
+    MetadataStoreError,
     require_metadata_store,
 )
 from src.services.oidc_verifier import OidcClaims
@@ -326,77 +327,81 @@ class LocalAuthService:
         next_refresh_token = secrets.token_urlsafe(48)
         access_expires_at = now + self.session_ttl
         refresh_expires_at = now + self._DEFAULT_REFRESH_TTL
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT r.user_id, r.expires_at, r.used_at, r.scopes,
-                       u.kind, u.record_version, u.encrypted_payload,
-                       i.issuer, i.tenant_id, i.subject, i.role
-                FROM oidc_refresh_tokens AS r
-                JOIN local_users AS u ON u.id = r.user_id
-                JOIN local_identities AS i ON i.user_id = r.user_id
-                WHERE r.token_hash = ?
-                """,
-                (token_hash,),
-            ).fetchone()
-            if (
-                row is None
-                or row[4] != "member"
-                or row[7] == "local"
-                or row[2] is not None
-                or str(row[1]) <= now.isoformat()
-            ):
-                connection.rollback()
-                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
-            identity = {
-                "user_id": str(row[0]),
-                "issuer": str(row[7]),
-                "tenant_id": str(row[8]),
-                "subject": str(row[9]),
-                "role": str(row[10]),
-            }
-            try:
-                self._decode_account(identity, row[5], row[6])
-                scope_set = AccessScopes.parse(str(row[3]))
-            except (LocalAuthError, AccessScopeError, TypeError, ValueError) as exc:
-                connection.rollback()
-                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid") from exc
-            updated = connection.execute(
-                "UPDATE oidc_refresh_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL",
-                (now.isoformat(), token_hash),
-            )
-            if getattr(updated, "rowcount", 0) != 1:
-                connection.rollback()
-                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
-            connection.execute(
-                """
-                INSERT INTO local_sessions
-                    (token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes)
-                VALUES (?, ?, ?, 'oidc', NULL, ?)
-                """,
-                (
-                    self._token_hash(access_token),
-                    identity["user_id"],
-                    access_expires_at.isoformat(),
-                    scope_set.serialize(),
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO oidc_refresh_tokens
-                    (token_hash, user_id, expires_at, used_at, scopes, created_at)
-                VALUES (?, ?, ?, NULL, ?, ?)
-                """,
-                (
-                    self._token_hash(next_refresh_token),
-                    identity["user_id"],
-                    refresh_expires_at.isoformat(),
-                    scope_set.serialize(),
-                    now.isoformat(),
-                ),
-            )
-            connection.commit()
+        try:
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT r.user_id, r.expires_at, r.used_at, r.scopes,
+                           u.kind, u.record_version, u.encrypted_payload,
+                           i.issuer, i.tenant_id, i.subject, i.role
+                    FROM oidc_refresh_tokens AS r
+                    JOIN local_users AS u ON u.id = r.user_id
+                    JOIN local_identities AS i ON i.user_id = r.user_id
+                    WHERE r.token_hash = ?
+                    """,
+                    (token_hash,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row[4] != "member"
+                    or row[7] == "local"
+                    or row[2] is not None
+                    or not self._expires_after(row[1], now)
+                ):
+                    raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
+                identity = {
+                    "user_id": str(row[0]),
+                    "issuer": str(row[7]),
+                    "tenant_id": str(row[8]),
+                    "subject": str(row[9]),
+                    "role": str(row[10]),
+                }
+                try:
+                    self._decode_account(identity, row[5], row[6])
+                    scope_set = AccessScopes.parse(str(row[3]))
+                except (LocalAuthError, AccessScopeError, TypeError, ValueError) as exc:
+                    raise LocalAuthError("refresh_token_invalid", "refresh token is invalid") from exc
+                updated = connection.execute(
+                    "UPDATE oidc_refresh_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL",
+                    (now.isoformat(), token_hash),
+                )
+                if getattr(updated, "rowcount", 0) != 1:
+                    raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
+                connection.execute(
+                    """
+                    INSERT INTO local_sessions
+                        (token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes)
+                    VALUES (?, ?, ?, 'oidc', NULL, ?)
+                    """,
+                    (
+                        self._token_hash(access_token),
+                        identity["user_id"],
+                        access_expires_at.isoformat(),
+                        scope_set.serialize(),
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO oidc_refresh_tokens
+                        (token_hash, user_id, expires_at, used_at, scopes, created_at)
+                    VALUES (?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        self._token_hash(next_refresh_token),
+                        identity["user_id"],
+                        refresh_expires_at.isoformat(),
+                        scope_set.serialize(),
+                        now.isoformat(),
+                    ),
+                )
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "refresh_token_unavailable", "refresh token service is unavailable"
+            ) from exc
         return {
             "access_token": access_token,
             "refresh_token": next_refresh_token,
@@ -408,6 +413,31 @@ class LocalAuthService:
             "role": identity["role"],
             "expires_at": access_expires_at.isoformat(),
             "scopes": scope_set.serialize(),
+        }
+
+    def revoke_all_sessions(self, user_id: str) -> dict[str, int]:
+        """Revoke every local session and OIDC refresh token for one account."""
+
+        try:
+            identity = self._load_identity(user_id)
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                revoked_sessions = connection.execute(
+                    "DELETE FROM local_sessions WHERE user_id = ?",
+                    (identity["user_id"],),
+                ).rowcount
+                revoked_refresh_tokens = connection.execute(
+                    "DELETE FROM oidc_refresh_tokens WHERE user_id = ?",
+                    (identity["user_id"],),
+                ).rowcount
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "session_revocation_unavailable", "session revocation is unavailable"
+            ) from exc
+        return {
+            "revoked_sessions": max(0, int(revoked_sessions)),
+            "revoked_refresh_tokens": max(0, int(revoked_refresh_tokens)),
         }
 
     def _issue_session(
@@ -691,6 +721,18 @@ class LocalAuthService:
     @staticmethod
     def _token_hash(token: str) -> bytes:
         return hashlib.sha256(token.encode("utf-8")).digest()
+
+    @staticmethod
+    def _expires_after(value: object, now: datetime) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            expires_at = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return False
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            return False
+        return expires_at.astimezone(UTC) > now
 
     @classmethod
     def _aad(cls, owner_id: str) -> bytes:

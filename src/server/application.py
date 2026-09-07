@@ -390,6 +390,9 @@ class Application:
     def refresh_oidc_session(self, refresh_token: str, remote_address: str) -> dict[str, Any]:
         return self.auth.refresh_oidc_session(refresh_token, remote_address=remote_address)
 
+    def revoke_all_sessions(self, user_id: str) -> dict[str, int]:
+        return self.auth.revoke_all_sessions(user_id)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 

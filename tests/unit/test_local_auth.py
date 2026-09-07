@@ -17,6 +17,7 @@ from src.services.local_auth import LocalAuthError, LocalAuthService
 from src.services.oidc_verifier import OidcClaims
 from src.server.config import DevicePairingSettings
 from src.services.master_key import MASTER_KEY_BYTES, MASTER_KEY_ENV_VAR, EnvironmentMasterKeyProvider
+from src.services.metadata_store import MetadataStoreError
 
 
 class LocalAuthTests(unittest.TestCase):
@@ -294,11 +295,7 @@ class LocalAuthTests(unittest.TestCase):
 
         class _Connection:
             def __init__(self) -> None:
-                self.raw = sqlite3.connect(self.database_path)
-
-            @property
-            def database_path(self):
-                return self_path
+                self.raw = sqlite3.connect(self_path)
 
             @property
             def in_transaction(self) -> bool:
@@ -319,7 +316,7 @@ class LocalAuthTests(unittest.TestCase):
                 self.raw.close()
 
         self_path = self.database_path
-        with patch.object(auth, "_connect", return_value=_Connection()):
+        with patch.object(auth.metadata_store, "connect", return_value=_Connection()):
             with self.assertRaises(LocalAuthError) as captured:
                 auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
 
@@ -351,6 +348,87 @@ class LocalAuthTests(unittest.TestCase):
             auth.refresh_oidc_session(refresh_token, remote_address="127.0.0.1")
 
         self.assertEqual("refresh_token_invalid", captured.exception.code)
+
+    def test_oidc_refresh_rejects_malformed_expiration_timestamp(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        session = auth.issue_oidc_session(
+            OidcClaims(
+                "https://issuer.example",
+                "malformed-expiry",
+                "past-partner",
+                "tenant-a",
+                datetime.now(UTC) + timedelta(minutes=5),
+            ),
+            remote_address="127.0.0.1",
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE oidc_refresh_tokens SET expires_at = ?",
+                ("not-an-iso-timestamp",),
+            )
+            connection.commit()
+
+        with self.assertRaises(LocalAuthError) as captured:
+            auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+
+        self.assertEqual("refresh_token_invalid", captured.exception.code)
+
+    def test_oidc_refresh_maps_metadata_failure_to_stable_error(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        session = auth.issue_oidc_session(
+            OidcClaims(
+                "https://issuer.example",
+                "metadata-failure",
+                "past-partner",
+                "tenant-a",
+                datetime.now(UTC) + timedelta(minutes=5),
+            ),
+            remote_address="127.0.0.1",
+        )
+        with patch.object(
+            auth.metadata_store,
+            "transaction",
+            side_effect=MetadataStoreError("metadata_operational_error", "driver detail"),
+        ):
+            with self.assertRaises(LocalAuthError) as captured:
+                auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+
+        self.assertEqual("refresh_token_unavailable", captured.exception.code)
+
+    def test_revoke_all_sessions_invalidates_access_and_refresh_tokens(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        oidc_session = auth.issue_oidc_session(
+            OidcClaims(
+                "https://issuer.example",
+                "revoke-user",
+                "past-partner",
+                "tenant-a",
+                datetime.now(UTC) + timedelta(minutes=5),
+            ),
+            remote_address="127.0.0.1",
+        )
+
+        revoked = auth.revoke_all_sessions(oidc_session["user_id"])
+
+        self.assertEqual(1, revoked["revoked_sessions"])
+        self.assertEqual(1, revoked["revoked_refresh_tokens"])
+        with self.assertRaises(LocalAuthError):
+            auth.authenticate(f"Bearer {oidc_session['access_token']}")
+        with self.assertRaises(LocalAuthError) as refresh_error:
+            auth.refresh_oidc_session(oidc_session["refresh_token"], remote_address="127.0.0.1")
+        self.assertEqual("refresh_token_invalid", refresh_error.exception.code)
+
+    def test_revoke_all_sessions_maps_metadata_failure_to_stable_error(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        with patch.object(
+            auth.metadata_store,
+            "connect",
+            side_effect=MetadataStoreError("metadata_operational_error", "driver detail"),
+        ):
+            with self.assertRaises(LocalAuthError) as captured:
+                auth.revoke_all_sessions("missing-or-unavailable")
+
+        self.assertEqual("session_revocation_unavailable", captured.exception.code)
 
     def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
