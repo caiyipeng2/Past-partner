@@ -13,6 +13,7 @@ from src.services.oidc_verifier import (
     OidcClaims,
     OidcVerifier,
     _NoRedirectHandler,
+    _fetch_oidc_discovery,
     _fetch_remote_jwks,
 )
 
@@ -192,6 +193,58 @@ class OidcVerifierTests(unittest.TestCase):
 
         self.assertEqual("rotated-user", verifier.verify(self._token_with_key(rotated_key, "key-2")).subject)
 
+    def test_oidc_discovery_resolves_matching_issuer_and_jwks_uri(self) -> None:
+        rotated_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        discovery_calls: list[str] = []
+        jwks_calls: list[str] = []
+
+        def discover(uri: str) -> dict[str, object]:
+            discovery_calls.append(uri)
+            return {
+                "issuer": self.issuer,
+                "jwks_uri": "https://issuer.example/discovered-jwks",
+            }
+
+        def fetch(uri: str) -> dict[str, object]:
+            jwks_calls.append(uri)
+            return self._jwks_for_key(rotated_key, "key-2")
+
+        verifier = OidcVerifier(
+            issuer=self.issuer,
+            audience=self.audience,
+            jwks={},
+            discovery_uri="https://issuer.example/.well-known/openid-configuration",
+            discovery_fetcher=discover,
+            jwks_fetcher=fetch,
+            clock=lambda: self.now,
+        )
+
+        self.assertEqual("rotated-user", verifier.verify(self._token_with_key(rotated_key, "key-2")).subject)
+        self.assertEqual(
+            ["https://issuer.example/.well-known/openid-configuration"],
+            discovery_calls,
+        )
+        self.assertEqual(["https://issuer.example/discovered-jwks"], jwks_calls)
+
+    def test_oidc_discovery_rejects_issuer_drift_without_fetching_keys(self) -> None:
+        verifier = OidcVerifier(
+            issuer=self.issuer,
+            audience=self.audience,
+            jwks={},
+            discovery_uri="https://issuer.example/.well-known/openid-configuration",
+            discovery_fetcher=lambda _uri: {
+                "issuer": "https://other.example",
+                "jwks_uri": "https://other.example/jwks",
+            },
+            jwks_fetcher=lambda _uri: self.jwks,
+            clock=lambda: self.now,
+        )
+
+        with self.assertRaises(OidcAuthError) as captured:
+            verifier.verify(self._token_with_key(self.private_key, "missing"))
+
+        self.assertEqual("oidc_configuration_invalid", captured.exception.code)
+
     def test_remote_jwks_failure_is_stable_and_refresh_is_throttled(self) -> None:
         calls: list[str] = []
 
@@ -239,10 +292,29 @@ class OidcVerifierTests(unittest.TestCase):
                 _fetch_remote_jwks("https://issuer.example/jwks")
         self.assertEqual("oidc_keys_unavailable", captured.exception.code)
 
+    def test_default_oidc_discovery_fetch_rejects_oversized_payload(self) -> None:
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit: int) -> bytes:
+                return b"x" * (256 * 1024 + 1)
+
+        from unittest.mock import patch
+
+        with patch("src.services.oidc_verifier._REMOTE_JWKS_OPENER.open", return_value=_Response()):
+            with self.assertRaises(OidcAuthError) as captured:
+                _fetch_oidc_discovery("https://issuer.example/.well-known/openid-configuration")
+        self.assertEqual("oidc_keys_unavailable", captured.exception.code)
+
     def test_remote_jwks_redirect_is_rejected(self) -> None:
         with self.assertRaises(OidcAuthError) as captured:
             _NoRedirectHandler().redirect_request(None, "http://127.0.0.1/private", 302, "redirect", {})
         self.assertEqual("oidc_keys_unavailable", captured.exception.code)
+
 
 
 if __name__ == "__main__":

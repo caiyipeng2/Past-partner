@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.support.tls_fixtures import create_server_certificate
-from src.server.config import ServerConfig
+from src.server.config import ConfigurationError, ServerConfig
 
 
 def _token() -> str:
@@ -251,6 +251,46 @@ class ServerConfigTests(unittest.TestCase):
         ).validated()
 
         self.assertEqual("https://issuer.example/.well-known/jwks.json", config.oidc_jwks_uri)
+
+    def test_oidc_discovery_uri_is_loaded_from_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PAST_PARTNER_OIDC_ISSUER": "https://issuer.example",
+                "PAST_PARTNER_OIDC_AUDIENCE": "past-partner",
+                "PAST_PARTNER_OIDC_DISCOVERY_URI": "https://issuer.example/.well-known/openid-configuration",
+            },
+            clear=True,
+        ):
+            config = ServerConfig.from_env()
+
+        self.assertEqual(
+            "https://issuer.example/.well-known/openid-configuration",
+            config.oidc_discovery_uri,
+        )
+
+    def test_oidc_config_accepts_https_discovery_uri_without_jwks(self) -> None:
+        config = ServerConfig(
+            oidc_issuer="https://issuer.example",
+            oidc_audience="past-partner",
+            oidc_discovery_uri="https://issuer.example/.well-known/openid-configuration",
+        ).validated()
+
+        self.assertEqual(
+            "https://issuer.example/.well-known/openid-configuration",
+            config.oidc_discovery_uri,
+        )
+
+    def test_oidc_config_rejects_discovery_with_explicit_jwks_source(self) -> None:
+        with self.assertRaises(ConfigurationError) as captured:
+            ServerConfig(
+                oidc_issuer="https://issuer.example",
+                oidc_audience="past-partner",
+                oidc_jwks_uri="https://issuer.example/jwks",
+                oidc_discovery_uri="https://issuer.example/.well-known/openid-configuration",
+            ).validated()
+
+        self.assertEqual("oidc_configuration_conflict", captured.exception.code)
 
         with self.assertRaises(ValueError) as insecure:
             ServerConfig(
