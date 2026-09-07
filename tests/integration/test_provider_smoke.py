@@ -103,6 +103,7 @@ class _OpenAICompatibleHandler(BaseHTTPRequestHandler):
 
 class ProviderSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
+        _OpenAICompatibleHandler.response_status = 200
         _OpenAICompatibleHandler.request_body = None
         _OpenAICompatibleHandler.request_authorization = None
         _OpenAICompatibleHandler.multipart_fields = None
@@ -213,6 +214,47 @@ class ProviderSmokeTests(unittest.TestCase):
         self.assertNotIn("smoke-secret", result.stdout)
         self.assertEqual("smoke-model", _OpenAICompatibleHandler.request_body["model"])
         self.assertEqual("Bearer smoke-secret", _OpenAICompatibleHandler.request_authorization)
+
+    def test_provider_smoke_accepts_a_provider_quota_response(self) -> None:
+        port = self.server.server_address[1]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PAST_PARTNER_PROVIDER_SMOKE": "1",
+                "PAST_PARTNER_PROVIDER_SMOKE_PROVIDER": "custom_openai",
+                "PAST_PARTNER_PROVIDER_SMOKE_MODEL": "smoke-model",
+                "PAST_PARTNER_CUSTOM_OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
+                "PAST_PARTNER_CUSTOM_OPENAI_API_KEY": "smoke-secret",
+                "PAST_PARTNER_CUSTOM_OPENAI_MODELS": "smoke-model",
+            }
+        )
+        _OpenAICompatibleHandler.response_status = 429
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--provider",
+                "custom_openai",
+                "--model",
+                "smoke-model",
+                "--prompt",
+                "secret prompt",
+            ],
+            cwd=Path.cwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("response_received", payload["status"])
+        self.assertEqual("provider_rate_limited", payload["provider_error"])
+        self.assertNotIn("secret prompt", result.stdout)
+        self.assertNotIn("smoke-secret", result.stdout)
 
     def test_custom_openai_image_analysis_crosses_real_http_transport(self) -> None:
         port = self.server.server_address[1]

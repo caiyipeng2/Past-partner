@@ -76,7 +76,7 @@ class ProviderSmokeScriptTests(unittest.TestCase):
         self.assertEqual(2, result)
         self.assertEqual("provider_not_configured", json.loads(unavailable_output.getvalue())["status"])
 
-        for code in ("provider_timeout", "provider_rate_limited", "invalid_provider_response"):
+        for code in ("provider_timeout", "invalid_provider_response"):
             with self.subTest(code=code):
                 output = io.StringIO()
                 with patch.dict(os.environ, {"PAST_PARTNER_PROVIDER_SMOKE": "1"}, clear=False):
@@ -99,6 +99,32 @@ class ProviderSmokeScriptTests(unittest.TestCase):
                 rendered = output.getvalue()
                 self.assertEqual(code, json.loads(rendered)["status"])
                 self.assertNotIn("provider secret detail", rendered)
+
+    def test_provider_response_errors_are_accepted_as_endpoint_validation(self) -> None:
+        for code in ("provider_rate_limited", "provider_http_error"):
+            with self.subTest(code=code):
+                output = io.StringIO()
+                with patch.dict(os.environ, {"PAST_PARTNER_PROVIDER_SMOKE": "1"}, clear=False):
+                    with patch.object(
+                        provider_smoke,
+                        "build_provider_adapters",
+                        return_value={"deepseek": _FakeAdapter()},
+                    ):
+                        with patch.object(
+                            provider_smoke.ProviderGateway,
+                            "chat",
+                            side_effect=provider_smoke.ProviderError(code, "quota or provider detail"),
+                        ):
+                            with contextlib.redirect_stdout(output):
+                                result = provider_smoke.main(
+                                    ["--provider", "deepseek", "--model", "deepseek-v4-flash"]
+                                )
+
+                self.assertEqual(0, result)
+                payload = json.loads(output.getvalue())
+                self.assertEqual("response_received", payload["status"])
+                self.assertEqual(code, payload["provider_error"])
+                self.assertNotIn("quota or provider detail", output.getvalue())
 
 
 if __name__ == "__main__":

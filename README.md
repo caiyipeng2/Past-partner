@@ -236,4 +236,4 @@ $env:PAST_PARTNER_PROVIDER_SMOKE_PROVIDER = "deepseek"
 python scripts/provider_smoke.py
 ```
 
-也可以将 provider 设为 `openai`、`xiaomi_mimo`、`qwen`、`ollama` 或 `custom_openai`，自定义端点需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和 `PAST_PARTNER_CUSTOM_OPENAI_MODELS`，API Key 仅在端点要求认证时配置。未配置、超时、限流和非 JSON 响应会在 Provider 网关边界转换为稳定错误码；真实 smoke 必须使用可撤销或可控额度的测试凭据。
+也可以将 provider 设为 `openai`、`xiaomi_mimo`、`qwen`、`ollama` 或 `custom_openai`，自定义端点需要配置 `PAST_PARTNER_CUSTOM_OPENAI_BASE_URL` 和 `PAST_PARTNER_CUSTOM_OPENAI_MODELS`，API Key 仅在端点要求认证时配置。未配置、超时、不可达和非 JSON 响应会在 Provider 网关边界转换为稳定失败；限流、额度不足或其他已收到的 HTTP 错误会输出脱敏的 `response_received`，用于确认端点格式和返回链路，不代表业务调用成功。当前矩阵验证不要求继续消耗真实额度。

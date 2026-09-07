@@ -23,6 +23,21 @@ from src.providers.configuration import build_provider_adapters
 from src.providers.gateway import ProviderError, ProviderGateway
 
 
+# A provider can prove that the configured endpoint is reachable while refusing
+# the request because the account has no quota, requires billing, or is rate
+# limited.  R0-03 validates the endpoint contract, so these stable response
+# errors are successful smoke evidence; transport failures and malformed JSON
+# remain hard failures.
+_RESPONSE_RECEIVED_ERRORS = frozenset(
+    {
+        "provider_http_error",
+        "provider_rate_limited",
+        "provider_quota_exhausted",
+        "provider_insufficient_quota",
+    }
+)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one redacted real-provider text smoke")
     parser.add_argument(
@@ -79,6 +94,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         response = gateway.chat(request)
     except ProviderError as exc:
+        if exc.code in _RESPONSE_RECEIVED_ERRORS:
+            _print_result(
+                "response_received",
+                provider=args.provider,
+                model=model_id,
+                provider_error=exc.code,
+            )
+            return 0
         _print_result(exc.code, provider=args.provider, model=model_id)
         return 2
     except Exception:
