@@ -387,6 +387,9 @@ class Application:
         claims: OidcClaims = self.oidc_verifier.verify(id_token)
         return self.auth.issue_oidc_session(claims, remote_address=remote_address)
 
+    def refresh_oidc_session(self, refresh_token: str, remote_address: str) -> dict[str, Any]:
+        return self.auth.refresh_oidc_session(refresh_token, remote_address=remote_address)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 
@@ -694,6 +697,9 @@ class Application:
                 counts["sessions"] = connection.execute(
                     "DELETE FROM local_sessions WHERE user_id = ?", (owner_id,)
                 ).rowcount
+                connection.execute(
+                    "DELETE FROM oidc_refresh_tokens WHERE user_id = ?", (owner_id,)
+                )
                 receipt = self.deletion_receipts.create(counts, connection=connection)
                 if self.notifications is not None:
                     self.notifications.record_deletion(

@@ -101,6 +101,7 @@ class LocalAuthService:
     _USER_RECORD_VERSION = 1
     _USER_AAD_PREFIX = "past-partner/local-user/v1/"
     _DEFAULT_SESSION_TTL = timedelta(hours=24)
+    _DEFAULT_REFRESH_TTL = timedelta(days=30)
     _IDENTIFIER_MAX_LENGTH = 256
     _ACCOUNT_ROLES = frozenset({"admin", "member"})
 
@@ -304,6 +305,111 @@ class LocalAuthService:
         self._load_identity(user_id)
         return self._issue_session(user_id, scope_set)
 
+    def refresh_oidc_session(self, refresh_token: str, *, remote_address: str) -> dict[str, str]:
+        """Rotate one OIDC refresh token exactly once.
+
+        Refresh tokens are bearer credentials, so only their SHA-256 hashes are
+        persisted. Rotation and access-session issuance share one transaction;
+        a replay cannot mint another session even when requests race.
+        """
+
+        if (
+            not isinstance(refresh_token, str)
+            or not refresh_token
+            or len(refresh_token) > 256
+            or remote_address is None
+        ):
+            raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
+        now = datetime.now(UTC)
+        token_hash = self._token_hash(refresh_token)
+        access_token = secrets.token_urlsafe(32)
+        next_refresh_token = secrets.token_urlsafe(48)
+        access_expires_at = now + self.session_ttl
+        refresh_expires_at = now + self._DEFAULT_REFRESH_TTL
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT r.user_id, r.expires_at, r.used_at, r.scopes,
+                       u.kind, u.record_version, u.encrypted_payload,
+                       i.issuer, i.tenant_id, i.subject, i.role
+                FROM oidc_refresh_tokens AS r
+                JOIN local_users AS u ON u.id = r.user_id
+                JOIN local_identities AS i ON i.user_id = r.user_id
+                WHERE r.token_hash = ?
+                """,
+                (token_hash,),
+            ).fetchone()
+            if (
+                row is None
+                or row[4] != "member"
+                or row[7] == "local"
+                or row[2] is not None
+                or str(row[1]) <= now.isoformat()
+            ):
+                connection.rollback()
+                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
+            identity = {
+                "user_id": str(row[0]),
+                "issuer": str(row[7]),
+                "tenant_id": str(row[8]),
+                "subject": str(row[9]),
+                "role": str(row[10]),
+            }
+            try:
+                self._decode_account(identity, row[5], row[6])
+                scope_set = AccessScopes.parse(str(row[3]))
+            except (LocalAuthError, AccessScopeError, TypeError, ValueError) as exc:
+                connection.rollback()
+                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid") from exc
+            updated = connection.execute(
+                "UPDATE oidc_refresh_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL",
+                (now.isoformat(), token_hash),
+            )
+            if getattr(updated, "rowcount", 0) != 1:
+                connection.rollback()
+                raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
+            connection.execute(
+                """
+                INSERT INTO local_sessions
+                    (token_hash, user_id, expires_at, session_origin, pairing_token_fingerprint, scopes)
+                VALUES (?, ?, ?, 'oidc', NULL, ?)
+                """,
+                (
+                    self._token_hash(access_token),
+                    identity["user_id"],
+                    access_expires_at.isoformat(),
+                    scope_set.serialize(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO oidc_refresh_tokens
+                    (token_hash, user_id, expires_at, used_at, scopes, created_at)
+                VALUES (?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    self._token_hash(next_refresh_token),
+                    identity["user_id"],
+                    refresh_expires_at.isoformat(),
+                    scope_set.serialize(),
+                    now.isoformat(),
+                ),
+            )
+            connection.commit()
+        return {
+            "access_token": access_token,
+            "refresh_token": next_refresh_token,
+            "token_type": "Bearer",
+            "owner_id": identity["user_id"],
+            "user_id": identity["user_id"],
+            "tenant_id": identity["tenant_id"],
+            "subject": identity["subject"],
+            "role": identity["role"],
+            "expires_at": access_expires_at.isoformat(),
+            "scopes": scope_set.serialize(),
+        }
+
     def _issue_session(
         self,
         user_id: str,
@@ -317,6 +423,8 @@ class LocalAuthService:
         expires_at = issued_at + ttl
         token = secrets.token_urlsafe(32)
         token_hash = self._token_hash(token)
+        refresh_token = secrets.token_urlsafe(48) if session_origin == "oidc" else None
+        refresh_expires_at = issued_at + self._DEFAULT_REFRESH_TTL if refresh_token else None
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -338,9 +446,24 @@ class LocalAuthService:
                     scope_set.serialize(),
                 ),
             )
+            if refresh_token is not None and refresh_expires_at is not None:
+                connection.execute(
+                    """
+                    INSERT INTO oidc_refresh_tokens
+                        (token_hash, user_id, expires_at, used_at, scopes, created_at)
+                    VALUES (?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        self._token_hash(refresh_token),
+                        user_id,
+                        refresh_expires_at.isoformat(),
+                        scope_set.serialize(),
+                        issued_at.isoformat(),
+                    ),
+                )
             connection.commit()
         identity = self._load_identity(user_id)
-        return {
+        result = {
             "access_token": token,
             "token_type": "Bearer",
             "owner_id": user_id,
@@ -351,6 +474,9 @@ class LocalAuthService:
             "expires_at": expires_at.isoformat(),
             "scopes": scope_set.serialize(),
         }
+        if refresh_token is not None:
+            result["refresh_token"] = refresh_token
+        return result
 
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         token = self._parse_bearer(authorization)

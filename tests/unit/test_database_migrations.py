@@ -69,13 +69,14 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (22, "oidc_sessions"),
                 (23, "identity_issuers"),
                 (24, "data_subject_notifications"),
+                (25, "oidc_refresh_tokens"),
             ],
             rows,
         )
         with closing(sqlite3.connect(self.database_path)) as connection:
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
-                "AND name IN ('personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings', 'data_subject_notifications') ORDER BY name"
+                "AND name IN ('personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings', 'data_subject_notifications', 'oidc_refresh_tokens') ORDER BY name"
             ).fetchall()
         self.assertEqual(
             [
@@ -83,6 +84,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 ("billing_entries",),
                 ("data_subject_notifications",),
                 ("long_term_memories",),
+                ("oidc_refresh_tokens",),
                 ("personas",),
                 ("style_profiles",),
                 ("subscription_bindings",),

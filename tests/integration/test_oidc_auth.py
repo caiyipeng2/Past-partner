@@ -123,6 +123,32 @@ class OidcAuthHttpTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual([], personas["personas"])
 
+    def test_oidc_refresh_rotates_once_and_rejects_replay(self) -> None:
+        status, session = self._request(
+            "POST",
+            "/api/v1/auth/oidc/session",
+            {"id_token": self._token()},
+        )
+        self.assertEqual(201, status)
+        self.assertIn("refresh_token", session)
+
+        status, rotated = self._request(
+            "POST",
+            "/api/v1/auth/oidc/refresh",
+            {"refresh_token": session["refresh_token"]},
+        )
+        self.assertEqual(201, status)
+        self.assertNotEqual(session["access_token"], rotated["access_token"])
+        self.assertNotEqual(session["refresh_token"], rotated["refresh_token"])
+
+        status, replay = self._request(
+            "POST",
+            "/api/v1/auth/oidc/refresh",
+            {"refresh_token": session["refresh_token"]},
+        )
+        self.assertEqual(401, status)
+        self.assertEqual("refresh_token_invalid", replay["error"]["code"])
+
     def test_oidc_session_rejects_expired_token_without_echoing_it(self) -> None:
         token = self._token(expires=self.now - timedelta(seconds=1))
 

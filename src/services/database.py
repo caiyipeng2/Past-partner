@@ -128,6 +128,8 @@ def _backfill_audit_chain(connection: object) -> None:
 # Version 24 adds encrypted owner-scoped data-subject notifications. Queryable columns
 # contain only lifecycle routing and retry metadata; operation counts and IDs remain
 # inside the authenticated envelope alongside the same bounded public representation.
+# Version 25 adds one-time OIDC refresh-token hashes; bearer values never enter
+# metadata, and local owner/device sessions remain on the existing session table.
 DEFAULT_MIGRATIONS = (
     Migration(version=1, name="bootstrap_schema", statements=()),
     Migration(
@@ -656,6 +658,23 @@ DEFAULT_MIGRATIONS = (
             """,
             "CREATE INDEX data_subject_notifications_owner_cursor_idx "
             "ON data_subject_notifications(owner_id, occurred_at, id)",
+        ),
+    ),
+    Migration(
+        version=25,
+        name="oidc_refresh_tokens",
+        statements=(
+            """
+            CREATE TABLE oidc_refresh_tokens (
+                token_hash BLOB PRIMARY KEY CHECK (length(token_hash) = 32),
+                user_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                scopes TEXT NOT NULL CHECK (length(scopes) > 0),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX oidc_refresh_tokens_user_idx ON oidc_refresh_tokens(user_id, expires_at)",
         ),
     ),
 )

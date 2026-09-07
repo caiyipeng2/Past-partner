@@ -95,6 +95,7 @@ _DATA_DELETION_PATH = "/api/v1/data-deletion"
 _READY_PATH = "/api/v1/ready"
 _METRICS_PATH = "/api/v1/metrics"
 _OIDC_SESSION_PATH = "/api/v1/auth/oidc/session"
+_OIDC_REFRESH_PATH = "/api/v1/auth/oidc/refresh"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -682,6 +683,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     self.client_address[0],
                 ),
             )
+        elif path == _OIDC_REFRESH_PATH:
+            body = self._json_body()
+            refresh_token = body.get("refresh_token")
+            if not isinstance(refresh_token, str) or not refresh_token.strip():
+                raise RequestValidationError("refresh_token_required", "refresh_token is required")
+            if self.server.config.mode == "production" and not self.server.is_tls:
+                raise LocalAuthError("oidc_tls_required", "OIDC refresh requires TLS")
+            self._json(
+                HTTPStatus.CREATED,
+                self.server.application.refresh_oidc_session(
+                    refresh_token,
+                    self.client_address[0],
+                ),
+            )
         elif path == "/api/v1/auth/session":
             self._json(
                 HTTPStatus.CREATED,
@@ -959,6 +974,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             _READY_PATH,
             "/api/v1/auth/session",
             _OIDC_SESSION_PATH,
+            _OIDC_REFRESH_PATH,
         }
 
     def _json(self, status: HTTPStatus, value: Any) -> None:
