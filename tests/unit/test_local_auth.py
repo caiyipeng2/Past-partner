@@ -430,6 +430,38 @@ class LocalAuthTests(unittest.TestCase):
 
         self.assertEqual("session_revocation_unavailable", captured.exception.code)
 
+    def test_tenant_member_listing_and_revocation_are_admin_and_tenant_scoped(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("tenant-admin", tenant_id="tenant-a", role="admin")
+        member = auth.create_local_account("tenant-member", tenant_id="tenant-a", role="member")
+        other = auth.create_local_account("other-member", tenant_id="tenant-b", role="member")
+        member_session = auth.issue_account_session(member["user_id"])
+        other_session = auth.issue_account_session(other["user_id"])
+
+        listed = auth.list_tenant_members(admin["user_id"])
+        self.assertEqual([member["user_id"]], [item["user_id"] for item in listed])
+        self.assertEqual("tenant-a", listed[0]["tenant_id"])
+        self.assertEqual("member", listed[0]["role"])
+        self.assertNotIn("encrypted_payload", listed[0])
+
+        revoked = auth.revoke_tenant_member_sessions(admin["user_id"], member["user_id"])
+        self.assertEqual(1, revoked["revoked_sessions"])
+        with self.assertRaises(LocalAuthError):
+            auth.authenticate(f"Bearer {member_session['access_token']}")
+        auth.authenticate(f"Bearer {other_session['access_token']}")
+        with self.assertRaises(LocalAuthError) as cross_tenant:
+            auth.revoke_tenant_member_sessions(admin["user_id"], other["user_id"])
+        self.assertEqual("tenant_member_not_found", cross_tenant.exception.code)
+
+    def test_tenant_member_listing_rejects_non_admin_identity(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        member = auth.create_local_account("tenant-member-only", tenant_id="tenant-a", role="member")
+
+        with self.assertRaises(LocalAuthError) as captured:
+            auth.list_tenant_members(member["user_id"])
+
+        self.assertEqual("tenant_admin_required", captured.exception.code)
+
     def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
         auth.create_local_account("oidc:duplicate")

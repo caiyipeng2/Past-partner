@@ -306,6 +306,81 @@ class LocalAuthService:
         self._load_identity(user_id)
         return self._issue_session(user_id, scope_set)
 
+    def list_tenant_members(self, actor_user_id: str, *, limit: int = 100) -> list[dict[str, str]]:
+        """Return redacted member identities visible to an admin in one tenant."""
+
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise LocalAuthError("tenant_member_limit_invalid", "tenant member limit is invalid")
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT u.id, u.record_version, u.encrypted_payload,
+                           i.issuer, i.tenant_id, i.subject, i.role
+                    FROM local_users AS u
+                    JOIN local_identities AS i ON i.user_id = u.id
+                    WHERE u.kind = 'member' AND i.tenant_id = ? AND i.role = 'member'
+                    ORDER BY i.created_at, u.id
+                    LIMIT ?
+                    """,
+                    (actor["tenant_id"], limit),
+                ).fetchall()
+            members: list[dict[str, str]] = []
+            for row in rows:
+                identity = {
+                    "user_id": str(row[0]),
+                    "issuer": str(row[3]),
+                    "tenant_id": str(row[4]),
+                    "subject": str(row[5]),
+                    "role": str(row[6]),
+                }
+                try:
+                    self._decode_account(identity, row[1], row[2])
+                except (LocalAuthError, TypeError, ValueError) as exc:
+                    raise LocalAuthError(
+                        "tenant_member_invalid", "tenant member record is invalid"
+                    ) from exc
+                members.append(identity)
+            return members
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "tenant_members_unavailable", "tenant member service is unavailable"
+            ) from exc
+
+    def revoke_tenant_member_sessions(
+        self,
+        actor_user_id: str,
+        target_user_id: str,
+    ) -> dict[str, int]:
+        """Revoke a member's sessions only when an admin shares its tenant."""
+
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            try:
+                target = self._load_identity(target_user_id)
+            except LocalAuthError as exc:
+                if exc.code in {"account_not_found", "account_record_invalid"}:
+                    raise LocalAuthError(
+                        "tenant_member_not_found", "tenant member was not found"
+                    ) from exc
+                raise
+            if target["role"] != "member" or target["tenant_id"] != actor["tenant_id"]:
+                raise LocalAuthError("tenant_member_not_found", "tenant member was not found")
+            return self.revoke_all_sessions(target["user_id"])
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "tenant_members_unavailable", "tenant member service is unavailable"
+            ) from exc
+
     def refresh_oidc_session(self, refresh_token: str, *, remote_address: str) -> dict[str, str]:
         """Rotate one OIDC refresh token exactly once.
 

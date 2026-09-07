@@ -393,6 +393,16 @@ class Application:
     def revoke_all_sessions(self, user_id: str) -> dict[str, int]:
         return self.auth.revoke_all_sessions(user_id)
 
+    def list_tenant_members(self, principal: OwnerPrincipal, *, limit: int = 100) -> dict[str, Any]:
+        return {"members": self.auth.list_tenant_members(principal.user_id, limit=limit)}
+
+    def revoke_tenant_member_sessions(
+        self,
+        principal: OwnerPrincipal,
+        target_user_id: str,
+    ) -> dict[str, int]:
+        return self.auth.revoke_tenant_member_sessions(principal.user_id, target_user_id)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 
