@@ -3,10 +3,12 @@ import hashlib
 import ipaddress
 import shutil
 import sqlite3
+import secrets
 import unittest
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from src.services.authenticated_encryption import AuthenticatedEncryptionService
@@ -256,6 +258,99 @@ class LocalAuthTests(unittest.TestCase):
         self.assertNotEqual(first["user_id"], second["user_id"])
         self.assertEqual("tenant-a", auth.authenticate(f"Bearer {first['access_token']}").tenant_id)
         self.assertEqual("tenant-b", auth.authenticate(f"Bearer {second['access_token']}").tenant_id)
+
+    def test_oidc_refresh_token_rotates_once_and_is_not_stored_raw(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        session = auth.issue_oidc_session(
+            OidcClaims("https://issuer.example", "refresh-user", "past-partner", "tenant-a", expires_at),
+            remote_address="127.0.0.1",
+        )
+
+        self.assertIn("refresh_token", session)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            stored = connection.execute("SELECT token_hash FROM oidc_refresh_tokens").fetchone()[0]
+        self.assertNotIn(session["refresh_token"].encode("utf-8"), bytes(stored))
+
+        rotated = auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+
+        self.assertNotEqual(session["access_token"], rotated["access_token"])
+        self.assertNotEqual(session["refresh_token"], rotated["refresh_token"])
+        self.assertEqual("refresh-user", auth.authenticate(f"Bearer {rotated['access_token']}").subject)
+        with self.assertRaises(LocalAuthError) as replay:
+            auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+        self.assertEqual("refresh_token_invalid", replay.exception.code)
+
+    def test_oidc_refresh_rejects_when_atomic_rotation_updates_no_row(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        session = auth.issue_oidc_session(
+            OidcClaims("https://issuer.example", "refresh-race", "past-partner", "tenant-a", expires_at),
+            remote_address="127.0.0.1",
+        )
+
+        class _ZeroRowUpdate:
+            rowcount = 0
+
+        class _Connection:
+            def __init__(self) -> None:
+                self.raw = sqlite3.connect(self.database_path)
+
+            @property
+            def database_path(self):
+                return self_path
+
+            @property
+            def in_transaction(self) -> bool:
+                return self.raw.in_transaction
+
+            def execute(self, query, parameters=()):
+                if query.lstrip().startswith("UPDATE oidc_refresh_tokens SET used_at"):
+                    return _ZeroRowUpdate()
+                return self.raw.execute(query, parameters)
+
+            def rollback(self) -> None:
+                self.raw.rollback()
+
+            def commit(self) -> None:
+                self.raw.commit()
+
+            def close(self) -> None:
+                self.raw.close()
+
+        self_path = self.database_path
+        with patch.object(auth, "_connect", return_value=_Connection()):
+            with self.assertRaises(LocalAuthError) as captured:
+                auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+
+        self.assertEqual("refresh_token_invalid", captured.exception.code)
+
+    def test_oidc_refresh_rejects_a_local_member_identity(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        account = auth.create_local_account("local-member", tenant_id="tenant-a")
+        refresh_token = secrets.token_urlsafe(48)
+        now = datetime.now(UTC).isoformat()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO oidc_refresh_tokens
+                    (token_hash, user_id, expires_at, used_at, scopes, created_at)
+                VALUES (?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    hashlib.sha256(refresh_token.encode("utf-8")).digest(),
+                    account["user_id"],
+                    (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                    AccessScopes.full().serialize(),
+                    now,
+                ),
+            )
+            connection.commit()
+
+        with self.assertRaises(LocalAuthError) as captured:
+            auth.refresh_oidc_session(refresh_token, remote_address="127.0.0.1")
+
+        self.assertEqual("refresh_token_invalid", captured.exception.code)
 
     def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
