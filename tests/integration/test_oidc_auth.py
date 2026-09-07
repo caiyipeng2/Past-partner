@@ -149,6 +149,44 @@ class OidcAuthHttpTests(unittest.TestCase):
         self.assertEqual(401, status)
         self.assertEqual("refresh_token_invalid", replay["error"]["code"])
 
+    def test_oidc_session_revocation_invalidates_access_and_refresh_tokens(self) -> None:
+        status, session = self._request(
+            "POST",
+            "/api/v1/auth/oidc/session",
+            {"id_token": self._token(subject="revoke-http-user")},
+        )
+        self.assertEqual(201, status)
+        status, second_session = self._request(
+            "POST",
+            "/api/v1/auth/oidc/session",
+            {"id_token": self._token(subject="revoke-http-user")},
+        )
+        self.assertEqual(201, status)
+
+        status, revoked = self._request(
+            "POST",
+            "/api/v1/auth/sessions/revoke-all",
+            token=session["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(2, revoked["revoked_sessions"])
+        self.assertEqual(2, revoked["revoked_refresh_tokens"])
+
+        status, _ = self._request(
+            "GET",
+            "/api/v1/personas",
+            token=second_session["access_token"],
+        )
+        self.assertEqual(401, status)
+
+        status, replay = self._request(
+            "POST",
+            "/api/v1/auth/oidc/refresh",
+            {"refresh_token": session["refresh_token"]},
+        )
+        self.assertEqual(401, status)
+        self.assertEqual("refresh_token_invalid", replay["error"]["code"])
+
     def test_oidc_session_rejects_expired_token_without_echoing_it(self) -> None:
         token = self._token(expires=self.now - timedelta(seconds=1))
 
