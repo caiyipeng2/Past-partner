@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import ipaddress
+import json
 import shutil
 import sqlite3
 import secrets
@@ -461,6 +462,95 @@ class LocalAuthTests(unittest.TestCase):
             auth.list_tenant_members(member["user_id"])
 
         self.assertEqual("tenant_admin_required", captured.exception.code)
+
+    def test_tenant_admin_can_change_member_role_without_inconsistent_encrypted_record(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("role-admin", tenant_id="tenant-role", role="admin")
+        member = auth.create_local_account("role-member", tenant_id="tenant-role", role="member")
+        session = auth.issue_account_session(member["user_id"])
+
+        promoted = auth.update_tenant_member_role(
+            admin["user_id"], member["user_id"], "admin"
+        )
+        self.assertEqual("admin", promoted["role"])
+        self.assertEqual("admin", auth.authenticate(f"Bearer {session['access_token']}").role)
+
+        demoted = auth.update_tenant_member_role(
+            admin["user_id"], member["user_id"], "member"
+        )
+        self.assertEqual("member", demoted["role"])
+        self.assertEqual("member", auth.authenticate(f"Bearer {session['access_token']}").role)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            stored = connection.execute(
+                "SELECT encrypted_payload FROM local_users WHERE id = ?",
+                (member["user_id"],),
+            ).fetchone()[0]
+        self.assertNotIn(b'"role":"admin"', bytes(stored))
+
+    def test_tenant_role_update_rejects_self_owner_and_cross_tenant_targets(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("role-admin-boundary", tenant_id="tenant-a", role="admin")
+        other = auth.create_local_account("role-other", tenant_id="tenant-b", role="member")
+
+        with self.assertRaises(LocalAuthError) as self_change:
+            auth.update_tenant_member_role(admin["user_id"], admin["user_id"], "member")
+        self.assertEqual("tenant_role_target_invalid", self_change.exception.code)
+        with self.assertRaises(LocalAuthError) as cross_tenant:
+            auth.update_tenant_member_role(admin["user_id"], other["user_id"], "admin")
+        self.assertEqual("tenant_member_not_found", cross_tenant.exception.code)
+        with self.assertRaises(LocalAuthError) as owner:
+            auth.update_tenant_member_role(admin["user_id"], auth.owner_id, "member")
+        self.assertEqual("tenant_member_not_found", owner.exception.code)
+
+    def test_tenant_role_update_rejects_non_admin_and_invalid_role(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        member = auth.create_local_account("role-member-boundary", tenant_id="tenant-role", role="member")
+        target = auth.create_local_account("role-target", tenant_id="tenant-role", role="member")
+
+        with self.assertRaises(LocalAuthError) as non_admin:
+            auth.update_tenant_member_role(member["user_id"], target["user_id"], "admin")
+        self.assertEqual("tenant_admin_required", non_admin.exception.code)
+        with self.assertRaises(LocalAuthError) as non_string:
+            auth.update_tenant_member_role(member["user_id"], target["user_id"], [])
+        self.assertEqual("tenant_role_invalid", non_string.exception.code)
+        with self.assertRaises(LocalAuthError) as invalid_role:
+            auth.update_tenant_member_role(member["user_id"], target["user_id"], "owner")
+        self.assertEqual("tenant_role_invalid", invalid_role.exception.code)
+
+    def test_tenant_role_update_fails_closed_when_encrypted_identity_drifts(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("role-integrity-admin", tenant_id="tenant-role", role="admin")
+        member = auth.create_local_account("role-integrity-member", tenant_id="tenant-role", role="member")
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            envelope = connection.execute(
+                "SELECT encrypted_payload FROM local_users WHERE id = ?",
+                (member["user_id"],),
+            ).fetchone()[0]
+            payload = json.loads(auth.encryption.decrypt(bytes(envelope), auth._aad(member["user_id"])).decode("utf-8"))
+            payload["tenant_id"] = "tenant-other"
+            corrupted = auth.encryption.encrypt(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+                auth._aad(member["user_id"]),
+            )
+            connection.execute(
+                "UPDATE local_users SET encrypted_payload = ? WHERE id = ?",
+                (corrupted, member["user_id"]),
+            )
+            connection.commit()
+
+        with self.assertRaises(LocalAuthError) as captured:
+            auth.update_tenant_member_role(admin["user_id"], member["user_id"], "admin")
+        self.assertEqual("tenant_member_invalid", captured.exception.code)
+
+    def test_tenant_role_update_cannot_remove_the_only_administrator(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("only-admin", tenant_id="tenant-only-admin", role="admin")
+
+        with self.assertRaises(LocalAuthError) as captured:
+            auth.update_tenant_member_role(admin["user_id"], admin["user_id"], "member")
+
+        self.assertEqual("tenant_role_target_invalid", captured.exception.code)
+        self.assertEqual("admin", auth._load_identity(admin["user_id"])["role"])
 
     def test_duplicate_subject_and_production_account_creation_fail_closed(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")

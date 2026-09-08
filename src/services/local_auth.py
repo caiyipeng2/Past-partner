@@ -381,6 +381,109 @@ class LocalAuthService:
                 "tenant_members_unavailable", "tenant member service is unavailable"
             ) from exc
 
+    def update_tenant_member_role(
+        self,
+        actor_user_id: str,
+        target_user_id: str,
+        role: str,
+    ) -> dict[str, str]:
+        """Atomically change a same-tenant member between member and admin."""
+
+        if not isinstance(role, str) or role not in self._ACCOUNT_ROLES:
+            raise LocalAuthError("tenant_role_invalid", "tenant member role is invalid")
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            if actor["user_id"] == target_user_id:
+                raise LocalAuthError("tenant_role_target_invalid", "tenant administrator role cannot be changed")
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT u.id, u.record_version, u.encrypted_payload,
+                           i.issuer, i.tenant_id, i.subject, i.role
+                    FROM local_users AS u
+                    JOIN local_identities AS i ON i.user_id = u.id
+                    WHERE u.id = ? AND u.kind = 'member'
+                    """,
+                    (target_user_id,),
+                ).fetchone()
+                if row is None:
+                    raise LocalAuthError("tenant_member_not_found", "tenant member was not found")
+                target = {
+                    "user_id": str(row[0]),
+                    "issuer": str(row[3]),
+                    "tenant_id": str(row[4]),
+                    "subject": str(row[5]),
+                    "role": str(row[6]),
+                }
+                if target["role"] not in self._ACCOUNT_ROLES or target["tenant_id"] != actor["tenant_id"]:
+                    raise LocalAuthError("tenant_member_not_found", "tenant member was not found")
+                if target["role"] == "admin" and role == "member":
+                    if self.metadata_store.backend_name == "postgresql":
+                        # Lock the complete admin set before counting so two
+                        # concurrent demotions cannot both remove the last admin.
+                        admin_count = len(
+                            connection.execute(
+                                "SELECT user_id FROM local_identities "
+                                "WHERE tenant_id = ? AND role = 'admin' "
+                                "ORDER BY user_id FOR UPDATE",
+                                (actor["tenant_id"],),
+                            ).fetchall()
+                        )
+                    else:
+                        admin_count = connection.execute(
+                            "SELECT COUNT(*) FROM local_identities WHERE tenant_id = ? AND role = 'admin'",
+                            (actor["tenant_id"],),
+                        ).fetchone()[0]
+                    if int(admin_count) <= 1:
+                        raise LocalAuthError(
+                            "tenant_last_admin", "tenant must retain an administrator"
+                        )
+                envelope = row[2]
+                if isinstance(envelope, (bytearray, memoryview)):
+                    envelope = bytes(envelope)
+                try:
+                    self._decode_account(target, row[1], envelope)
+                    payload = json.loads(
+                        self.encryption.decrypt(envelope, self._aad(target["user_id"])).decode("utf-8")
+                    )
+                except (
+                    AuthenticationError,
+                    InvalidEncryptedPayloadError,
+                    LocalAuthError,
+                    TypeError,
+                    UnicodeDecodeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    raise LocalAuthError("tenant_member_invalid", "tenant member record is invalid") from exc
+                if not isinstance(payload, dict) or payload.get("id") != target["user_id"]:
+                    raise LocalAuthError("tenant_member_invalid", "tenant member record is invalid")
+                payload["role"] = role
+                updated_envelope = self.encryption.encrypt(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+                    self._aad(target["user_id"]),
+                )
+                connection.execute(
+                    "UPDATE local_users SET encrypted_payload = ? WHERE id = ?",
+                    (updated_envelope, target["user_id"]),
+                )
+                connection.execute(
+                    "UPDATE local_identities SET role = ? WHERE user_id = ?",
+                    (role, target["user_id"]),
+                )
+                target["role"] = role
+                return target
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "tenant_members_unavailable", "tenant member service is unavailable"
+            ) from exc
+
     def refresh_oidc_session(self, refresh_token: str, *, remote_address: str) -> dict[str, str]:
         """Rotate one OIDC refresh token exactly once.
 

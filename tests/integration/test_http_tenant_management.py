@@ -183,6 +183,62 @@ class HttpTenantManagementTests(unittest.TestCase):
         self.assertEqual("tenant_members_unavailable", payload["error"]["code"])
         self.assertNotIn("driver detail", json.dumps(payload))
 
+    def test_admin_can_update_member_role_and_scope_or_tenant_boundaries_apply(self) -> None:
+        admin = self.application.auth.create_local_account(
+            "tenant-role-admin", tenant_id="tenant-role", role="admin"
+        )
+        member = self.application.auth.create_local_account(
+            "tenant-role-member", tenant_id="tenant-role", role="member"
+        )
+        other = self.application.auth.create_local_account(
+            "tenant-role-other", tenant_id="tenant-other", role="member"
+        )
+        admin_session = self.application.auth.issue_account_session(admin["user_id"])
+        read_only = self.application.auth.issue_account_session(
+            admin["user_id"], scopes=["owner:read"]
+        )
+        member_session = self.application.auth.issue_account_session(member["user_id"])
+
+        status, payload = self.request(
+            "PATCH",
+            f"/api/v1/tenant/members/{member['user_id']}",
+            {"role": "admin"},
+            token=admin_session["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("admin", payload["role"])
+        status, _ = self.request(
+            "GET", "/api/v1/personas", token=member_session["access_token"]
+        )
+        self.assertEqual(200, status)
+
+        status, payload = self.request(
+            "PATCH",
+            f"/api/v1/tenant/members/{member['user_id']}",
+            {"role": "member"},
+            token=read_only["access_token"],
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["error"]["code"])
+
+        status, payload = self.request(
+            "PATCH",
+            f"/api/v1/tenant/members/{other['user_id']}",
+            {"role": "admin"},
+            token=admin_session["access_token"],
+        )
+        self.assertEqual(404, status)
+        self.assertEqual("tenant_member_not_found", payload["error"]["code"])
+
+        status, payload = self.request(
+            "PATCH",
+            f"/api/v1/tenant/members/{member['user_id']}",
+            {"role": "owner"},
+            token=admin_session["access_token"],
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("tenant_role_invalid", payload["error"]["code"])
+
 
 if __name__ == "__main__":
     unittest.main()
