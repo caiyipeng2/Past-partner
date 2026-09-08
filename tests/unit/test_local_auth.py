@@ -542,6 +542,48 @@ class LocalAuthTests(unittest.TestCase):
             auth.update_tenant_member_role(admin["user_id"], member["user_id"], "admin")
         self.assertEqual("tenant_member_invalid", captured.exception.code)
 
+    def test_tenant_member_disable_revokes_sessions_and_reenable_restores_access(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("lifecycle-admin", tenant_id="tenant-life", role="admin")
+        member = auth.create_local_account("lifecycle-member", tenant_id="tenant-life", role="member")
+        session = auth.issue_account_session(member["user_id"])
+
+        disabled = auth.update_tenant_member_status(
+            admin["user_id"], member["user_id"], "disabled"
+        )
+        self.assertEqual("disabled", disabled["account_status"])
+        with self.assertRaises(LocalAuthError) as blocked:
+            auth.authenticate(f"Bearer {session['access_token']}")
+        self.assertEqual("authentication_required", blocked.exception.code)
+        with self.assertRaises(LocalAuthError) as cannot_issue:
+            auth.issue_account_session(member["user_id"])
+        self.assertEqual("account_disabled", cannot_issue.exception.code)
+
+        active = auth.update_tenant_member_status(
+            admin["user_id"], member["user_id"], "active"
+        )
+        self.assertEqual("active", active["account_status"])
+        restored = auth.issue_account_session(member["user_id"])
+        self.assertEqual(member["user_id"], auth.authenticate(f"Bearer {restored['access_token']}").user_id)
+
+    def test_tenant_member_status_rejects_self_owner_cross_tenant_and_invalid_values(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("status-admin", tenant_id="tenant-status", role="admin")
+        other = auth.create_local_account("status-other", tenant_id="tenant-other", role="member")
+
+        with self.assertRaises(LocalAuthError) as self_target:
+            auth.update_tenant_member_status(admin["user_id"], admin["user_id"], "disabled")
+        self.assertEqual("tenant_status_target_invalid", self_target.exception.code)
+        with self.assertRaises(LocalAuthError) as owner:
+            auth.update_tenant_member_status(admin["user_id"], auth.owner_id, "disabled")
+        self.assertEqual("tenant_member_not_found", owner.exception.code)
+        with self.assertRaises(LocalAuthError) as cross_tenant:
+            auth.update_tenant_member_status(admin["user_id"], other["user_id"], "disabled")
+        self.assertEqual("tenant_member_not_found", cross_tenant.exception.code)
+        with self.assertRaises(LocalAuthError) as invalid:
+            auth.update_tenant_member_status(admin["user_id"], other["user_id"], "paused")
+        self.assertEqual("tenant_status_invalid", invalid.exception.code)
+
     def test_tenant_role_update_cannot_remove_the_only_administrator(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
         admin = auth.create_local_account("only-admin", tenant_id="tenant-only-admin", role="admin")

@@ -102,6 +102,9 @@ _TENANT_MEMBER_REVOKE_PATH = re.compile(
     r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)/revoke-sessions$"
 )
 _TENANT_MEMBER_PATH = re.compile(r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)$")
+_TENANT_MEMBER_STATUS_PATH = re.compile(
+    r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)/status$"
+)
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -239,6 +242,10 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.BAD_REQUEST
             elif exc.code == "tenant_last_admin":
                 status = HTTPStatus.CONFLICT
+            elif exc.code in {"tenant_status_invalid", "tenant_status_target_invalid"}:
+                status = HTTPStatus.BAD_REQUEST
+            elif exc.code == "account_disabled":
+                status = HTTPStatus.UNAUTHORIZED
             elif exc.code in {"tenant_members_unavailable", "tenant_member_invalid"}:
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             else:
@@ -938,6 +945,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if match := _TENANT_MEMBER_STATUS_PATH.fullmatch(path):
+            body = self._json_body()
+            account_status = body.get("status")
+            if not isinstance(account_status, str):
+                raise RequestValidationError("tenant_status_invalid", "tenant member status is invalid")
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.update_tenant_member_status(
+                    self.principal,
+                    match.group(1),
+                    account_status,
+                ),
+            )
+            return
         match = _PERSONA_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -1184,6 +1205,8 @@ def _route_template(target: str) -> str:
             return "/api/v1/tenant/members/{user_id}/revoke-sessions"
         if _TENANT_MEMBER_PATH.fullmatch(path):
             return "/api/v1/tenant/members/{user_id}"
+        if _TENANT_MEMBER_STATUS_PATH.fullmatch(path):
+            return "/api/v1/tenant/members/{user_id}/status"
         if path == _READY_PATH:
             return _READY_PATH
         if path == _METRICS_PATH:
