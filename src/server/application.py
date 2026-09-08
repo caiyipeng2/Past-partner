@@ -403,6 +403,14 @@ class Application:
     ) -> dict[str, int]:
         return self.auth.revoke_tenant_member_sessions(principal.user_id, target_user_id)
 
+    def update_tenant_member_role(
+        self,
+        principal: OwnerPrincipal,
+        target_user_id: str,
+        role: str,
+    ) -> dict[str, str]:
+        return self.auth.update_tenant_member_role(principal.user_id, target_user_id, role)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 
