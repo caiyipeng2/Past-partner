@@ -183,6 +183,35 @@ class HttpTenantManagementTests(unittest.TestCase):
         self.assertEqual("tenant_members_unavailable", payload["error"]["code"])
         self.assertNotIn("driver detail", json.dumps(payload))
 
+    def test_admin_can_read_and_suspend_reactivate_current_tenant(self) -> None:
+        admin = self.application.auth.create_local_account(
+            "tenant-registry-http-admin", tenant_id="tenant-registry-http", role="admin"
+        )
+        admin_session = self.application.auth.issue_account_session(admin["user_id"])
+
+        status, payload = self.request("GET", "/api/v1/tenant", token=admin_session["access_token"])
+        self.assertEqual(200, status)
+        self.assertEqual("tenant-registry-http", payload["tenant_id"])
+        self.assertEqual("active", payload["status"])
+
+        status, payload = self.request(
+            "PATCH", "/api/v1/tenant/status", {"status": "suspended"}, token=admin_session["access_token"]
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("suspended", payload["status"])
+
+        status, payload = self.request(
+            "PATCH", "/api/v1/tenant/status", {"status": "paused"}, token=admin_session["access_token"]
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("tenant_status_invalid", payload["error"]["code"])
+
+        status, payload = self.request(
+            "PATCH", "/api/v1/tenant/status", {"status": "active"}, token=admin_session["access_token"]
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("active", payload["status"])
+
     def test_admin_can_disable_and_reenable_member_status(self) -> None:
         admin = self.application.auth.create_local_account(
             "tenant-status-admin", tenant_id="tenant-status", role="admin"

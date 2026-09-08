@@ -71,19 +71,21 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (24, "data_subject_notifications"),
                 (25, "oidc_refresh_tokens"),
                 (26, "account_status"),
+                (27, "tenant_registry"),
             ],
             rows,
         )
         with closing(sqlite3.connect(self.database_path)) as connection:
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
-                "AND name IN ('personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings', 'data_subject_notifications', 'oidc_refresh_tokens') ORDER BY name"
+                "AND name IN ('local_tenants', 'personas', 'training_jobs', 'style_profiles', 'long_term_memories', 'vector_indexes', 'task_broker_outbox', 'worker_observations', 'billing_entries', 'billing_accounts', 'subscriptions', 'subscription_events', 'subscription_bindings', 'data_subject_notifications', 'oidc_refresh_tokens') ORDER BY name"
             ).fetchall()
         self.assertEqual(
             [
                 ("billing_accounts",),
                 ("billing_entries",),
                 ("data_subject_notifications",),
+                ("local_tenants",),
                 ("long_term_memories",),
                 ("oidc_refresh_tokens",),
                 ("personas",),
@@ -111,6 +113,27 @@ class SQLiteMigrationTests(unittest.TestCase):
                 for row in connection.execute("PRAGMA table_info(audit_events)").fetchall()
             }
         self.assertTrue({"chain_sequence", "previous_hash", "event_hash"}.issubset(columns))
+
+    def test_tenant_registry_migration_backfills_existing_identity_tenants(self) -> None:
+        SQLiteMigrator(self.database_path, DEFAULT_MIGRATIONS[:26]).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO local_users (id, kind, record_version, encrypted_payload) "
+                "VALUES ('member-existing', 'member', 1, X'01')"
+            )
+            connection.execute(
+                "INSERT INTO local_identities "
+                "(user_id, issuer, tenant_id, subject, role, account_status, created_at) "
+                "VALUES ('member-existing', 'local', 'tenant-existing', 'subject-existing', 'member', 'active', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+            connection.commit()
+        SQLiteMigrator(self.database_path).migrate()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            tenant = connection.execute(
+                "SELECT tenant_id, status FROM local_tenants WHERE tenant_id = 'tenant-existing'"
+            ).fetchone()
+        self.assertEqual(("tenant-existing", "active"), tenant)
 
     def test_audit_chain_migration_anchors_existing_events(self) -> None:
         # Keep the audit-chain migration pending while the later OIDC session

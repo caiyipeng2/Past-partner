@@ -105,6 +105,8 @@ _TENANT_MEMBER_PATH = re.compile(r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)$")
 _TENANT_MEMBER_STATUS_PATH = re.compile(
     r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)/status$"
 )
+_TENANT_PATH = "/api/v1/tenant"
+_TENANT_STATUS_PATH = "/api/v1/tenant/status"
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -246,6 +248,12 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.BAD_REQUEST
             elif exc.code == "account_disabled":
                 status = HTTPStatus.UNAUTHORIZED
+            elif exc.code == "tenant_suspended":
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+            elif exc.code == "tenant_not_found":
+                status = HTTPStatus.NOT_FOUND
+            elif exc.code == "tenant_unavailable":
+                status = HTTPStatus.SERVICE_UNAVAILABLE
             elif exc.code in {"tenant_members_unavailable", "tenant_member_invalid"}:
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             else:
@@ -579,6 +587,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.application.operations_summary(self.principal),
             )
+        elif path == _TENANT_PATH:
+            self._json(HTTPStatus.OK, self.server.application.get_tenant(self.principal))
         elif path == _TENANT_MEMBERS_PATH:
             raw_limit = query.get("limit", [None])[0]
             limit = 100
@@ -959,6 +969,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == _TENANT_STATUS_PATH:
+            body = self._json_body()
+            status = body.get("status")
+            if not isinstance(status, str):
+                raise RequestValidationError("tenant_status_invalid", "tenant status is invalid")
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.update_tenant_status(self.principal, status),
+            )
+            return
         match = _PERSONA_PATH.fullmatch(path)
         if match is None:
             self._error(HTTPStatus.NOT_FOUND, "route_not_found", "route not found")
@@ -1201,6 +1221,10 @@ def _route_template(target: str) -> str:
             return _REVOKE_ALL_SESSIONS_PATH
         if path == _TENANT_MEMBERS_PATH:
             return _TENANT_MEMBERS_PATH
+        if path == _TENANT_PATH:
+            return _TENANT_PATH
+        if path == _TENANT_STATUS_PATH:
+            return _TENANT_STATUS_PATH
         if _TENANT_MEMBER_REVOKE_PATH.fullmatch(path):
             return "/api/v1/tenant/members/{user_id}/revoke-sessions"
         if _TENANT_MEMBER_PATH.fullmatch(path):

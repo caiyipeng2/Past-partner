@@ -584,6 +584,75 @@ class LocalAuthTests(unittest.TestCase):
             auth.update_tenant_member_status(admin["user_id"], other["user_id"], "paused")
         self.assertEqual("tenant_status_invalid", invalid.exception.code)
 
+    def test_tenant_registry_is_created_and_admin_can_suspend_and_reactivate_tenant(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account("tenant-registry-admin", tenant_id="tenant-registry", role="admin")
+        member = auth.create_local_account("tenant-registry-member", tenant_id="tenant-registry", role="member")
+        admin_session = auth.issue_account_session(admin["user_id"])
+        member_session = auth.issue_account_session(member["user_id"])
+
+        tenant = auth.get_tenant(admin["user_id"])
+        self.assertEqual("tenant-registry", tenant["tenant_id"])
+        self.assertEqual("active", tenant["status"])
+        self.assertEqual(2, tenant["member_count"])
+        self.assertEqual(2, tenant["active_member_count"])
+
+        suspended = auth.update_tenant_status(admin["user_id"], "suspended")
+        self.assertEqual("suspended", suspended["status"])
+        with self.assertRaises(LocalAuthError):
+            auth.authenticate(f"Bearer {member_session['access_token']}")
+        auth.authenticate(f"Bearer {admin_session['access_token']}")
+        with self.assertRaises(LocalAuthError) as blocked:
+            auth.issue_account_session(member["user_id"])
+        self.assertEqual("tenant_suspended", blocked.exception.code)
+
+        active = auth.update_tenant_status(admin["user_id"], "active")
+        self.assertEqual("active", active["status"])
+        restored = auth.issue_account_session(member["user_id"])
+        self.assertEqual(member["user_id"], auth.authenticate(f"Bearer {restored['access_token']}").user_id)
+
+    def test_tenant_status_requires_admin_and_valid_status(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        member = auth.create_local_account("tenant-status-member-only", tenant_id="tenant-status", role="member")
+
+        with self.assertRaises(LocalAuthError) as non_admin:
+            auth.get_tenant(member["user_id"])
+        self.assertEqual("tenant_admin_required", non_admin.exception.code)
+        with self.assertRaises(LocalAuthError) as invalid:
+            auth.update_tenant_status(member["user_id"], "paused")
+        self.assertEqual("tenant_status_invalid", invalid.exception.code)
+        with self.assertRaises(LocalAuthError) as non_string:
+            auth.update_tenant_status(member["user_id"], [])
+        self.assertEqual("tenant_status_invalid", non_string.exception.code)
+
+    def test_tenant_suspend_keeps_promoted_oidc_admin_refreshable(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        local_admin = auth.create_local_account(
+            "tenant-oidc-promoter", tenant_id="tenant-oidc-lifecycle", role="admin"
+        )
+        oidc_admin = auth.issue_oidc_session(
+            OidcClaims(
+                "https://issuer.example",
+                "tenant-oidc-admin",
+                "past-partner",
+                "tenant-oidc-lifecycle",
+                datetime.now(UTC) + timedelta(minutes=5),
+            ),
+            remote_address="127.0.0.1",
+        )
+        promoted = auth.update_tenant_member_role(
+            local_admin["user_id"], oidc_admin["user_id"], "admin"
+        )
+        self.assertEqual("admin", promoted["role"])
+
+        auth.update_tenant_status(local_admin["user_id"], "suspended")
+        refreshed = auth.refresh_oidc_session(
+            oidc_admin["refresh_token"], remote_address="127.0.0.1"
+        )
+
+        self.assertEqual("admin", refreshed["role"])
+        self.assertEqual("tenant-oidc-lifecycle", refreshed["tenant_id"])
+
     def test_tenant_role_update_cannot_remove_the_only_administrator(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
         admin = auth.create_local_account("only-admin", tenant_id="tenant-only-admin", role="admin")
