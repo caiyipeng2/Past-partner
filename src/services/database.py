@@ -677,6 +677,18 @@ DEFAULT_MIGRATIONS = (
             "CREATE INDEX oidc_refresh_tokens_user_idx ON oidc_refresh_tokens(user_id, expires_at)",
         ),
     ),
+    Migration(
+        version=26,
+        name="account_status",
+        statements=(
+            "ALTER TABLE local_identities ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active' "
+            "CHECK (account_status IN ('active', 'disabled'))",
+        ),
+        postgres_statements=(
+            "ALTER TABLE local_identities ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active' "
+            "CHECK (account_status IN ('active', 'disabled'))",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 

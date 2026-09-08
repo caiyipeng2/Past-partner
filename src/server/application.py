@@ -411,6 +411,18 @@ class Application:
     ) -> dict[str, str]:
         return self.auth.update_tenant_member_role(principal.user_id, target_user_id, role)
 
+    def update_tenant_member_status(
+        self,
+        principal: OwnerPrincipal,
+        target_user_id: str,
+        account_status: str,
+    ) -> dict[str, str]:
+        return self.auth.update_tenant_member_status(
+            principal.user_id,
+            target_user_id,
+            account_status,
+        )
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 

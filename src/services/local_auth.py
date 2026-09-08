@@ -105,6 +105,7 @@ class LocalAuthService:
     _DEFAULT_REFRESH_TTL = timedelta(days=30)
     _IDENTIFIER_MAX_LENGTH = 256
     _ACCOUNT_ROLES = frozenset({"admin", "member"})
+    _ACCOUNT_STATUSES = frozenset({"active", "disabled"})
 
     def __init__(
         self,
@@ -184,6 +185,7 @@ class LocalAuthService:
             identity = self._load_identity(user_id)
             if identity["tenant_id"] != tenant_id:
                 raise LocalAuthError("oidc_identity_conflict", "OIDC subject is bound to another tenant")
+            self._require_active_identity(identity)
         # These scopes authorize the account's own owner_id resources; repository
         # methods never reinterpret owner:write as tenant-wide administration.
         return self._issue_session(user_id, AccessScopes.full(), session_origin="oidc")
@@ -303,7 +305,7 @@ class LocalAuthService:
             )
         except AccessScopeError as exc:
             raise LocalAuthError("scope_invalid", "session scope is invalid") from exc
-        self._load_identity(user_id)
+        self._require_active_identity(self._load_identity(user_id))
         return self._issue_session(user_id, scope_set)
 
     def list_tenant_members(self, actor_user_id: str, *, limit: int = 100) -> list[dict[str, str]]:
@@ -319,7 +321,7 @@ class LocalAuthService:
                 rows = connection.execute(
                     """
                     SELECT u.id, u.record_version, u.encrypted_payload,
-                           i.issuer, i.tenant_id, i.subject, i.role
+                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status
                     FROM local_users AS u
                     JOIN local_identities AS i ON i.user_id = u.id
                     WHERE u.kind = 'member' AND i.tenant_id = ? AND i.role = 'member'
@@ -336,6 +338,7 @@ class LocalAuthService:
                     "tenant_id": str(row[4]),
                     "subject": str(row[5]),
                     "role": str(row[6]),
+                    "account_status": str(row[7]),
                 }
                 try:
                     self._decode_account(identity, row[1], row[2])
@@ -403,7 +406,7 @@ class LocalAuthService:
                 row = connection.execute(
                     """
                     SELECT u.id, u.record_version, u.encrypted_payload,
-                           i.issuer, i.tenant_id, i.subject, i.role
+                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status
                     FROM local_users AS u
                     JOIN local_identities AS i ON i.user_id = u.id
                     WHERE u.id = ? AND u.kind = 'member'
@@ -418,6 +421,7 @@ class LocalAuthService:
                     "tenant_id": str(row[4]),
                     "subject": str(row[5]),
                     "role": str(row[6]),
+                    "account_status": str(row[7]),
                 }
                 if target["role"] not in self._ACCOUNT_ROLES or target["tenant_id"] != actor["tenant_id"]:
                     raise LocalAuthError("tenant_member_not_found", "tenant member was not found")
@@ -484,6 +488,81 @@ class LocalAuthService:
                 "tenant_members_unavailable", "tenant member service is unavailable"
             ) from exc
 
+    def update_tenant_member_status(
+        self,
+        actor_user_id: str,
+        target_user_id: str,
+        account_status: str,
+    ) -> dict[str, str]:
+        """Disable or reactivate a same-tenant member atomically."""
+
+        if account_status not in self._ACCOUNT_STATUSES:
+            raise LocalAuthError("tenant_status_invalid", "tenant member status is invalid")
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            if actor["user_id"] == target_user_id:
+                raise LocalAuthError("tenant_status_target_invalid", "tenant administrator status cannot be changed")
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                status_sql = """
+                    SELECT u.id, u.record_version, u.encrypted_payload,
+                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status
+                    FROM local_users AS u
+                    JOIN local_identities AS i ON i.user_id = u.id
+                    WHERE u.id = ? AND u.kind = 'member'
+                """
+                if self.metadata_store.backend_name == "postgresql":
+                    status_sql += " FOR UPDATE"
+                row = connection.execute(
+                    status_sql,
+                    (target_user_id,),
+                ).fetchone()
+                if row is None or row[6] != "member" or row[4] != actor["tenant_id"]:
+                    raise LocalAuthError("tenant_member_not_found", "tenant member was not found")
+                target = {
+                    "user_id": str(row[0]),
+                    "issuer": str(row[3]),
+                    "tenant_id": str(row[4]),
+                    "subject": str(row[5]),
+                    "role": str(row[6]),
+                    "account_status": str(row[7]),
+                }
+                if target["account_status"] not in self._ACCOUNT_STATUSES:
+                    raise LocalAuthError("tenant_member_invalid", "tenant member record is invalid")
+                envelope = row[2]
+                if isinstance(envelope, (bytearray, memoryview)):
+                    envelope = bytes(envelope)
+                try:
+                    self._decode_account(target, row[1], envelope)
+                except (LocalAuthError, TypeError, ValueError) as exc:
+                    raise LocalAuthError(
+                        "tenant_member_invalid", "tenant member record is invalid"
+                    ) from exc
+                connection.execute(
+                    "UPDATE local_identities SET account_status = ? WHERE user_id = ?",
+                    (account_status, target["user_id"]),
+                )
+                if account_status == "disabled":
+                    connection.execute(
+                        "DELETE FROM local_sessions WHERE user_id = ?",
+                        (target["user_id"],),
+                    )
+                    connection.execute(
+                        "DELETE FROM oidc_refresh_tokens WHERE user_id = ?",
+                        (target["user_id"],),
+                    )
+                target["account_status"] = account_status
+                return target
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError(
+                "tenant_members_unavailable", "tenant member service is unavailable"
+            ) from exc
+
     def refresh_oidc_session(self, refresh_token: str, *, remote_address: str) -> dict[str, str]:
         """Rotate one OIDC refresh token exactly once.
 
@@ -509,16 +588,19 @@ class LocalAuthService:
             with self.metadata_store.transaction(
                 immediate=self.metadata_store.backend_name == "sqlite"
             ) as connection:
-                row = connection.execute(
-                    """
+                refresh_sql = """
                     SELECT r.user_id, r.expires_at, r.used_at, r.scopes,
                            u.kind, u.record_version, u.encrypted_payload,
-                           i.issuer, i.tenant_id, i.subject, i.role
+                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status
                     FROM oidc_refresh_tokens AS r
                     JOIN local_users AS u ON u.id = r.user_id
                     JOIN local_identities AS i ON i.user_id = r.user_id
                     WHERE r.token_hash = ?
-                    """,
+                """
+                if self.metadata_store.backend_name == "postgresql":
+                    refresh_sql += " FOR UPDATE"
+                row = connection.execute(
+                    refresh_sql,
                     (token_hash,),
                 ).fetchone()
                 if (
@@ -526,6 +608,7 @@ class LocalAuthService:
                     or row[4] != "member"
                     or row[7] == "local"
                     or row[2] is not None
+                    or row[11] != "active"
                     or not self._expires_after(row[1], now)
                 ):
                     raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
@@ -535,6 +618,7 @@ class LocalAuthService:
                     "tenant_id": str(row[8]),
                     "subject": str(row[9]),
                     "role": str(row[10]),
+                    "account_status": str(row[11]),
                 }
                 try:
                     self._decode_account(identity, row[5], row[6])
@@ -635,6 +719,12 @@ class LocalAuthService:
         refresh_expires_at = issued_at + self._DEFAULT_REFRESH_TTL if refresh_token else None
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            status_query = "SELECT account_status FROM local_identities WHERE user_id = ?"
+            if self.metadata_store.backend_name == "postgresql":
+                status_query += " FOR UPDATE"
+            status_row = connection.execute(status_query, (user_id,)).fetchone()
+            if status_row is None or status_row[0] != "active":
+                raise LocalAuthError("account_disabled", "local account is disabled")
             connection.execute(
                 "DELETE FROM local_sessions WHERE expires_at <= ?",
                 (issued_at.isoformat(),),
@@ -696,7 +786,7 @@ class LocalAuthService:
                 SELECT s.user_id, s.expires_at, s.session_origin,
                        s.pairing_token_fingerprint, s.scopes,
                        u.kind, u.record_version, u.encrypted_payload,
-                       i.issuer, i.tenant_id, i.subject, i.role
+                       i.issuer, i.tenant_id, i.subject, i.role, i.account_status
                 FROM local_sessions AS s
                 JOIN local_users AS u ON u.id = s.user_id
                 JOIN local_identities AS i ON i.user_id = s.user_id
@@ -705,6 +795,8 @@ class LocalAuthService:
                 (token_hash,),
             ).fetchone()
         if row is None or str(row[1]) <= now:
+            raise LocalAuthError("authentication_required", "a valid owner session is required")
+        if row[12] != "active":
             raise LocalAuthError("authentication_required", "a valid owner session is required")
         if row[2] not in {"loopback", "device", "oidc"}:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
@@ -722,6 +814,7 @@ class LocalAuthService:
             "tenant_id": str(row[9]),
             "subject": str(row[10]),
             "role": str(row[11]),
+            "account_status": str(row[12]),
         }
         try:
             if row[5] == "owner":
@@ -803,15 +896,15 @@ class LocalAuthService:
 
     def _ensure_owner_identity(self, connection: MetadataConnection, owner_id: str) -> None:
         row = connection.execute(
-            "SELECT issuer, tenant_id, subject, role FROM local_identities WHERE user_id = ?",
+            "SELECT issuer, tenant_id, subject, role, account_status FROM local_identities WHERE user_id = ?",
             (owner_id,),
         ).fetchone()
-        expected = ("local", owner_id, "local-owner", "owner")
+        expected = ("local", owner_id, "local-owner", "owner", "active")
         if row is None:
             connection.execute(
                 """
-                INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO local_identities (user_id, issuer, tenant_id, subject, role, account_status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (owner_id, *expected, datetime.now(UTC).isoformat()),
             )
@@ -826,7 +919,7 @@ class LocalAuthService:
             row = connection.execute(
                 """
                 SELECT u.kind, u.record_version, u.encrypted_payload,
-                       i.issuer, i.tenant_id, i.subject, i.role
+                       i.issuer, i.tenant_id, i.subject, i.role, i.account_status
                 FROM local_users AS u
                 JOIN local_identities AS i ON i.user_id = u.id
                 WHERE u.id = ?
@@ -841,6 +934,7 @@ class LocalAuthService:
             "tenant_id": str(row[4]),
             "subject": str(row[5]),
             "role": str(row[6]),
+            "account_status": str(row[7]),
         }
         try:
             if row[0] == "owner":
@@ -852,6 +946,11 @@ class LocalAuthService:
         except (LocalAuthError, ValueError) as exc:
             raise LocalAuthError("account_record_invalid", "local account record is invalid") from exc
         return identity
+
+    @staticmethod
+    def _require_active_identity(identity: dict[str, str]) -> None:
+        if identity.get("account_status") != "active":
+            raise LocalAuthError("account_disabled", "local account is disabled")
 
     def _find_user_by_identity(self, issuer: str, subject: str) -> str | None:
         with closing(self._connect()) as connection:

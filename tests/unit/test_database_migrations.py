@@ -70,6 +70,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 (23, "identity_issuers"),
                 (24, "data_subject_notifications"),
                 (25, "oidc_refresh_tokens"),
+                (26, "account_status"),
             ],
             rows,
         )
@@ -97,6 +98,13 @@ class SQLiteMigrationTests(unittest.TestCase):
             ],
             tables,
         )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            columns = {
+                row[1]: row
+                for row in connection.execute("PRAGMA table_info(local_identities)").fetchall()
+            }
+        self.assertIn("account_status", columns)
+        self.assertEqual("'active'", columns["account_status"][4])
         with closing(sqlite3.connect(self.database_path)) as connection:
             columns = {
                 row[1]
@@ -345,7 +353,7 @@ class SQLiteMigrationTests(unittest.TestCase):
         self.assertEqual(("owner-1", "owner"), user)
         self.assertEqual(("owner-1",), persona)
         self.assertEqual(
-            {"user_id", "issuer", "tenant_id", "subject", "role", "created_at"},
+            {"user_id", "issuer", "tenant_id", "subject", "role", "account_status", "created_at"},
             columns,
         )
 
