@@ -97,6 +97,10 @@ _METRICS_PATH = "/api/v1/metrics"
 _OIDC_SESSION_PATH = "/api/v1/auth/oidc/session"
 _OIDC_REFRESH_PATH = "/api/v1/auth/oidc/refresh"
 _REVOKE_ALL_SESSIONS_PATH = "/api/v1/auth/sessions/revoke-all"
+_TENANT_MEMBERS_PATH = "/api/v1/tenant/members"
+_TENANT_MEMBER_REVOKE_PATH = re.compile(
+    r"^/api/v1/tenant/members/([A-Za-z0-9._-]+)/revoke-sessions$"
+)
 _AUDIT_CURSOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _STATIC_FILES = {
     "/": "workspace.html",
@@ -223,6 +227,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             elif exc.code == "oidc_tls_required":
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             elif exc.code in {"refresh_token_unavailable", "session_revocation_unavailable"}:
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+            elif exc.code == "tenant_admin_required":
+                status = HTTPStatus.FORBIDDEN
+            elif exc.code == "tenant_member_limit_invalid":
+                status = HTTPStatus.BAD_REQUEST
+            elif exc.code == "tenant_member_not_found":
+                status = HTTPStatus.NOT_FOUND
+            elif exc.code in {"tenant_members_unavailable", "tenant_member_invalid"}:
                 status = HTTPStatus.SERVICE_UNAVAILABLE
             else:
                 status = HTTPStatus.UNAUTHORIZED
@@ -555,6 +567,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.application.operations_summary(self.principal),
             )
+        elif path == _TENANT_MEMBERS_PATH:
+            raw_limit = query.get("limit", [None])[0]
+            limit = 100
+            if raw_limit is not None:
+                try:
+                    limit = int(raw_limit)
+                except ValueError as exc:
+                    raise LocalAuthError(
+                        "tenant_member_limit_invalid", "tenant member limit is invalid"
+                    ) from exc
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.list_tenant_members(self.principal, limit=limit),
+            )
         elif path == _USAGE_PATH:
             raw_limit = query.get("limit", [None])[0]
             limit = 100
@@ -704,6 +730,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 self.server.application.revoke_all_sessions(self.owner_id),
+            )
+        elif match := _TENANT_MEMBER_REVOKE_PATH.fullmatch(path):
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.revoke_tenant_member_sessions(
+                    self.principal,
+                    match.group(1),
+                ),
             )
         elif path == "/api/v1/auth/session":
             self._json(
@@ -1125,6 +1159,10 @@ def _route_template(target: str) -> str:
             return _SUBSCRIPTION_PATH
         if path == _REVOKE_ALL_SESSIONS_PATH:
             return _REVOKE_ALL_SESSIONS_PATH
+        if path == _TENANT_MEMBERS_PATH:
+            return _TENANT_MEMBERS_PATH
+        if _TENANT_MEMBER_REVOKE_PATH.fullmatch(path):
+            return "/api/v1/tenant/members/{user_id}/revoke-sessions"
         if path == _READY_PATH:
             return _READY_PATH
         if path == _METRICS_PATH:
