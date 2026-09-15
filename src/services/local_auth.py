@@ -216,6 +216,13 @@ class LocalAuthService:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                self._ensure_tenant_record(connection, tenant_id, created_at)
+                tenant_status = connection.execute(
+                    "SELECT status FROM local_tenants WHERE tenant_id = ?",
+                    (tenant_id,),
+                ).fetchone()
+                if tenant_status is None or tenant_status[0] != "active":
+                    raise LocalAuthError("tenant_suspended", "tenant is suspended")
                 connection.execute(
                     """
                     INSERT INTO local_users (id, kind, record_version, encrypted_payload)
@@ -354,6 +361,100 @@ class LocalAuthService:
             raise LocalAuthError(
                 "tenant_members_unavailable", "tenant member service is unavailable"
             ) from exc
+
+    def get_tenant(self, actor_user_id: str) -> dict[str, int | str]:
+        """Return bounded lifecycle metadata for an admin's tenant."""
+
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            with closing(self._connect()) as connection:
+                tenant = connection.execute(
+                    "SELECT tenant_id, display_name, status, created_at FROM local_tenants WHERE tenant_id = ?",
+                    (actor["tenant_id"],),
+                ).fetchone()
+                if tenant is None:
+                    raise LocalAuthError("tenant_not_found", "tenant was not found")
+                counts = connection.execute(
+                    """
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN i.account_status = 'active' THEN 1 ELSE 0 END)
+                    FROM local_identities AS i
+                    JOIN local_users AS u ON u.id = i.user_id
+                    WHERE i.tenant_id = ? AND u.kind = 'member'
+                    """,
+                    (actor["tenant_id"],),
+                ).fetchone()
+            return {
+                "tenant_id": str(tenant[0]),
+                "display_name": str(tenant[1]),
+                "status": str(tenant[2]),
+                "created_at": str(tenant[3]),
+                "member_count": int(counts[0] or 0),
+                "active_member_count": int(counts[1] or 0),
+            }
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError("tenant_unavailable", "tenant service is unavailable") from exc
+
+    def update_tenant_status(self, actor_user_id: str, status: str) -> dict[str, int | str]:
+        """Suspend/reactivate the actor's tenant, revoking member sessions on suspend."""
+
+        if not isinstance(status, str) or status not in {"active", "suspended"}:
+            raise LocalAuthError("tenant_status_invalid", "tenant status is invalid")
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                tenant_sql = "SELECT status FROM local_tenants WHERE tenant_id = ?"
+                if self.metadata_store.backend_name == "postgresql":
+                    tenant_sql += " FOR UPDATE"
+                row = connection.execute(tenant_sql, (actor["tenant_id"],)).fetchone()
+                if row is None:
+                    raise LocalAuthError("tenant_not_found", "tenant was not found")
+                connection.execute(
+                    "UPDATE local_tenants SET status = ? WHERE tenant_id = ?",
+                    (status, actor["tenant_id"]),
+                )
+                revoked_sessions = 0
+                revoked_refresh_tokens = 0
+                if status == "suspended":
+                    member_rows = connection.execute(
+                        "SELECT i.user_id FROM local_identities AS i "
+                        "JOIN local_users AS u ON u.id = i.user_id "
+                        "WHERE i.tenant_id = ? AND u.kind = 'member' AND i.role = 'member'",
+                        (actor["tenant_id"],),
+                    ).fetchall()
+                    for member_row in member_rows:
+                        revoked_sessions += max(
+                            0,
+                            int(connection.execute(
+                                "DELETE FROM local_sessions WHERE user_id = ?",
+                                (member_row[0],),
+                            ).rowcount),
+                        )
+                        revoked_refresh_tokens += max(
+                            0,
+                            int(connection.execute(
+                                "DELETE FROM oidc_refresh_tokens WHERE user_id = ?",
+                                (member_row[0],),
+                            ).rowcount),
+                        )
+            return {
+                "tenant_id": actor["tenant_id"],
+                "status": status,
+                "revoked_sessions": revoked_sessions,
+                "revoked_refresh_tokens": revoked_refresh_tokens,
+            }
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError("tenant_unavailable", "tenant service is unavailable") from exc
 
     def revoke_tenant_member_sessions(
         self,
@@ -591,10 +692,12 @@ class LocalAuthService:
                 refresh_sql = """
                     SELECT r.user_id, r.expires_at, r.used_at, r.scopes,
                            u.kind, u.record_version, u.encrypted_payload,
-                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status
+                           i.issuer, i.tenant_id, i.subject, i.role, i.account_status,
+                           t.status
                     FROM oidc_refresh_tokens AS r
                     JOIN local_users AS u ON u.id = r.user_id
                     JOIN local_identities AS i ON i.user_id = r.user_id
+                    JOIN local_tenants AS t ON t.tenant_id = i.tenant_id
                     WHERE r.token_hash = ?
                 """
                 if self.metadata_store.backend_name == "postgresql":
@@ -609,6 +712,7 @@ class LocalAuthService:
                     or row[7] == "local"
                     or row[2] is not None
                     or row[11] != "active"
+                    or (row[10] == "member" and row[12] != "active")
                     or not self._expires_after(row[1], now)
                 ):
                     raise LocalAuthError("refresh_token_invalid", "refresh token is invalid")
@@ -719,12 +823,18 @@ class LocalAuthService:
         refresh_expires_at = issued_at + self._DEFAULT_REFRESH_TTL if refresh_token else None
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            status_query = "SELECT account_status FROM local_identities WHERE user_id = ?"
+            status_query = (
+                "SELECT i.account_status, i.role, t.status "
+                "FROM local_identities AS i JOIN local_tenants AS t ON t.tenant_id = i.tenant_id "
+                "WHERE i.user_id = ?"
+            )
             if self.metadata_store.backend_name == "postgresql":
                 status_query += " FOR UPDATE"
             status_row = connection.execute(status_query, (user_id,)).fetchone()
             if status_row is None or status_row[0] != "active":
                 raise LocalAuthError("account_disabled", "local account is disabled")
+            if status_row[1] == "member" and status_row[2] != "active":
+                raise LocalAuthError("tenant_suspended", "tenant is suspended")
             connection.execute(
                 "DELETE FROM local_sessions WHERE expires_at <= ?",
                 (issued_at.isoformat(),),
@@ -786,10 +896,12 @@ class LocalAuthService:
                 SELECT s.user_id, s.expires_at, s.session_origin,
                        s.pairing_token_fingerprint, s.scopes,
                        u.kind, u.record_version, u.encrypted_payload,
-                       i.issuer, i.tenant_id, i.subject, i.role, i.account_status
+                       i.issuer, i.tenant_id, i.subject, i.role, i.account_status,
+                       t.status
                 FROM local_sessions AS s
                 JOIN local_users AS u ON u.id = s.user_id
                 JOIN local_identities AS i ON i.user_id = s.user_id
+                JOIN local_tenants AS t ON t.tenant_id = i.tenant_id
                 WHERE s.token_hash = ?
                 """,
                 (token_hash,),
@@ -797,6 +909,8 @@ class LocalAuthService:
         if row is None or str(row[1]) <= now:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
         if row[12] != "active":
+            raise LocalAuthError("authentication_required", "a valid owner session is required")
+        if row[11] == "member" and row[13] != "active":
             raise LocalAuthError("authentication_required", "a valid owner session is required")
         if row[2] not in {"loopback", "device", "oidc"}:
             raise LocalAuthError("authentication_required", "a valid owner session is required")
@@ -895,6 +1009,7 @@ class LocalAuthService:
             return owner_id
 
     def _ensure_owner_identity(self, connection: MetadataConnection, owner_id: str) -> None:
+        self._ensure_tenant_record(connection, owner_id, datetime.now(UTC).isoformat())
         row = connection.execute(
             "SELECT issuer, tenant_id, subject, role, account_status FROM local_identities WHERE user_id = ?",
             (owner_id,),
@@ -911,6 +1026,25 @@ class LocalAuthService:
             return
         if tuple(str(value) for value in row) != expected:
             raise LocalAuthError("auth_owner_record_invalid", "owner identity record is invalid")
+
+    def _ensure_tenant_record(
+        self,
+        connection: MetadataConnection,
+        tenant_id: str,
+        created_at: str,
+    ) -> None:
+        if self.metadata_store.backend_name == "postgresql":
+            connection.execute(
+                "INSERT INTO local_tenants (tenant_id, display_name, status, created_at) "
+                "VALUES (?, ?, 'active', ?) ON CONFLICT (tenant_id) DO NOTHING",
+                (tenant_id, tenant_id, created_at),
+            )
+        else:
+            connection.execute(
+                "INSERT OR IGNORE INTO local_tenants (tenant_id, display_name, status, created_at) "
+                "VALUES (?, ?, 'active', ?)",
+                (tenant_id, tenant_id, created_at),
+            )
 
     def _load_identity(self, user_id: str) -> dict[str, str]:
         if not isinstance(user_id, str) or not user_id.strip():

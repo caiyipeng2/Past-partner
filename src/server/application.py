@@ -423,6 +423,12 @@ class Application:
             account_status,
         )
 
+    def get_tenant(self, principal: OwnerPrincipal) -> dict[str, Any]:
+        return self.auth.get_tenant(principal.user_id)
+
+    def update_tenant_status(self, principal: OwnerPrincipal, status: str) -> dict[str, Any]:
+        return self.auth.update_tenant_status(principal.user_id, status)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 

@@ -689,6 +689,45 @@ DEFAULT_MIGRATIONS = (
             "CHECK (account_status IN ('active', 'disabled'))",
         ),
     ),
+    Migration(
+        version=27,
+        name="tenant_registry",
+        statements=(
+            """
+            CREATE TABLE local_tenants (
+                tenant_id TEXT PRIMARY KEY CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128),
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_tenants_status_idx ON local_tenants(status, tenant_id)",
+            """
+            INSERT OR IGNORE INTO local_tenants (tenant_id, display_name, status, created_at)
+            SELECT tenant_id, tenant_id, 'active', MIN(created_at)
+            FROM local_identities
+            GROUP BY tenant_id
+            """,
+        ),
+        postgres_statements=(
+            """
+            CREATE TABLE local_tenants (
+                tenant_id TEXT PRIMARY KEY CHECK (length(tenant_id) BETWEEN 1 AND 128),
+                display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128),
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX local_tenants_status_idx ON local_tenants(status, tenant_id)",
+            """
+            INSERT INTO local_tenants (tenant_id, display_name, status, created_at)
+            SELECT tenant_id, tenant_id, 'active', MIN(created_at)
+            FROM local_identities
+            GROUP BY tenant_id
+            ON CONFLICT (tenant_id) DO NOTHING
+            """,
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = DEFAULT_MIGRATIONS[-1].version
 
