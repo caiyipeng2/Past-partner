@@ -429,6 +429,13 @@ class Application:
     def update_tenant_status(self, principal: OwnerPrincipal, status: str) -> dict[str, Any]:
         return self.auth.update_tenant_status(principal.user_id, status)
 
+    def update_tenant_display_name(
+        self,
+        principal: OwnerPrincipal,
+        display_name: str,
+    ) -> dict[str, Any]:
+        return self.auth.update_tenant_display_name(principal.user_id, display_name)
+
     def authenticate(self, authorization: str | None) -> OwnerPrincipal:
         return self.auth.authenticate(authorization)
 

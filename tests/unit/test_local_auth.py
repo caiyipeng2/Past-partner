@@ -625,6 +625,44 @@ class LocalAuthTests(unittest.TestCase):
             auth.update_tenant_status(member["user_id"], [])
         self.assertEqual("tenant_status_invalid", non_string.exception.code)
 
+    def test_admin_can_update_tenant_display_name_while_suspended(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        admin = auth.create_local_account(
+            "tenant-profile-admin", tenant_id="tenant-profile", role="admin"
+        )
+
+        renamed = auth.update_tenant_display_name(admin["user_id"], "  Family archive  ")
+
+        self.assertEqual("Family archive", renamed["display_name"])
+        self.assertEqual("Family archive", auth.get_tenant(admin["user_id"])["display_name"])
+
+        auth.update_tenant_status(admin["user_id"], "suspended")
+        renamed_while_suspended = auth.update_tenant_display_name(
+            admin["user_id"], "Suspended archive"
+        )
+
+        self.assertEqual("suspended", renamed_while_suspended["status"])
+        self.assertEqual("Suspended archive", renamed_while_suspended["display_name"])
+
+    def test_tenant_display_name_requires_admin_and_bounded_text(self) -> None:
+        auth = LocalAuthService(self.database_path, self.encryption, mode="test")
+        member = auth.create_local_account(
+            "tenant-profile-member", tenant_id="tenant-profile-boundary", role="member"
+        )
+
+        with self.assertRaises(LocalAuthError) as non_admin:
+            auth.update_tenant_display_name(member["user_id"], "Member rename")
+        self.assertEqual("tenant_admin_required", non_admin.exception.code)
+
+        admin = auth.create_local_account(
+            "tenant-profile-boundary-admin", tenant_id="tenant-profile-boundary", role="admin"
+        )
+        for invalid in ("", "   ", "x" * 129, []):
+            with self.subTest(invalid=repr(invalid)):
+                with self.assertRaises(LocalAuthError) as captured:
+                    auth.update_tenant_display_name(admin["user_id"], invalid)
+                self.assertEqual("tenant_display_name_invalid", captured.exception.code)
+
     def test_tenant_suspend_keeps_promoted_oidc_admin_refreshable(self) -> None:
         auth = LocalAuthService(self.database_path, self.encryption, mode="test")
         local_admin = auth.create_local_account(

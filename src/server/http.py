@@ -246,6 +246,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.CONFLICT
             elif exc.code in {"tenant_status_invalid", "tenant_status_target_invalid"}:
                 status = HTTPStatus.BAD_REQUEST
+            elif exc.code == "tenant_display_name_invalid":
+                status = HTTPStatus.BAD_REQUEST
             elif exc.code == "account_disabled":
                 status = HTTPStatus.UNAUTHORIZED
             elif exc.code == "tenant_suspended":
@@ -977,6 +979,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 self.server.application.update_tenant_status(self.principal, status),
+            )
+            return
+        if path == _TENANT_PATH:
+            body = self._json_body()
+            self._json(
+                HTTPStatus.OK,
+                self.server.application.update_tenant_display_name(
+                    self.principal,
+                    body.get("display_name"),
+                ),
             )
             return
         match = _PERSONA_PATH.fullmatch(path)

@@ -456,6 +456,64 @@ class LocalAuthService:
         except MetadataStoreError as exc:
             raise LocalAuthError("tenant_unavailable", "tenant service is unavailable") from exc
 
+    def update_tenant_display_name(
+        self,
+        actor_user_id: str,
+        display_name: str,
+    ) -> dict[str, int | str]:
+        """Update only the current tenant's bounded display name as an admin."""
+
+        if not isinstance(display_name, str):
+            raise LocalAuthError(
+                "tenant_display_name_invalid", "tenant display name is invalid"
+            )
+        normalized_name = display_name.strip()
+        if not 1 <= len(normalized_name) <= 128:
+            raise LocalAuthError(
+                "tenant_display_name_invalid", "tenant display name is invalid"
+            )
+        try:
+            actor = self._load_identity(actor_user_id)
+            if actor["role"] != "admin":
+                raise LocalAuthError("tenant_admin_required", "tenant administrator access is required")
+            with self.metadata_store.transaction(
+                immediate=self.metadata_store.backend_name == "sqlite"
+            ) as connection:
+                tenant_sql = (
+                    "SELECT tenant_id, status, created_at FROM local_tenants WHERE tenant_id = ?"
+                )
+                if self.metadata_store.backend_name == "postgresql":
+                    tenant_sql += " FOR UPDATE"
+                tenant = connection.execute(tenant_sql, (actor["tenant_id"],)).fetchone()
+                if tenant is None:
+                    raise LocalAuthError("tenant_not_found", "tenant was not found")
+                connection.execute(
+                    "UPDATE local_tenants SET display_name = ? WHERE tenant_id = ?",
+                    (normalized_name, actor["tenant_id"]),
+                )
+                counts = connection.execute(
+                    """
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN i.account_status = 'active' THEN 1 ELSE 0 END)
+                    FROM local_identities AS i
+                    JOIN local_users AS u ON u.id = i.user_id
+                    WHERE i.tenant_id = ? AND u.kind = 'member'
+                    """,
+                    (actor["tenant_id"],),
+                ).fetchone()
+            return {
+                "tenant_id": str(tenant[0]),
+                "display_name": normalized_name,
+                "status": str(tenant[1]),
+                "created_at": str(tenant[2]),
+                "member_count": int(counts[0] or 0),
+                "active_member_count": int(counts[1] or 0),
+            }
+        except LocalAuthError:
+            raise
+        except MetadataStoreError as exc:
+            raise LocalAuthError("tenant_unavailable", "tenant service is unavailable") from exc
+
     def revoke_tenant_member_sessions(
         self,
         actor_user_id: str,

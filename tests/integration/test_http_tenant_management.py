@@ -212,6 +212,44 @@ class HttpTenantManagementTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("active", payload["status"])
 
+    def test_admin_can_update_tenant_display_name_and_scope_is_required(self) -> None:
+        admin = self.application.auth.create_local_account(
+            "tenant-profile-http-admin", tenant_id="tenant-profile-http", role="admin"
+        )
+        admin_session = self.application.auth.issue_account_session(admin["user_id"])
+        read_only = self.application.auth.issue_account_session(
+            admin["user_id"], scopes=["owner:read"]
+        )
+
+        status, payload = self.request(
+            "PATCH",
+            "/api/v1/tenant",
+            {"display_name": "  Shared memories  "},
+            token=admin_session["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("Shared memories", payload["display_name"])
+        self.assertEqual("Shared memories", self.request(
+            "GET", "/api/v1/tenant", token=admin_session["access_token"]
+        )[1]["display_name"])
+
+        status, payload = self.request(
+            "PATCH",
+            "/api/v1/tenant",
+            {"display_name": "Read-only attempt"},
+            token=read_only["access_token"],
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["error"]["code"])
+
+        for invalid in ({"display_name": ""}, {"display_name": "x" * 129}, {"display_name": []}):
+            with self.subTest(invalid=invalid):
+                status, payload = self.request(
+                    "PATCH", "/api/v1/tenant", invalid, token=admin_session["access_token"]
+                )
+                self.assertEqual(400, status)
+                self.assertEqual("tenant_display_name_invalid", payload["error"]["code"])
+
     def test_admin_can_disable_and_reenable_member_status(self) -> None:
         admin = self.application.auth.create_local_account(
             "tenant-status-admin", tenant_id="tenant-status", role="admin"
