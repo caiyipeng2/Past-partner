@@ -6,6 +6,7 @@ import shutil
 import threading
 import unittest
 import zipfile
+from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,8 @@ from src.server.config import ServerConfig
 from src.server.http import create_server
 from src.services.import_service import ImportState
 from src.services.upload_service import UploadError
+from src.services.local_auth import LocalAuthError
+from src.services.oidc_verifier import OidcClaims
 
 
 class HttpPrivacyLifecycleTests(unittest.TestCase):
@@ -39,6 +42,7 @@ class HttpPrivacyLifecycleTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self.application.close()
         shutil.rmtree(self.data_root, ignore_errors=True)
 
     def _session(self) -> dict:
@@ -224,6 +228,129 @@ class HttpPrivacyLifecycleTests(unittest.TestCase):
         status, _, imports = self.request("GET", "/api/v1/imports")
         self.assertEqual(200, status)
         self.assertEqual(1, len(imports["imports"]))
+
+    def test_account_erasure_clears_old_notices_and_preserves_other_accounts(self) -> None:
+        auth = self.application.auth
+        target = auth.issue_oidc_session(
+            OidcClaims("https://issuer.example", "erase-target", "past-partner",
+                       "shared-tenant", datetime.now(UTC) + timedelta(minutes=5)),
+            remote_address="127.0.0.1",
+        )
+        others = []
+        for subject, tenant in (("erase-peer", "shared-tenant"), ("erase-other", "other-tenant")):
+            session = auth.issue_oidc_session(
+                OidcClaims("https://issuer.example", subject, "past-partner", tenant,
+                           datetime.now(UTC) + timedelta(minutes=5)),
+                remote_address="127.0.0.1",
+            )
+            self.auth_token = session["access_token"]
+            persona, raw = self._create_completed_import()
+            self.assertEqual(200, self.request("GET", "/api/v1/data-export")[0])
+            notices = self.request("GET", "/api/v1/notifications")[2]["notifications"]
+            others.append((session, persona, raw, notices))
+
+        self.auth_token = target["access_token"]
+        self._create_completed_import()
+        for _ in range(2):
+            self.assertEqual(200, self.request("GET", "/api/v1/data-export")[0])
+        self.assertEqual(2, len(self.request("GET", "/api/v1/notifications")[2]["notifications"]))
+        # A request body cannot select another account; the authenticated subject
+        # remains the sole resource boundary even for users in the same tenant.
+        status, _, deleted = self.request(
+            "POST", "/api/v1/data-deletion",
+            {"confirm": "DELETE", "owner_id": others[0][0]["user_id"]},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(401, self.request("GET", "/api/v1/personas")[0])
+        with self.assertRaises(LocalAuthError):
+            auth.refresh_oidc_session(target["refresh_token"], remote_address="127.0.0.1")
+
+        # Data deletion retains the technical identity. Reauthenticate to inspect
+        # its cleared resources and the single new, bounded deletion notification.
+        self.auth_token = auth.issue_account_session(target["user_id"])["access_token"]
+        self.assertEqual([], self.request("GET", "/api/v1/personas")[2]["personas"])
+        self.assertEqual([], self.request("GET", "/api/v1/imports")[2]["imports"])
+        notices = self.request("GET", "/api/v1/notifications")[2]["notifications"]
+        self.assertEqual(1, len(notices))
+        self.assertEqual("deletion_completed", notices[0]["event_type"])
+        self.assertEqual(deleted["receipt_id"], notices[0]["operation_id"])
+        self.assertEqual(2, notices[0]["counts"]["notifications"])
+        receipt = self.application.deletion_receipts.get(deleted["receipt_id"])
+        self.assertEqual(2, receipt["counts"]["notifications"])
+        for secret in (target["user_id"], target["access_token"], target["refresh_token"], "erase-target"):
+            self.assertNotIn(secret, json.dumps(receipt))
+
+        for session, persona, raw, original_notices in others:
+            with self.subTest(account=session["user_id"]):
+                self.auth_token = session["access_token"]
+                self.assertEqual(200, self.request("GET", f"/api/v1/personas/{persona['id']}")[0])
+                self.assertEqual(original_notices, self.request("GET", "/api/v1/notifications")[2]["notifications"])
+                status, _, payload = self.request("GET", "/api/v1/data-export/archive")
+                self.assertEqual(200, status)
+                with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                    payload_name = next(name for name in archive.namelist() if name.endswith("/payload.bin"))
+                    self.assertEqual(raw, archive.read(payload_name))
+                refreshed = auth.refresh_oidc_session(session["refresh_token"], remote_address="127.0.0.1")
+                self.assertEqual(session["user_id"], refreshed["user_id"])
+                self.assertEqual(session["user_id"], auth.authenticate(f"Bearer {refreshed['access_token']}").user_id)
+
+    def test_erasure_rolls_back_old_notices_and_sessions_if_new_notice_fails(self) -> None:
+        target = self.application.auth.issue_oidc_session(
+            OidcClaims("https://issuer.example", "erase-rollback", "past-partner", "rollback-tenant",
+                       datetime.now(UTC) + timedelta(minutes=5)),
+            remote_address="127.0.0.1",
+        )
+        self.auth_token = target["access_token"]
+        status, _, persona = self.request(
+            "POST", "/api/v1/personas", {"display_name": "Rollback", "relationship_type": "friend"}
+        )
+        self.assertEqual(201, status)
+        self.request("GET", "/api/v1/data-export")
+        original_notices = self.request("GET", "/api/v1/notifications")[2]["notifications"]
+        with patch.object(self.application.notifications, "record_deletion", side_effect=RuntimeError("notice failed")):
+            with self.assertRaisesRegex(RuntimeError, "notice failed"):
+                self.application.delete_owner_data(target["user_id"], {"confirm": "DELETE"})
+        self.assertEqual(original_notices, self.request("GET", "/api/v1/notifications")[2]["notifications"])
+        self.assertEqual(200, self.request("GET", f"/api/v1/personas/{persona['id']}")[0])
+        refreshed = self.application.auth.refresh_oidc_session(
+            target["refresh_token"], remote_address="127.0.0.1"
+        )
+        self.assertEqual(target["user_id"], refreshed["user_id"])
+        with self.application.metadata_store.transaction() as connection:
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM deletion_receipts").fetchone()[0])
+
+    def test_repeated_erasure_replaces_previous_deletion_notice(self) -> None:
+        self.request("GET", "/api/v1/data-export")
+        first = self.request("POST", "/api/v1/data-deletion", {"confirm": "DELETE"})[2]
+        self.auth_token = self._session()["access_token"]
+        status, _, second = self.request("POST", "/api/v1/data-deletion", {"confirm": "DELETE"})
+        self.assertEqual(200, status)
+        self.assertNotEqual(first["receipt_id"], second["receipt_id"])
+        self.auth_token = self._session()["access_token"]
+        notices = self.request("GET", "/api/v1/notifications")[2]["notifications"]
+        self.assertEqual(1, len(notices))
+        self.assertEqual(second["receipt_id"], notices[0]["operation_id"])
+        self.assertEqual(1, notices[0]["counts"]["notifications"])
+
+    def test_member_erasure_requires_confirmation_and_write_scope(self) -> None:
+        auth = self.application.auth
+        member = auth.create_local_account("erasure-scope", tenant_id="erasure-scope")
+        self.auth_token = auth.issue_account_session(member["user_id"])["access_token"]
+        status, _, persona = self.request(
+            "POST", "/api/v1/personas", {"display_name": "Keep", "relationship_type": "friend"}
+        )
+        self.assertEqual(201, status)
+        self.request("GET", "/api/v1/data-export")
+        notices = self.request("GET", "/api/v1/notifications")[2]["notifications"]
+        status, _, result = self.request("POST", "/api/v1/data-deletion", {"confirm": "no"})
+        self.assertEqual(400, status)
+        self.assertEqual("deletion_confirmation_required", result["error"]["code"])
+        self.auth_token = auth.issue_account_session(member["user_id"], scopes=["owner:read"])["access_token"]
+        status, _, result = self.request("POST", "/api/v1/data-deletion", {"confirm": "DELETE"})
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", result["error"]["code"])
+        self.assertEqual(200, self.request("GET", f"/api/v1/personas/{persona['id']}")[0])
+        self.assertEqual(notices, self.request("GET", "/api/v1/notifications")[2]["notifications"])
 
 
 if __name__ == "__main__":

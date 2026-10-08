@@ -726,6 +726,10 @@ class Application:
                     ("subscriptions", "subscriptions"),
                     ("subscription_events", "subscription_events"),
                     ("subscription_bindings", "subscription_bindings"),
+                    # Remove history before creating the completion notice below.
+                    # Keeping both operations in this transaction prevents a failed
+                    # notice/receipt write from committing a misleading erasure.
+                    ("data_subject_notifications", "notifications"),
                     ("audit_events", "audit_events"),
                     ("task_queue", "task_queue"),
                     ("personas", "personas"),
