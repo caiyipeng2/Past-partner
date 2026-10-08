@@ -40,6 +40,7 @@ _COUNT_KEYS = frozenset(
         "audit_events",
         "task_queue",
         "sessions",
+        "notifications",
         "provider_side_cleanup_limitations",
     }
 )

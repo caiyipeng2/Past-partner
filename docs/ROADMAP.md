@@ -87,13 +87,15 @@ R2-01 的三个实现切片已在 `main` 合并：模型选择持久化（`90c22
 
 ## 6. 已知未完成能力
 
+- R1-02 多账户数据删除补全分支：已验证当前认证账户删除的通知清理、access/refresh 撤销、明确确认、scope 拒绝和同租户/跨租户隔离。历史通知删除、匿名回执及唯一的新删除通知共用元数据事务，新通知失败会回滚该事务。技术身份保留、永久账户注销、跨存储全局原子性和多进程写入冻结仍未完成；此项不代表 R1-03 全部完成。真实 Provider 验证按用户要求暂缓。
+
 - R0-02 的 Docker Compose、可安装服务 CLI 和统一 smoke runner 已提供；当前验证分支已实测模块、CLI、npm 和 Compose 四个入口。Compose 要求显式提供 `PAST_PARTNER_MASTER_KEY`，smoke runner 会为每次运行生成可丢弃的密钥并使用唯一项目名，结束后清理自身资源；其他开发机仍需先安装 Docker Desktop 或兼容 Compose 的运行时。
 - R0-01 的本机 disposable PostgreSQL/S3/KMS/任务队列回归已完成；其他开发机若未配置可删除资源仍会安全跳过，不能把跳过结果写成真实集成证据。
 - R0-03 已提供 OpenAI-compatible 适配器（OpenAI、DeepSeek、小米 MiMo、阿里千问、Ollama 和自定义端点）及脱敏 smoke runner；本地自定义 HTTP 链路和稳定错误边界已验证，2026-09-01 已使用进程级可控凭据完成 DeepSeek `deepseek-v4-flash` 真实 smoke。其他供应商矩阵只要求端点格式、请求链路和有界返回；额度不足、限流或 HTTP 错误只要确实收到 Provider 响应即可记为 `response_received`，不把无额度误记为业务成功，也不要求继续消耗真实额度。
 - 默认真实 Provider 仍主要声明文本 chat；R2-02 已为 OpenAI-compatible 适配器增加受目录 vision 能力约束的图像分析、通过 `*_OCR_MODELS` 显式开启的视觉 chat JSON OCR、通过 `*_AUDIO_MODELS` 显式开启的 `/audio/transcriptions` 音频转写，以及通过 `*_VIDEO_MODELS` + `*_VIDEO_ENDPOINT_PATH` 显式开启的 Provider 专用视频语义分析，流式和 Embedding 仍未完成；R0-04 仅为显式开启的千问模型增加原生微调能力。
 - R0-04 验证分支已覆盖千问原生适配器的真实 HTTP transport subprocess smoke（合成 JSONL 上传、提交、详情查询、工件/评测证据校验）以及失败状态的显式可重试标记和远端拒绝后的文件清理；smoke 对缺少工件或评测返回失败，不会伪造训练成功。真实百炼外部 smoke 已按用户决定暂缓，当前不把它写成已通过；后续恢复时仍需提供具备微调权限的可控凭据。
 - R1-01 已将风格画像、长期记忆和版本化稀疏向量索引按 owner/persona 使用 AES-GCM 加密持久化，并提供人物范围 API；服务重启后可恢复。检索仍使用本地确定性 token-overlap，不包含真实 embedding 或第三方模型调用。
-- R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；正式多账户/跨租户账户删除仍由 R1-03 的 OIDC/OAuth 负责。
+- R1-02 已完成本地 owner 的成功数据保留、原始完整归档导出、级联删除和匿名删除回执；多账户数据删除补全分支验证了当前认证账户的删除与其他账户隔离。永久技术身份注销、上游 IdP 注销仍待 R1-03 后续处理；未开放管理员删除其他账户的接口。
 - R1-03 当前已完成第十阶段：development/test 模式可建立独立 subject、tenant、admin/member 本地账户主体，会话和 owner_id 资源查询按主体隔离；OIDC 登录支持静态 JWKS、HTTPS JWKS URI 和受限 HTTPS discovery URI，discovery 的 issuer 必须与配置一致且只能解析无凭据/无 query 的 HTTPS `jwks_uri`，未知 `kid` 会按有界间隔刷新远程密钥，并按 issuer/subject/tenant 建立加密本地主体会话。OIDC refresh token 使用独立哈希表存储、30 天上限、一次性消费和事务轮换；账户级 revoke-all 可撤销全部 access session 与 OIDC refresh token；同租户 admin 可查看有限成员身份、更新长度受限的租户显示名称、撤销成员会话，在 `member`/`admin` 间原子调整成员角色，停用/恢复 member，并暂停/恢复租户。租户暂停会阻止 member 登录和 refresh，同时保留 admin 恢复能力；停用会在同一事务中撤销 access session 和 OIDC refresh token，禁止修改 owner、自我降权、跨租户目标和移除最后一个管理员。账户恢复、租户创建、账务管理和正式租户生命周期仍待后续切片。迁移前创建的静态 OIDC 账户历史上没有 issuer 字段，迁移会将其置于 `local` 命名空间，不会自动关联到新的 OIDC issuer，需后续显式账户关联。
 - R1-04 当前已完成外部 worker、broker 契约和 worker 观测切片：`python -m src.worker`/`companion-worker` 复用共享加密元数据队列，支持有界一次运行、批处理、协作退出，并把脱敏生命周期结果写入共享 `worker_observations`，按保留时间/每 worker 数量清理；R1-04 broker 契约切片增加同事务任务通知 outbox、发布重试和供应商中立的测试 broker，生产模式不注册隐式业务 handler。当前只提供内部高失败率/无心跳告警计算，Redis、RabbitMQ、云消息服务、Prometheus/SIEM 外发、追踪和日志外发仍待后续切片。
 - R2-01 Android-first 后台上传、通知、模型选择持久化和会话恢复已完成分支实现及验证；仍受 Doze、电池策略、通知权限、网络约束和系统强停影响，不能视为 OS 级后台执行保证。iOS 目前只做 no-op 代码兼容和静态检查，`R2-03` 发布链路按当前决定暂缓。
